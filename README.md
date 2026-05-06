@@ -1,29 +1,31 @@
 # bori — Build, Orchestration, and Runtime Integration
 
-bori는 Kubernetes VM 환경에서 dataplane 애플리케이션을 개발할 때 사용하는 개발환경 오케스트레이터입니다.
+bori is a developer environment orchestrator for Kubernetes-native dataplane applications.
 
-- **DevSpace** (inner-loop dev tool) 와 **kube-slint** (SLI gate tool) 를 연결합니다.
-- 각 앱은 `.bori/` 디렉토리를 통해 스스로를 등록합니다. bori는 앱 목록을 하드코딩하지 않습니다.
-- kube-slint는 독립 SLI 도구로 그대로 유지됩니다. bori는 `slint-gate` 바이너리를 CLI로 호출합니다.
+- Bridges **DevSpace** (inner-loop dev tool) with **kube-slint** (SLI gate tool).
+- Each app self-registers via a `.bori/` directory. bori maintains no hardcoded app list.
+- kube-slint remains an independent SLI tool. bori invokes `slint-gate` as a CLI binary only.
 
----
-
-## 환경 구성
-
-### 개발 장비 vs 실행 장비
-
-| 역할 | 장비 |
-|------|------|
-| 코드 작성 / Git | 로컬 개발 장비 |
-| DevSpace 실행 / K8s 조작 | `100.123.80.48` (K8s VM 호스트) |
-
-DevSpace와 bori 어댑터는 **`100.123.80.48`에서 실행**합니다.
+한국어 문서: [README.ko.md](README.ko.md)
 
 ---
 
-## DevSpace 설치 (`100.123.80.48` 에서 실행)
+## Environment
 
-### 1. DevSpace CLI 설치
+### Development machine vs execution machine
+
+| Role | Machine |
+|------|---------|
+| Code authoring / Git | Local development machine |
+| DevSpace execution / K8s operations | `100.123.80.48` (K8s VM host) |
+
+DevSpace and the bori adapter must be run **on `100.123.80.48`**.
+
+---
+
+## Install DevSpace (run on `100.123.80.48`)
+
+### 1. Install DevSpace CLI
 
 ```bash
 curl -sSL https://github.com/loft-sh/devspace/releases/latest/download/devspace-linux-amd64 \
@@ -32,14 +34,14 @@ chmod +x /usr/local/bin/devspace
 devspace version
 ```
 
-### 2. 설치 확인
+### 2. Verify installation
 
 ```bash
 devspace version
 # DevSpace version: v6.x.x
 ```
 
-### 3. kubectl 연결 확인
+### 3. Verify kubectl connectivity
 
 ```bash
 kubectl cluster-info
@@ -48,27 +50,27 @@ kubectl get nodes
 
 ---
 
-## bori 설치 (`100.123.80.48` 에서 실행)
+## Install bori (run on `100.123.80.48`)
 
-### 1. 저장소 클론
+### 1. Clone the repository
 
 ```bash
 git clone https://github.com/HeaInSeo/bori.git
 cd bori
 ```
 
-### 2. Go 빌드
+### 2. Build the adapter binary
 
 ```bash
 go build -o bin/bori-devspace ./adapters/devspace
 ```
 
-### 3. slint-gate 설치 확인
+### 3. Verify slint-gate is available
 
-bori 어댑터는 `slint-gate` 바이너리를 PATH에서 찾습니다.
+The bori adapter resolves `slint-gate` from PATH.
 
 ```bash
-# kube-slint 저장소에서 빌드
+# Build from the kube-slint repository
 cd ../kube-slint
 go build -o /usr/local/bin/slint-gate ./cmd/slint-gate
 slint-gate --help
@@ -76,28 +78,28 @@ slint-gate --help
 
 ---
 
-## 앱 등록 방법 (self-registration)
+## App registration (self-registration)
 
-각 dataplane 앱 저장소에 `.bori/` 디렉토리를 추가합니다.
-bori는 이 디렉토리를 자동으로 발견합니다. bori 자체는 수정할 필요 없습니다.
+Add a `.bori/` directory to each dataplane app repository.
+bori discovers these directories automatically. bori itself requires no changes.
 
 ### `.bori/component.yaml`
 
 ```yaml
-name: my-app          # 앱 이름 (kubectl service 이름과 일치해야 함)
-port: 8080            # 앱 포트
-metrics_path: /metrics  # Prometheus metrics 경로 (기본값: /metrics)
-namespace: my-ns      # Kubernetes namespace
+name: my-app            # app name — must match the Kubernetes service name
+port: 8080              # app port
+metrics_path: /metrics  # Prometheus metrics path (default: /metrics)
+namespace: my-ns        # Kubernetes namespace
 ```
 
-### `.bori/policy.devspace.yaml`
+### `.bori/policy.<profile>.yaml`
 
-slint-gate policy 포맷을 그대로 사용합니다.
+Uses the standard slint-gate policy format directly.
 
 ```yaml
 thresholds:
   - name: "requests processed"
-    metric: my_app_requests_total   # /metrics 에서 노출되는 메트릭 이름
+    metric: my_app_requests_total   # metric name as exposed by /metrics
     operator: ">="
     value: 1
   - name: "no errors"
@@ -116,47 +118,59 @@ fail_on:
   - threshold_miss
 ```
 
-프로파일별로 별도 파일을 만듭니다:
+One file per profile:
 
-| 파일 | 환경 |
-|------|------|
-| `policy.devspace.yaml` | DevSpace inner-loop (주 개발환경) |
+| File | Environment |
+|------|-------------|
+| `policy.devspace.yaml` | DevSpace inner-loop (primary dev environment) |
 | `policy.kind.yaml` | kind cluster |
 | `policy.multipass.yaml` | Multipass VM lab |
 
 ---
 
-## 사용 방법
+## Usage
 
-### devspace dev 와 함께 사용
+### With `devspace dev`
 
 ```bash
 cd bori
 
-# 개발 시작 — DevSpace가 앱을 배포하고 after:deploy hook에서 bori gate 실행
+# Start development — DevSpace deploys apps, after:deploy hook runs bori gate
 devspace dev --profile devspace
 ```
 
-### 어댑터 단독 실행
+### Run the adapter standalone
 
 ```bash
-# 기본 (devspace 프로파일, 10초 대기 후 gate 평가)
+# Default (devspace profile, 10s wait before post-smoke scrape)
 ./bin/bori-devspace --profile devspace --v
 
-# smoke 커맨드 지정
+# With a smoke command
 ./bin/bori-devspace \
   --profile devspace \
   --smoke-cmd "kubectl exec -n my-ns deploy/my-app -- /bin/smoke-test" \
   --v
 
-# 앱 디렉토리 명시
+# Specify the apps directory explicitly
 ./bin/bori-devspace \
   --apps-dir /opt/go/src/github.com/HeaInSeo \
   --profile devspace \
   --v
 ```
 
-### 출력 예시
+### Adapter flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--profile` | `devspace` | Profile name: `devspace`, `kind`, `multipass` |
+| `--apps-dir` | parent of bori root | Directory to scan for app repos |
+| `--smoke-cmd` | _(none)_ | Shell command to run as smoke step |
+| `--smoke-wait` | `10s` | Wait duration when `--smoke-cmd` is not set |
+| `--out` | `bori-gate-output` | Output directory for artifacts |
+| `--slint-gate` | `slint-gate` | Path to the slint-gate binary |
+| `--v` | false | Verbose output |
+
+### Sample output
 
 ```
 [bori] found 2 registered app(s)
@@ -173,27 +187,27 @@ devspace dev --profile devspace
 
 ---
 
-## 아키텍처
+## Architecture
 
 ```
-앱 저장소 (JUMI, artifact-handoff, tori, sori, ...)
-  각각 .bori/component.yaml + .bori/policy.<profile>.yaml 보유
-        ↓ bori가 자동 발견
+App repositories (JUMI, artifact-handoff, tori, sori, ...)
+  each with .bori/component.yaml + .bori/policy.<profile>.yaml
+        ↓ discovered automatically by bori
 bori/adapters/devspace (Go CLI)
-  ① kubectl port-forward → /metrics 수집 (smoke 전)
-  ② smoke 실행 (--smoke-cmd 또는 --smoke-wait)
-  ③ kubectl port-forward → /metrics 수집 (smoke 후)
-  ④ delta → sli-summary.json 생성
-  ⑤ slint-gate --measurement-summary ... --policy ... 호출
+  ① kubectl port-forward → scrape /metrics (pre-smoke)
+  ② run smoke (--smoke-cmd or --smoke-wait)
+  ③ kubectl port-forward → scrape /metrics (post-smoke)
+  ④ compute deltas → write sli-summary.json
+  ⑤ invoke slint-gate --measurement-summary ... --policy ...
         ↓
-slint-gate (kube-slint 독립 바이너리)
+slint-gate (kube-slint standalone binary)
         ↓
-gate-summary.json (PASS / FAIL / WARN / NO_GRADE)
+gate-summary.json  (PASS / FAIL / WARN / NO_GRADE)
         ↓
-dev-space observability 페이지 (batch-integration publish)
+dev-space observability page (published by batch-integration)
 ```
 
-### DevSpace hook 연결
+### DevSpace hook
 
 ```yaml
 # devspace.yaml
@@ -203,45 +217,45 @@ hooks:
     args: ["run", "./adapters/devspace", "--profile", "${BORI_PROFILE}", "--v"]
 ```
 
-### kube-slint와의 관계
+### Relationship with kube-slint
 
-bori는 kube-slint를 **Go 라이브러리로 import하지 않습니다.**
-`slint-gate` 바이너리를 CLI로 호출하는 방식으로만 연결됩니다.
-kube-slint는 bori와 무관하게 독립적으로 사용 가능합니다.
-
----
-
-## 향후 계획
-
-| 항목 | 상태 |
-|------|------|
-| DevSpace adapter | 구현 완료 |
-| Tilt adapter | 계획 중 |
-| kind / multipass 프로파일 | policy 파일 추가로 즉시 지원 |
-| 다중 앱 병렬 평가 | 계획 중 |
+bori does **not** import kube-slint as a Go library.
+It invokes the `slint-gate` binary via shell-out only.
+kube-slint remains a fully independent SLI tool usable without bori.
 
 ---
 
-## 저장소 구조
+## Roadmap
+
+| Item | Status |
+|------|--------|
+| DevSpace adapter | done |
+| Tilt adapter | planned |
+| kind / multipass profiles | supported via policy file |
+| Parallel multi-app evaluation | planned |
+
+---
+
+## Repository structure
 
 ```
 bori/
 ├── pkg/adapter/
 │   ├── adapter.go        # Runner interface, AppSnapshot / RunRequest / RunResult
-│   ├── gate_runner.go    # slint-gate shell-out 구현
-│   └── summary.go        # sli-summary.json builder (slint.summary.v4 호환)
+│   ├── gate_runner.go    # slint-gate shell-out implementation
+│   └── summary.go        # sli-summary.json builder (slint.summary.v4 compatible)
 ├── adapters/
 │   ├── devspace/
-│   │   ├── main.go       # CLI: 앱 discovery → scrape → smoke → gate
-│   │   ├── component.go  # .bori/component.yaml 파서
-│   │   └── collect.go    # kubectl port-forward + /metrics 스크레이핑
-│   └── tilt/             # 향후
+│   │   ├── main.go       # CLI: discovery → scrape → smoke → gate
+│   │   ├── component.go  # .bori/component.yaml parser
+│   │   └── collect.go    # kubectl port-forward + /metrics scraping
+│   └── tilt/             # planned
 ├── schema/
-│   ├── component.schema.yaml   # .bori/component.yaml 스펙
-│   └── policy.schema.yaml      # .bori/policy.<profile>.yaml 스펙
+│   ├── component.schema.yaml   # .bori/component.yaml spec
+│   └── policy.schema.yaml      # .bori/policy.<profile>.yaml spec
 ├── example/
 │   └── .bori/
-│       ├── component.yaml      # 참고 구현체
+│       ├── component.yaml      # reference implementation
 │       └── policy.yaml
 ├── devspace.yaml         # DevSpace compose + after:deploy hook
 └── docs/
