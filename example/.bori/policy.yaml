@@ -1,14 +1,22 @@
-# Example: how an app repo declares its kube-slint SLI thresholds
-app: my-app
+# Rename this file to policy.<profile>.yaml when using.
+# Example: policy.devspace.yaml
 
-profiles:
-  devspace:
-    thresholds:
-      my_app_requests_total:   { min: 1 }
-      my_app_errors_total:     { max: 0 }
-  kind:
-    thresholds:
-      my_app_requests_total:   { min: 1 }
-  multipass:
-    thresholds:
-      my_app_requests_total:   { min: 1 }
+thresholds:
+  - name: "requests processed"
+    metric: my_app_requests_total
+    operator: ">="
+    value: 1
+  - name: "no errors"
+    metric: my_app_errors_total
+    operator: "<="
+    value: 0
+
+regression:
+  enabled: false
+  tolerance_percent: 10
+
+reliability:
+  required: false
+
+fail_on:
+  - threshold_miss

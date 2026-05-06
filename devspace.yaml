@@ -16,7 +16,10 @@ vars:
 
 hooks:
   - events: ["after:deploy"]
-    command: "./adapters/devspace/run-gate.sh"
+    command: "go"
     args:
+      - "run"
+      - "./adapters/devspace"
       - "--profile"
       - "${BORI_PROFILE}"
+      - "--v"

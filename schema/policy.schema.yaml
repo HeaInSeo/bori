@@ -1,13 +1,28 @@
-# .bori/policy.yaml schema
-# Each app repo places this file to declare its kube-slint SLI thresholds.
-# This file is passed directly to slint-gate by the bori adapter.
+# .bori/policy.<profile>.yaml schema
+# Each app repo places one file per profile.
+# This is the standard slint-gate policy format — no bori-specific wrapping.
+#
+# profile examples: devspace, kind, multipass
+#
+# The adapter selects the file matching the active profile:
+#   .bori/policy.devspace.yaml
+#   .bori/policy.kind.yaml
+#   .bori/policy.multipass.yaml
 
-app: ""               # must match component.yaml name
+thresholds:
+  - name: ""         # human-readable name for the check
+    metric: ""       # must match the metric name from /metrics (e.g. my_app_requests_total)
+    operator: ">="   # >=, <=, >, <, ==
+    value: 0
 
-profiles:
-  devspace:
-    thresholds: {}    # metric_name: { min, max }
-  kind:
-    thresholds: {}
-  multipass:
-    thresholds: {}
+regression:
+  enabled: false
+  tolerance_percent: 10
+
+reliability:
+  required: false
+  min_level: partial  # partial | complete
+
+fail_on:
+  - threshold_miss
+  # - regression_detected
