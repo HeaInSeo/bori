@@ -1,0 +1,6 @@
+# Example: how an app repo registers itself with bori
+name: my-app
+image: ghcr.io/heainseo/my-app:latest
+port: 8080
+metrics_path: "/metrics"
+namespace: jumi-ah-dev

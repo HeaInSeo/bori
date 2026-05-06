@@ -1,0 +1,22 @@
+version: v2beta1
+name: bori
+
+# Import component definitions from each app repo.
+# Each app declares itself — bori only composes.
+imports: []
+# Example:
+#   - path: ../JUMI/.bori/component.yaml
+#   - path: ../artifact-handoff/.bori/component.yaml
+#   - path: ../tori/.bori/component.yaml
+
+vars:
+  BORI_PROFILE:
+    source: env
+    default: "devspace"
+
+hooks:
+  - events: ["after:deploy"]
+    command: "./adapters/devspace/run-gate.sh"
+    args:
+      - "--profile"
+      - "${BORI_PROFILE}"

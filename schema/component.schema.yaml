@@ -1,0 +1,11 @@
+# .bori/component.yaml schema
+# Each app repo places this file to register itself with bori.
+
+# Required fields:
+name: ""              # app identifier, used as DevSpace component name
+image: ""             # container image to build/deploy
+port: 0               # primary port (used for /metrics discovery)
+
+# Optional:
+metrics_path: "/metrics"   # default: /metrics
+namespace: ""              # Kubernetes namespace, default: app name

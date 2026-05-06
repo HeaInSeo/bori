@@ -1,0 +1,14 @@
+# Example: how an app repo declares its kube-slint SLI thresholds
+app: my-app
+
+profiles:
+  devspace:
+    thresholds:
+      my_app_requests_total:   { min: 1 }
+      my_app_errors_total:     { max: 0 }
+  kind:
+    thresholds:
+      my_app_requests_total:   { min: 1 }
+  multipass:
+    thresholds:
+      my_app_requests_total:   { min: 1 }
