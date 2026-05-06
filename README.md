@@ -17,13 +17,13 @@ bori is a developer environment orchestrator for Kubernetes-native dataplane app
 | Role | Machine |
 |------|---------|
 | Code authoring / Git | Local development machine |
-| DevSpace execution / K8s operations | `100.123.80.48` (K8s VM host) |
+| DevSpace execution / K8s operations | K8s VM host (the machine running your cluster) |
 
-DevSpace and the bori adapter must be run **on `100.123.80.48`**.
+DevSpace and the bori adapter must be run **on the K8s VM host**.
 
 ---
 
-## Install DevSpace (run on `100.123.80.48`)
+## Install DevSpace (run on the K8s VM host)
 
 ### 1. Install DevSpace CLI
 
@@ -50,7 +50,7 @@ kubectl get nodes
 
 ---
 
-## Install bori (run on `100.123.80.48`)
+## Install bori (run on the K8s VM host)
 
 ### 1. Clone the repository
 

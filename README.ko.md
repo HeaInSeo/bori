@@ -17,13 +17,13 @@ English document: [README.md](README.md)
 | 역할 | 장비 |
 |------|------|
 | 코드 작성 / Git | 로컬 개발 장비 |
-| DevSpace 실행 / K8s 조작 | `100.123.80.48` (K8s VM 호스트) |
+| DevSpace 실행 / K8s 조작 | K8s VM 호스트 (클러스터가 실행 중인 장비) |
 
-DevSpace와 bori 어댑터는 **`100.123.80.48`에서 실행**합니다.
+DevSpace와 bori 어댑터는 **K8s VM 호스트에서 실행**합니다.
 
 ---
 
-## DevSpace 설치 (`100.123.80.48` 에서 실행)
+## DevSpace 설치 (K8s VM 호스트에서 실행)
 
 ### 1. DevSpace CLI 설치
 
@@ -50,7 +50,7 @@ kubectl get nodes
 
 ---
 
-## bori 설치 (`100.123.80.48` 에서 실행)
+## bori 설치 (K8s VM 호스트에서 실행)
 
 ### 1. 저장소 클론
 
