@@ -1,13 +1,9 @@
 version: v2beta1
 name: bori
 
-# Import component definitions from each app repo.
-# Each app declares itself — bori only composes.
-imports: []
-# Example:
-#   - path: ../JUMI/.bori/component.yaml
-#   - path: ../artifact-handoff/.bori/component.yaml
-#   - path: ../tori/.bori/component.yaml
+# bori는 각 앱 repo의 devspace.yaml을 직접 실행하지 않습니다.
+# DevSpace imports는 DevSpace config merge 용도입니다.
+# .bori/component.yaml은 bori adapter가 runtime에 discovery하는 별도 파일입니다.
 
 vars:
   BORI_PROFILE:
@@ -16,10 +12,8 @@ vars:
 
 hooks:
   - events: ["after:deploy"]
-    command: "go"
+    command: "bin/bori-devspace"
     args:
-      - "run"
-      - "./adapters/devspace"
       - "--profile"
       - "${BORI_PROFILE}"
       - "--v"

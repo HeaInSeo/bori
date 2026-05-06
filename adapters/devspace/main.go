@@ -65,7 +65,11 @@ func main() {
 		}
 		preAt := time.Now().UTC()
 
-		runSmoke(ctx, *smokeCmd, *smokeWait, app.Comp.Name, logf)
+		if err := runSmoke(ctx, *smokeCmd, *smokeWait, app.Comp.Name, logf); err != nil {
+			fmt.Fprintf(os.Stderr, "[bori] %s: smoke failed: %v\n", app.Comp.Name, err)
+			failures = append(failures, app.Comp.Name)
+			continue
+		}
 
 		logf("post-smoke scrape: %s", app.Comp.Name)
 		after, err := scrapeMetrics(ctx, app.Comp)
@@ -111,18 +115,19 @@ func main() {
 	}
 }
 
-func runSmoke(ctx context.Context, cmd string, wait time.Duration, appName string, logf func(string, ...any)) {
+func runSmoke(ctx context.Context, cmd string, wait time.Duration, appName string, logf func(string, ...any)) error {
 	if cmd != "" {
 		logf("smoke cmd: %s", cmd)
 		c := exec.CommandContext(ctx, "sh", "-c", cmd)
 		c.Stdout, c.Stderr = os.Stdout, os.Stderr
 		if err := c.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "[bori] %s: smoke cmd error: %v\n", appName, err)
+			return fmt.Errorf("smoke command: %w", err)
 		}
-		return
+		return nil
 	}
 	logf("waiting %s for %s", wait, appName)
 	time.Sleep(wait)
+	return nil
 }
 
 // boriRoot walks up from the executable to find the bori repo root
