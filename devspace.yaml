@@ -1,14 +1,23 @@
 version: v2beta1
 name: bori
 
-# bori는 각 앱 repo의 devspace.yaml을 직접 실행하지 않습니다.
-# DevSpace imports는 DevSpace config merge 용도입니다.
-# .bori/component.yaml은 bori adapter가 runtime에 discovery하는 별도 파일입니다.
+# bori is not a K8s workload — it is a host CLI binary.
+# This file is provided for running the gate evaluation standalone
+# (e.g., to re-evaluate already-running apps without redeploying).
+#
+# Normal usage: run `devspace dev` from each app directory.
+# The app's own devspace.yaml calls bori-devspace as an after:deploy hook.
 
 vars:
   BORI_PROFILE:
     source: env
     default: "devspace"
+  BORI_SMOKE_CMD:
+    source: env
+    default: ""
+  BORI_SMOKE_WAIT:
+    source: env
+    default: "15s"
 
 hooks:
   - events: ["after:deploy"]
@@ -16,4 +25,8 @@ hooks:
     args:
       - "--profile"
       - "${BORI_PROFILE}"
+      - "--smoke-cmd"
+      - "${BORI_SMOKE_CMD}"
+      - "--smoke-wait"
+      - "${BORI_SMOKE_WAIT}"
       - "--v"

@@ -1,31 +1,46 @@
 # bori — Build, Orchestration, and Runtime Integration
 
-bori is a developer environment orchestrator for Kubernetes-native dataplane applications.
+bori connects your K8s dataplane app to an SLI gate with **two files**.
 
-- Bridges **DevSpace** (inner-loop dev tool) with **kube-slint** (SLI gate tool).
-- Each app self-registers via a `.bori/` directory. bori maintains no hardcoded app list.
-- kube-slint remains an independent SLI tool. bori invokes `slint-gate` as a CLI binary only.
+Add a `.bori/` directory to any app repository. bori discovers it automatically,
+scrapes `/metrics` before and after a smoke step, and invokes `slint-gate` to
+evaluate whether the deployment regressed.
+
+- **Self-registration**: each app owns its own policy. bori has no hardcoded app list.
+- **DevSpace integration**: runs as an `after:deploy` hook — zero changes to your deploy flow.
+- **kube-slint independence**: bori shell-outs to the `slint-gate` binary only. kube-slint is fully usable without bori.
 
 한국어 문서: [README.ko.md](README.ko.md)
 
 ---
 
-## Environment
+## How it works
 
-### Development machine vs execution machine
+```
+Your app repository
+  └── .bori/
+        ├── component.yaml          # where to scrape metrics
+        └── policy.devspace.yaml    # what counts as a regression
 
-| Role | Machine |
-|------|---------|
-| Code authoring / Git | Local development machine |
-| DevSpace execution / K8s operations | K8s VM host (the machine running your cluster) |
+devspace dev  (run from your app directory)
+  └── after:deploy hook → bin/bori-devspace
+        ① scrape /metrics  (pre-smoke)
+        ② run smoke command (or wait)
+        ③ scrape /metrics  (post-smoke)
+        ④ compute deltas → sli-summary.json
+        ⑤ slint-gate evaluate → PASS / FAIL / WARN
+```
 
-DevSpace and the bori adapter must be run **on the K8s VM host**.
+bori scans the **parent directory** for sibling repos that contain `.bori/component.yaml`.
+All discovered apps are evaluated in the same run.
 
 ---
 
-## Install DevSpace (run on the K8s VM host)
+## Prerequisites
 
-### 1. Install DevSpace CLI
+Run the following on the **K8s VM host** (the machine running your cluster).
+
+### Install DevSpace
 
 ```bash
 curl -sSL https://github.com/loft-sh/devspace/releases/latest/download/devspace-linux-amd64 \
@@ -34,78 +49,50 @@ chmod +x /usr/local/bin/devspace
 devspace version
 ```
 
-### 2. Verify installation
-
-```bash
-devspace version
-# DevSpace version: v6.x.x
-```
-
-### 3. Verify kubectl connectivity
-
-```bash
-kubectl cluster-info
-kubectl get nodes
-```
-
----
-
-## Install bori (run on the K8s VM host)
-
-### 1. Clone the repository
+### Build bori
 
 ```bash
 git clone https://github.com/HeaInSeo/bori.git
 cd bori
+make build          # produces bin/bori-devspace
 ```
 
-### 2. Build the adapter binary
+### Install slint-gate
+
+bori resolves `slint-gate` from PATH.
 
 ```bash
-go build -o bin/bori-devspace ./adapters/devspace
-```
-
-### 3. Verify slint-gate is available
-
-The bori adapter resolves `slint-gate` from PATH.
-
-```bash
-# Build from the kube-slint repository
 cd ../kube-slint
 go build -o /usr/local/bin/slint-gate ./cmd/slint-gate
-slint-gate --help
 ```
 
 ---
 
-## App registration (self-registration)
+## Adding bori to your app (self-registration)
 
-Add a `.bori/` directory to each dataplane app repository.
-bori discovers these directories automatically. bori itself requires no changes.
-
-### `.bori/component.yaml`
+### Step 1 — `.bori/component.yaml`
 
 ```yaml
-name: my-app            # app name — must match the Kubernetes service name
-port: 8080              # app port
-metrics_path: /metrics  # Prometheus metrics path (default: /metrics)
-namespace: my-ns        # Kubernetes namespace
+name: my-app        # must match the Kubernetes Service name
+port: 8080
+metrics_path: /metrics
+namespace: my-ns
 ```
 
-### `.bori/policy.<profile>.yaml`
+### Step 2 — `.bori/policy.devspace.yaml`
 
 Uses the standard slint-gate policy format directly.
 
 ```yaml
 thresholds:
-  - name: "requests processed"
-    metric: my_app_requests_total   # metric name as exposed by /metrics
+  - name: "requests served"
+    metric: my_app_requests_total
     operator: ">="
-    value: 1
-  - name: "no errors"
+    value: 0
+  - name: "error rate acceptable"
     metric: my_app_errors_total
     operator: "<="
-    value: 0
+    value: 5
 
 regression:
   enabled: false
@@ -122,51 +109,76 @@ One file per profile:
 
 | File | Environment |
 |------|-------------|
-| `policy.devspace.yaml` | DevSpace inner-loop (primary dev environment) |
+| `policy.devspace.yaml` | DevSpace inner-loop |
 | `policy.kind.yaml` | kind cluster |
-| `policy.multipass.yaml` | Multipass VM lab |
+| `policy.multipass.yaml` | Multipass VM |
+
+### Step 3 — add the hook to your `devspace.yaml`
+
+```yaml
+vars:
+  BORI_SMOKE_CMD:
+    source: env
+    default: ""
+  BORI_SMOKE_WAIT:
+    source: env
+    default: "15s"
+
+hooks:
+  - events: ["after:deploy"]
+    command: "bori-devspace"
+    args:
+      - "--profile"
+      - "devspace"
+      - "--apps-dir"
+      - ".."
+      - "--smoke-cmd"
+      - "${BORI_SMOKE_CMD}"
+      - "--smoke-wait"
+      - "${BORI_SMOKE_WAIT}"
+      - "--v"
+```
+
+`bori-devspace` must be on PATH, or specify the full path (`/path/to/bori/bin/bori-devspace`).
+
+### That's it
+
+```bash
+cd your-app
+devspace dev
+# DevSpace deploys your app, then bori evaluates the SLI gate automatically.
+```
 
 ---
 
-## Usage
-
-### With `devspace dev`
+## Running bori standalone
 
 ```bash
-cd bori
-
-# Start development — DevSpace deploys apps, after:deploy hook runs bori gate
-devspace dev --profile devspace
-```
-
-### Run the adapter standalone
-
-```bash
-# Default (devspace profile, 10s wait before post-smoke scrape)
+# default: scan parent directory, devspace profile, 10s wait
 ./bin/bori-devspace --profile devspace --v
 
-# With a smoke command
+# with a smoke command
 ./bin/bori-devspace \
   --profile devspace \
   --smoke-cmd "kubectl exec -n my-ns deploy/my-app -- /bin/smoke-test" \
   --v
 
-# Specify the apps directory explicitly
+# explicit apps directory
 ./bin/bori-devspace \
-  --apps-dir /opt/go/src/github.com/HeaInSeo \
+  --apps-dir /path/to/repos \
   --profile devspace \
   --v
 ```
 
-### Adapter flags
+### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--profile` | `devspace` | Profile name: `devspace`, `kind`, `multipass` |
+| `--profile` | `devspace` | Profile: `devspace`, `kind`, `multipass` |
 | `--apps-dir` | parent of bori root | Directory to scan for app repos |
 | `--smoke-cmd` | _(none)_ | Shell command to run as smoke step |
 | `--smoke-wait` | `10s` | Wait duration when `--smoke-cmd` is not set |
-| `--out` | `bori-gate-output` | Output directory for artifacts |
+| `--out` | `bori-gate-output` | Output directory for gate artifacts |
 | `--slint-gate` | `slint-gate` | Path to the slint-gate binary |
 | `--v` | false | Verbose output |
 
@@ -174,54 +186,20 @@ devspace dev --profile devspace
 
 ```
 [bori] found 2 registered app(s)
-[bori] pre-smoke scrape: jumi
-[bori] waiting 10s for jumi
-[bori] post-smoke scrape: jumi
-[bori] jumi                 PASS — Policy checks passed.
-[bori] pre-smoke scrape: artifact-handoff
-[bori] waiting 10s for artifact-handoff
-[bori] post-smoke scrape: artifact-handoff
-[bori] artifact-handoff     PASS — Policy checks passed.
+[bori] pre-smoke scrape: my-app
+[bori] waiting 15s for my-app
+[bori] post-smoke scrape: my-app
+[bori] my-app                PASS — Policy checks passed.
 [bori] overall: PASS
 ```
 
 ---
 
-## Architecture
-
-```
-App repositories (JUMI, artifact-handoff, tori, sori, ...)
-  each with .bori/component.yaml + .bori/policy.<profile>.yaml
-        ↓ discovered automatically by bori
-bori/adapters/devspace (Go CLI)
-  ① kubectl port-forward → scrape /metrics (pre-smoke)
-  ② run smoke (--smoke-cmd or --smoke-wait)
-  ③ kubectl port-forward → scrape /metrics (post-smoke)
-  ④ compute deltas → write sli-summary.json
-  ⑤ invoke slint-gate --measurement-summary ... --policy ...
-        ↓
-slint-gate (kube-slint standalone binary)
-        ↓
-gate-summary.json  (PASS / FAIL / WARN / NO_GRADE)
-        ↓
-dev-space observability page (published by batch-integration)
-```
-
-### DevSpace hook
-
-```yaml
-# devspace.yaml
-hooks:
-  - events: ["after:deploy"]
-    command: "go"
-    args: ["run", "./adapters/devspace", "--profile", "${BORI_PROFILE}", "--v"]
-```
-
-### Relationship with kube-slint
+## Relationship with kube-slint
 
 bori does **not** import kube-slint as a Go library.
-It invokes the `slint-gate` binary via shell-out only.
-kube-slint remains a fully independent SLI tool usable without bori.
+It writes a `sli-summary.json` (slint.summary.v4 schema) and invokes `slint-gate` as a subprocess.
+kube-slint remains fully usable without bori.
 
 ---
 
@@ -231,8 +209,8 @@ kube-slint remains a fully independent SLI tool usable without bori.
 |------|--------|
 | DevSpace adapter | done |
 | Tilt adapter | planned |
-| kind / multipass profiles | supported via policy file |
 | Parallel multi-app evaluation | planned |
+| kind / multipass profiles | supported via policy file |
 
 ---
 
@@ -251,13 +229,11 @@ bori/
 │   │   └── collect.go    # kubectl port-forward + /metrics scraping
 │   └── tilt/             # planned
 ├── schema/
-│   ├── component.schema.yaml   # .bori/component.yaml spec
-│   └── policy.schema.yaml      # .bori/policy.<profile>.yaml spec
+│   ├── component.schema.yaml
+│   └── policy.schema.yaml
 ├── example/
 │   └── .bori/
-│       ├── component.yaml      # reference implementation
+│       ├── component.yaml
 │       └── policy.yaml
-├── devspace.yaml         # DevSpace compose + after:deploy hook
-└── docs/
-    └── architecture.md
+└── Makefile
 ```
