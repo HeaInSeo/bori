@@ -1,0 +1,26 @@
+apiVersion: bori.dev/v1alpha1
+kind: BoriVerificationPolicy
+metadata:
+  name: example-smoke
+spec:
+  # provider: kube-slint is the only supported provider.
+  provider: kube-slint
+  mode: cli
+
+  # policy: path to the kube-slint .slint/policy.yaml inside the app repo.
+  # bori passes this to slint-gate --policy.
+  policy: .slint/policy.yaml
+
+  # baseline: optional. path to a promoted revision's sli-summary.json.
+  # baseline is derived from a promoted BoriRevision, not an arbitrary file.
+  # baseline: verification/baselines/example.json
+
+  # failOn controls when bori treats the result as promotion-blocking.
+  #   NEVER          — bori reads JSON and decides (recommended)
+  #   FAIL           — block on FAIL only
+  #   FAIL_OR_NOGRADE — block on FAIL or NO_GRADE (recommended for promotion gates)
+  #   WARN           — block on WARN and above (strict)
+  failOn: FAIL_OR_NOGRADE
+
+  artifacts:
+    gateSummary: evidence/<app>-gate-summary.json

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -78,6 +79,23 @@ func buildDeltaSummary(req RunRequest) sliSummary {
 		},
 		Results: results,
 	}
+}
+
+// BuildMeasurementSummary creates sli-summary.json from before/after snapshots
+// and writes it under outDir. Returns the path to the written file.
+//
+// This is a temporary shim. Long-term, kube-slint owns measurement collection
+// and bori will consume a pre-built summary from it.
+func BuildMeasurementSummary(req RunRequest, outDir string) (string, error) {
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return "", fmt.Errorf("mkdir %s: %w", outDir, err)
+	}
+	sum := buildDeltaSummary(req)
+	path := filepath.Join(outDir, req.App+"-sli-summary.json")
+	if err := writeSummary(path, sum); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func writeSummary(path string, sum sliSummary) error {

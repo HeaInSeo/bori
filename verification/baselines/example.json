@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "slint.summary.v4",
+  "_comment": "This file is a placeholder. Real baselines are derived from promoted BoriRevision evidence.",
+  "_note": "See docs/verification-model.md §Baseline과 BoriRevision의 관계",
+  "generatedAt": "2026-06-01T00:00:00Z",
+  "config": {
+    "startedAt": "2026-06-01T00:00:00Z",
+    "finishedAt": "2026-06-01T00:00:00Z",
+    "mode": {
+      "location": "outside",
+      "trigger": "bori:promotion"
+    },
+    "tags": {
+      "profile": "kind",
+      "app": "example"
+    }
+  },
+  "reliability": {
+    "collectionStatus": "Complete",
+    "evaluationStatus": "Complete"
+  },
+  "results": []
+}

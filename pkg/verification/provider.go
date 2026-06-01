@@ -78,11 +78,13 @@ func IsBlocking(result GateResult, failOn FailOn) bool {
 
 // Request is the input to a verification provider.
 type Request struct {
-	App        string
-	Profile    string
-	PolicyPath string
-	FailOn     FailOn
-	OutDir     string
+	RunID                  string
+	App                    string
+	Profile                string
+	PolicyPath             string
+	MeasurementSummaryPath string // pre-built sli-summary.json path
+	FailOn                 FailOn
+	OutDir                 string
 }
 
 // Result is the output of a verification provider.

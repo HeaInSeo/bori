@@ -140,7 +140,12 @@ func cmdVerify(args []string) {
 
 	logf("found %d app(s) in %s", len(apps), *appsDir)
 
-	runner := &adapter.GateRunner{SlintGateBin: *slintGate}
+	// Phase 1.5: two-step verification flow
+	//   Step 1 — measure: build sli-summary.json (temporary shim)
+	//   Step 2 — evaluate: KubeSlintProvider calls slint-gate --fail-on NEVER,
+	//             reads JSON result, applies bori-side FailOn policy,
+	//             writes BoriVerificationRun artifact
+	provider := verification.NewKubeSlintProvider(*slintGate)
 	ctx := context.Background()
 	overall := verification.GateResultPass
 	var compStatuses []artifact.CompStatus
@@ -156,7 +161,9 @@ func cmdVerify(args []string) {
 			Name:       app.Comp.Name,
 			GateResult: string(verification.GateResultNoGrade),
 		}
+		evidenceDir := filepath.Join(runDir, "evidence", app.Comp.Name)
 
+		// Step 1: collect metrics
 		logf("pre-smoke scrape: %s", app.Comp.Name)
 		before, err := collect.ScrapeMetrics(ctx, collect.Target{
 			Namespace:   app.Comp.Namespace,
@@ -197,16 +204,32 @@ func cmdVerify(args []string) {
 		}
 		postAt := time.Now().UTC()
 
-		evidenceDir := filepath.Join(runDir, "evidence", app.Comp.Name)
-		req := adapter.RunRequest{
+		// Step 1b: build sli-summary.json (measurement shim)
+		summaryReq := adapter.RunRequest{
 			Profile:    *profile,
 			App:        app.Comp.Name,
 			PolicyPath: policyPath,
 			Before:     adapter.AppSnapshot{App: app.Comp.Name, At: preAt, Values: before},
 			After:      adapter.AppSnapshot{App: app.Comp.Name, At: postAt, Values: after},
-			OutDir:     evidenceDir,
 		}
-		result, err := runner.Run(ctx, req)
+		summaryPath, err := adapter.BuildMeasurementSummary(summaryReq, evidenceDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[bori] %s: build summary: %v\n", app.Comp.Name, err)
+			cs.Message = err.Error()
+			compStatuses = append(compStatuses, cs)
+			overall = verification.Max(overall, verification.GateResultNoGrade)
+			continue
+		}
+
+		// Step 2: evaluate via kube-slint provider (slint-gate --fail-on NEVER)
+		result, err := provider.Run(ctx, verification.Request{
+			RunID:                  runID,
+			App:                    app.Comp.Name,
+			PolicyPath:             policyPath,
+			MeasurementSummaryPath: summaryPath,
+			FailOn:                 verification.FailOnFailOrNoGrade,
+			OutDir:                 evidenceDir,
+		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[bori] %s: gate: %v\n", app.Comp.Name, err)
 			cs.Message = err.Error()
@@ -216,12 +239,10 @@ func cmdVerify(args []string) {
 		}
 
 		fmt.Printf("[bori] %-20s %s — %s\n", app.Comp.Name, result.GateResult, result.Message)
-
-		gateResult := verification.GateResult(result.GateResult)
-		cs.GateResult = string(gateResult)
+		cs.GateResult = string(result.GateResult)
 		cs.Message = result.Message
 		compStatuses = append(compStatuses, cs)
-		overall = verification.Max(overall, gateResult)
+		overall = verification.Max(overall, result.GateResult)
 	}
 
 	status.Components = compStatuses
@@ -234,7 +255,7 @@ func cmdVerify(args []string) {
 
 	fmt.Printf("[bori] overall: %s  run-id: %s\n", overall, runID)
 
-	if verification.IsBlocking(overall, verification.FailOnFail) {
+	if verification.IsBlocking(overall, verification.FailOnFailOrNoGrade) {
 		os.Exit(1)
 	}
 }
