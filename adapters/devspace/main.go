@@ -11,14 +11,16 @@ import (
 	"time"
 
 	"github.com/HeaInSeo/bori/pkg/adapter"
+	"github.com/HeaInSeo/bori/pkg/artifact"
+	"github.com/HeaInSeo/bori/pkg/verification"
 )
 
 func main() {
 	profile := flag.String("profile", "devspace", "profile: devspace|kind|multipass")
 	appsDir := flag.String("apps-dir", "", "directory containing app repos (default: parent of bori root)")
-	smokeCmd := flag.String("smoke-cmd", "", "shell command to run as smoke step")
+	smokeCmd := flag.String("smoke-cmd", "", "shell command for smoke step — developer mode only, unsafe in shared envs")
 	smokeWait := flag.Duration("smoke-wait", 10*time.Second, "wait duration if --smoke-cmd is not set")
-	outDir := flag.String("out", "bori-gate-output", "output directory for artifacts")
+	outDir := flag.String("out", "bori-gate-output", "output directory for gate artifacts")
 	slintGate := flag.String("slint-gate", "slint-gate", "path to slint-gate binary")
 	verbose := flag.Bool("v", false, "verbose output")
 	flag.Parse()
@@ -32,12 +34,34 @@ func main() {
 		*appsDir = filepath.Join(boriRoot(), "..")
 	}
 
+	runID := time.Now().UTC().Format("20060102-150405")
+	startedAt := time.Now().UTC()
+
+	// status.json is written on every exit — success or failure.
+	status := artifact.Status{
+		SchemaVersion: "bori.run.v1",
+		RunID:         runID,
+		Profile:       *profile,
+		StartedAt:     startedAt,
+		Phase:         "Failed",
+		Result:        "NO_GRADE",
+	}
+	defer func() {
+		status.FinishedAt = time.Now().UTC()
+		if err := artifact.Write(*outDir, status); err != nil {
+			fmt.Fprintf(os.Stderr, "[bori] warning: could not write status.json: %v\n", err)
+		}
+	}()
+
 	apps, err := discoverApps(*appsDir)
 	if err != nil {
-		fatalf("discover apps: %v", err)
+		fmt.Fprintf(os.Stderr, "[bori] discover apps: %v\n", err)
+		os.Exit(1)
 	}
 	if len(apps) == 0 {
 		fmt.Fprintln(os.Stderr, "[bori] no .bori/component.yaml files found — nothing to evaluate")
+		status.Phase = "Verified"
+		status.Result = "PASS"
 		os.Exit(0)
 	}
 
@@ -46,8 +70,8 @@ func main() {
 	runner := &adapter.GateRunner{SlintGateBin: *slintGate}
 	ctx := context.Background()
 
-	overall := "PASS"
-	var failures []string
+	overall := verification.GateResultPass
+	var compStatuses []artifact.CompStatus
 
 	for _, app := range apps {
 		policyPath := filepath.Join(app.BoriDir, fmt.Sprintf("policy.%s.yaml", *profile))
@@ -56,26 +80,34 @@ func main() {
 			continue
 		}
 
+		cs := artifact.CompStatus{Name: app.Comp.Name, GateResult: string(verification.GateResultNoGrade)}
+
 		logf("pre-smoke scrape: %s", app.Comp.Name)
 		before, err := scrapeMetrics(ctx, app.Comp)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[bori] %s: pre-smoke: %v\n", app.Comp.Name, err)
-			failures = append(failures, app.Comp.Name)
+			fmt.Fprintf(os.Stderr, "[bori] %s: pre-smoke scrape: %v\n", app.Comp.Name, err)
+			cs.Message = err.Error()
+			compStatuses = append(compStatuses, cs)
+			overall = verification.Max(overall, verification.GateResultNoGrade)
 			continue
 		}
 		preAt := time.Now().UTC()
 
 		if err := runSmoke(ctx, *smokeCmd, *smokeWait, app.Comp.Name, logf); err != nil {
-			fmt.Fprintf(os.Stderr, "[bori] %s: smoke failed: %v\n", app.Comp.Name, err)
-			failures = append(failures, app.Comp.Name)
+			fmt.Fprintf(os.Stderr, "[bori] %s: smoke: %v\n", app.Comp.Name, err)
+			cs.Message = err.Error()
+			compStatuses = append(compStatuses, cs)
+			overall = verification.Max(overall, verification.GateResultFail)
 			continue
 		}
 
 		logf("post-smoke scrape: %s", app.Comp.Name)
 		after, err := scrapeMetrics(ctx, app.Comp)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[bori] %s: post-smoke: %v\n", app.Comp.Name, err)
-			failures = append(failures, app.Comp.Name)
+			fmt.Fprintf(os.Stderr, "[bori] %s: post-smoke scrape: %v\n", app.Comp.Name, err)
+			cs.Message = err.Error()
+			compStatuses = append(compStatuses, cs)
+			overall = verification.Max(overall, verification.GateResultNoGrade)
 			continue
 		}
 		postAt := time.Now().UTC()
@@ -91,33 +123,46 @@ func main() {
 		result, err := runner.Run(ctx, req)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[bori] %s: gate: %v\n", app.Comp.Name, err)
-			failures = append(failures, app.Comp.Name)
+			cs.Message = err.Error()
+			compStatuses = append(compStatuses, cs)
+			overall = verification.Max(overall, verification.GateResultNoGrade)
 			continue
 		}
 
 		fmt.Printf("[bori] %-20s %s — %s\n", app.Comp.Name, result.GateResult, result.Message)
 
-		switch result.GateResult {
-		case "FAIL":
-			overall = "FAIL"
-			failures = append(failures, app.Comp.Name)
-		case "WARN":
-			if overall == "PASS" {
-				overall = "WARN"
-			}
-		}
+		gateResult := verification.GateResult(result.GateResult)
+		cs.GateResult = string(gateResult)
+		cs.Message = result.Message
+		compStatuses = append(compStatuses, cs)
+		overall = verification.Max(overall, gateResult)
+	}
+
+	status.Components = compStatuses
+	status.Result = string(overall)
+	if overall == verification.GateResultPass || overall == verification.GateResultWarn {
+		status.Phase = "Verified"
+	} else {
+		status.Phase = "Failed"
 	}
 
 	fmt.Printf("[bori] overall: %s\n", overall)
-	if len(failures) > 0 {
-		fmt.Printf("[bori] failed: %s\n", strings.Join(failures, ", "))
+
+	if verification.IsBlocking(overall, verification.FailOnFail) {
+		var failed []string
+		for _, cs := range compStatuses {
+			if cs.GateResult == string(verification.GateResultFail) {
+				failed = append(failed, cs.Name)
+			}
+		}
+		fmt.Printf("[bori] failed: %s\n", strings.Join(failed, ", "))
 		os.Exit(1)
 	}
 }
 
 func runSmoke(ctx context.Context, cmd string, wait time.Duration, appName string, logf func(string, ...any)) error {
 	if cmd != "" {
-		logf("smoke cmd: %s", cmd)
+		logf("smoke cmd (developer mode): %s", cmd)
 		c := exec.CommandContext(ctx, "sh", "-c", cmd)
 		c.Stdout, c.Stderr = os.Stdout, os.Stderr
 		if err := c.Run(); err != nil {
@@ -149,9 +194,4 @@ func boriRoot() string {
 		dir = parent
 	}
 	return "."
-}
-
-func fatalf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "[bori] "+format+"\n", args...)
-	os.Exit(1)
 }
