@@ -41,11 +41,13 @@ func (r *GateRunner) Run(ctx context.Context, req RunRequest) (*RunResult, error
 		"--measurement-summary", summaryPath,
 		"--policy", req.PolicyPath,
 		"--output", gatePath,
+		"--fail-on", "FAIL",
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		// slint-gate exits non-zero on FAIL; still read the output
+		// slint-gate exits non-zero when gate_result=FAIL and --fail-on=FAIL
+		// still attempt to read the output JSON before propagating the error
 		if _, statErr := os.Stat(gatePath); statErr != nil {
 			return nil, fmt.Errorf("slint-gate: %w", err)
 		}

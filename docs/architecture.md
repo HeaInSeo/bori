@@ -16,7 +16,7 @@ bori/adapters/devspace/run-gate.sh
         ↓
 kube-slint --profile devspace
         ↓
-PASS / FAIL → dev-space observability page
+PASS / FAIL → SF Observability
 ```
 
 ## Self-registration convention
@@ -55,9 +55,16 @@ Each app declares per-profile thresholds in `.bori/policy.yaml`.
 
 ## Relationship to batch-integration
 
-`batch-integration` continues to own:
-- vm-lab smoke scripts (multipass profile)
-- dev-space observability publish
-- JUMI/AH specific integration scripts
+`batch-integration` is a transition staging repo, not the long-term owner.
 
-bori does not replace these — it adds the DevSpace/Tilt adapter layer alongside them.
+Current reality:
+- some shared smoke, publish, and observability assets still live there
+- those assets were useful to bootstrap the first `JUMI/AH` path
+
+Target ownership:
+- app-specific DevSpace and `.bori/` assets stay in each app repo
+- DevSpace to kube-slint orchestration belongs in `bori`
+- shared gate semantics belong in `kube-slint`
+- observability publish and runtime assets belong in the `SF Observability` operating path
+
+bori is therefore a permanent adapter layer, while `batch-integration` is temporary.
