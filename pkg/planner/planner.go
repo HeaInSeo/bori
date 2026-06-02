@@ -1,5 +1,6 @@
 // Package planner loads a release + environment and produces a deploy plan.
-// It validates namespace policy and selects the correct adapter for each component.
+// It validates namespace policy, checks compatibility, and sorts components
+// in dependency order.
 package planner
 
 import (
@@ -8,6 +9,7 @@ import (
 
 	"github.com/HeaInSeo/bori/pkg/artifact"
 	"github.com/HeaInSeo/bori/pkg/model"
+	"github.com/HeaInSeo/bori/pkg/release"
 )
 
 // Planner builds BoriDeployPlans from release + environment definitions.
@@ -22,7 +24,10 @@ func New(boriRoot string) *Planner {
 }
 
 // Plan loads the named release and environment and returns a deploy plan.
-// Namespace violations are recorded in Plan.Violations; they do not cause an error.
+// The plan includes:
+//   - Components sorted in dependency order (dependencies first)
+//   - Namespace policy violations
+//   - Compatibility matrix violations
 func (p *Planner) Plan(runID, releaseName, envName string) (*artifact.Plan, error) {
 	rel, err := model.LoadReleaseByName(p.BoriRoot, releaseName)
 	if err != nil {
@@ -33,6 +38,30 @@ func (p *Planner) Plan(runID, releaseName, envName string) (*artifact.Plan, erro
 		return nil, fmt.Errorf("load environment %q: %w", envName, err)
 	}
 
+	// Load all components for ordering and compatibility checks.
+	comps := make(map[string]model.BoriComponent, len(rel.Components))
+	for _, ref := range rel.Components {
+		comp, err := model.LoadComponentByName(p.BoriRoot, ref.Name)
+		if err != nil {
+			return nil, fmt.Errorf("load component %q: %w", ref.Name, err)
+		}
+		comps[ref.Name] = comp
+	}
+
+	// Sort components in dependency order.
+	orderedRefs, err := release.Order(rel, comps)
+	if err != nil {
+		return nil, fmt.Errorf("order components: %w", err)
+	}
+
+	// Check compatibility matrix.
+	matrix, err := release.LoadMatrixForRelease(p.BoriRoot, rel)
+	if err != nil {
+		// Non-fatal: matrix may not exist yet.
+		matrix = release.CompatibilityMatrix{}
+	}
+	violations := release.CheckCompatibility(rel, matrix)
+
 	plan := &artifact.Plan{
 		SchemaVersion: "bori.plan.v1",
 		RunID:         runID,
@@ -41,17 +70,17 @@ func (p *Planner) Plan(runID, releaseName, envName string) (*artifact.Plan, erro
 		CreatedAt:     time.Now().UTC(),
 	}
 
+	for _, v := range violations {
+		plan.Violations = append(plan.Violations, "compat: "+v.String())
+	}
+
 	allowedNS := make(map[string]bool, len(env.NamespacePolicy.Allowed))
 	for _, ns := range env.NamespacePolicy.Allowed {
 		allowedNS[ns] = true
 	}
 
-	for _, ref := range rel.Components {
-		comp, err := model.LoadComponentByName(p.BoriRoot, ref.Name)
-		if err != nil {
-			return nil, fmt.Errorf("load component %q: %w", ref.Name, err)
-		}
-
+	for _, ref := range orderedRefs {
+		comp := comps[ref.Name]
 		ns := defaultNamespace(comp.Name)
 		adapterName := comp.Deploy.Adapter
 		if adapterName == "" {
@@ -66,17 +95,28 @@ func (p *Planner) Plan(runID, releaseName, envName string) (*artifact.Plan, erro
 			ImageRef:  comp.Image.Ref,
 			Action:    "deploy",
 		}
-
 		if !allowedNS[ns] {
 			cp.Action = "violation"
 			cp.Message = fmt.Sprintf("namespace %q not in environment allowed list", ns)
 			plan.Violations = append(plan.Violations, fmt.Sprintf("%s: %s", comp.Name, cp.Message))
 		}
-
 		plan.Components = append(plan.Components, cp)
 	}
 
 	return plan, nil
+}
+
+// LoadComps loads all BoriComponent files for a release and returns them by name.
+func (p *Planner) LoadComps(rel model.BoriRelease) (map[string]model.BoriComponent, error) {
+	comps := make(map[string]model.BoriComponent, len(rel.Components))
+	for _, ref := range rel.Components {
+		comp, err := model.LoadComponentByName(p.BoriRoot, ref.Name)
+		if err != nil {
+			return nil, fmt.Errorf("load component %q: %w", ref.Name, err)
+		}
+		comps[ref.Name] = comp
+	}
+	return comps, nil
 }
 
 // defaultNamespace returns the conventional namespace for a component.

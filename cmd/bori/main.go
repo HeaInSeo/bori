@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	devspaceadapter "github.com/HeaInSeo/bori/adapters/devspace"
@@ -28,6 +29,7 @@ import (
 	"github.com/HeaInSeo/bori/pkg/component"
 	"github.com/HeaInSeo/bori/pkg/model"
 	"github.com/HeaInSeo/bori/pkg/planner"
+	relpkg "github.com/HeaInSeo/bori/pkg/release"
 	"github.com/HeaInSeo/bori/pkg/security"
 	"github.com/HeaInSeo/bori/pkg/verification"
 )
@@ -287,10 +289,12 @@ type verifyTarget struct {
 // via app-directory discovery (legacy --apps-dir mode).
 func cmdVerify(args []string) {
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
-	// Model-based mode (Phase 3)
+	// Model-based mode (Phase 3+)
 	releaseName := fs.String("release", "", "release name — enables model-based verify")
 	envName := fs.String("env", "", "environment name (required with --release)")
 	boriRoot := fs.String("bori-root", ".", "path to bori repo root (used with --release)")
+	// Phase 4: incremental — only verify components affected by these changes
+	changedFlag := fs.String("changed", "", "comma-separated list of changed component names (incremental verify)")
 	// Legacy mode
 	appsDir := fs.String("apps-dir", "", "directory containing app repos (legacy, default: parent of cwd)")
 	// Common
@@ -332,8 +336,11 @@ func cmdVerify(args []string) {
 
 	var targets []verifyTarget
 
+	var releaseComps map[string]model.BoriComponent // populated in model-based mode
+	var orderedPlanComps []artifact.ComponentPlan   // plan components in dep order
+
 	if *releaseName != "" {
-		// --- Phase 3: model-based verification ---
+		// --- Phase 3+4: model-based verification ---
 		if *envName == "" {
 			fatalf("verify: --env is required with --release")
 		}
@@ -349,9 +356,43 @@ func cmdVerify(args []string) {
 		if err != nil {
 			fatalf("plan: %v", err)
 		}
+		orderedPlanComps = plan.Components
+
+		// Load components for AffectedComponents calculation.
+		rel, err := model.LoadReleaseByName(abs, *releaseName)
+		if err != nil {
+			fatalf("load release: %v", err)
+		}
+		releaseComps, err = planner.New(abs).LoadComps(rel)
+		if err != nil {
+			fatalf("load components: %v", err)
+		}
+
+		// Phase 4: compute affected set when --changed is given.
+		var affectedSet map[string]bool
+		if *changedFlag != "" {
+			changed := strings.Split(*changedFlag, ",")
+			var allRefs []model.ComponentRef
+			for _, cp := range plan.Components {
+				allRefs = append(allRefs, model.ComponentRef{Name: cp.Name, Version: cp.Version})
+			}
+			affected := relpkg.AffectedComponents(changed, allRefs, releaseComps)
+			affectedSet = make(map[string]bool, len(affected))
+			for _, n := range affected {
+				affectedSet[n] = true
+			}
+			fmt.Printf("[bori] incremental verify — changed: %s → affected: %s\n",
+				strings.Join(changed, ", "), strings.Join(affected, ", "))
+		}
+
 		for _, cp := range plan.Components {
 			if cp.Action == "violation" {
 				logf("skip %s: namespace violation", cp.Name)
+				continue
+			}
+			// Incremental mode: skip components not in the affected set.
+			if affectedSet != nil && !affectedSet[cp.Name] {
+				logf("skip %s: not affected by --changed", cp.Name)
 				continue
 			}
 			comp, err := model.LoadComponentByName(abs, cp.Name)
@@ -359,7 +400,6 @@ func cmdVerify(args []string) {
 				logf("skip %s: load component: %v", cp.Name, err)
 				continue
 			}
-			// Resolve the kube-slint policy from the component's first verification policy.
 			policies := resolvePolicies(abs, *appsDir, comp, *profile, logf)
 			if len(policies) == 0 {
 				logf("skip %s: no verification policies resolved", cp.Name)
@@ -447,6 +487,41 @@ func cmdVerify(args []string) {
 		status.Phase = "Verified"
 	} else {
 		status.Phase = "Failed"
+	}
+
+	// Write release-result.json for model-based runs.
+	if *releaseName != "" && len(orderedPlanComps) > 0 {
+		verifiedSet := make(map[string]artifact.CompStatus, len(compStatuses))
+		for _, cs := range compStatuses {
+			verifiedSet[cs.Name] = cs
+		}
+		var compGates []artifact.CompReleaseGate
+		for _, cp := range orderedPlanComps {
+			cg := artifact.CompReleaseGate{
+				Name:    cp.Name,
+				Version: cp.Version,
+			}
+			if cs, ok := verifiedSet[cp.Name]; ok {
+				cg.GateResult = cs.GateResult
+				cg.Affected = true
+			} else {
+				cg.GateResult = string(verification.GateResultPass)
+				cg.Skipped = true
+			}
+			compGates = append(compGates, cg)
+		}
+		rr := artifact.ReleaseResult{
+			SchemaVersion: "bori.releaseResult.v1",
+			RunID:         runID,
+			Release:       *releaseName,
+			Environment:   *envName,
+			CreatedAt:     time.Now().UTC(),
+			GateResult:    string(overall),
+			Components:    compGates,
+		}
+		if err := artifact.WriteReleaseResult(runDir, rr); err != nil {
+			fmt.Fprintf(os.Stderr, "[bori] warning: could not write release-result.json: %v\n", err)
+		}
 	}
 
 	fmt.Printf("[bori] overall: %s  run-id: %s", overall, runID)

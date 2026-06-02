@@ -1,0 +1,28 @@
+# Compatibility constraints for the jumi-ah-dev release.
+#
+# Each constraint defines: when component X is at version Y,
+# it requires component Z to be at least minVersion W.
+#
+# bori checks this matrix at plan time and blocks deployment if
+# any constraint is violated.
+
+constraints:
+  - component: jumi
+    version: v0.3.0
+    requires:
+      - component: artifact-handoff
+        minVersion: v0.2.0
+
+  - component: nan
+    version: v0.1.5
+    requires:
+      - component: artifact-handoff
+        minVersion: v0.2.0
+
+  - component: tori
+    version: v0.1.0
+    requires:
+      - component: jumi
+        minVersion: v0.3.0
+      - component: artifact-handoff
+        minVersion: v0.2.0
