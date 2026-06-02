@@ -1,0 +1,19 @@
+name: jumi-upgrade-churn-gate
+provider: kube-slint
+mode: cli
+
+# churn-policy.{profile}.yaml is the kube-slint SLI policy that evaluates
+# JUMI's Kubernetes object churn metrics (jobs/pods created delta, orphan count,
+# stuck terminating count, ownerRef missing count, cleanup duration, etc.).
+policy: .bori/churn-policy.{profile}.yaml
+
+# blocking: true — if this gate FAILS or produces NO_GRADE, bori halts
+# the entire verification run and blocks promotion immediately.
+# JUMI's client-go object churn is a hard gate; no partial pass is acceptable.
+blocking: true
+
+# failOn: FAIL_OR_NOGRADE — counter reset (JUMI restart / metric reset)
+# must NOT silently pass. Until kube-slint K2 (onCounterReset policy) is merged,
+# bori treats FAIL_OR_NOGRADE as the correct promotion gate policy here.
+# See docs/jumi-churn-gate.md §Counter reset 정책.
+failOn: FAIL_OR_NOGRADE

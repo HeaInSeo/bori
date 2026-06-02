@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "slint.summary.v4",
+  "_note": "Baseline derived from promoted BoriRevision. See docs/jumi-churn-gate.md §Baseline 관리.",
+  "_provenance": {
+    "sourceRevision": "jumi-v0.3.0",
+    "sourceRunId": "",
+    "promotedAt": "",
+    "verificationPolicy": "jumi-upgrade-churn-gate"
+  },
+  "generatedAt": "2026-06-02T00:00:00Z",
+  "config": {
+    "startedAt": "2026-06-02T00:00:00Z",
+    "finishedAt": "2026-06-02T00:00:00Z",
+    "mode": {
+      "location": "outside",
+      "trigger": "bori:kind"
+    },
+    "tags": {
+      "profile": "kind",
+      "app": "jumi",
+      "gate": "churn"
+    }
+  },
+  "reliability": {
+    "collectionStatus": "Complete",
+    "evaluationStatus": "Complete"
+  },
+  "results": [
+    { "id": "jumi_k8s_jobs_created_delta",    "kind": "delta_counter", "value": 4 },
+    { "id": "jumi_k8s_pods_created_delta",    "kind": "delta_counter", "value": 4 },
+    { "id": "jumi_k8s_objects_remaining_end", "kind": "gauge",         "value": 0 },
+    { "id": "jumi_k8s_orphan_objects_end",    "kind": "gauge",         "value": 0 },
+    { "id": "jumi_k8s_stuck_terminating_end", "kind": "gauge",         "value": 0 },
+    { "id": "jumi_k8s_ownerref_missing_end",  "kind": "gauge",         "value": 0 }
+  ]
+}

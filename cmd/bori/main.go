@@ -262,15 +262,25 @@ func cmdDeploy(args []string) {
 	}
 }
 
+// resolvedPolicy is a fully resolved verification policy for one component.
+type resolvedPolicy struct {
+	Name       string
+	PolicyPath string
+	FailOn     verification.FailOn
+	// Blocking: if true and the gate is FAIL/NO_GRADE, bori halts immediately.
+	Blocking bool
+}
+
 // verifyTarget carries everything the verification loop needs for one component.
+// Each component may have multiple policies; the measurement (sli-summary.json)
+// is built once and evaluated against all policies.
 type verifyTarget struct {
 	Name        string
 	Namespace   string
 	ServiceName string
 	Port        int
 	MetricsPath string
-	PolicyPath  string
-	FailOn      verification.FailOn
+	Policies    []resolvedPolicy
 }
 
 // cmdVerify runs verification for a release (--release/--env) or
@@ -350,9 +360,9 @@ func cmdVerify(args []string) {
 				continue
 			}
 			// Resolve the kube-slint policy from the component's first verification policy.
-			policyPath, failOn := resolvePolicy(abs, *appsDir, comp, *profile, logf)
-			if policyPath == "" {
-				logf("skip %s: no verification policy resolved", cp.Name)
+			policies := resolvePolicies(abs, *appsDir, comp, *profile, logf)
+			if len(policies) == 0 {
+				logf("skip %s: no verification policies resolved", cp.Name)
 				continue
 			}
 			targets = append(targets, verifyTarget{
@@ -361,8 +371,7 @@ func cmdVerify(args []string) {
 				ServiceName: comp.Name,
 				Port:        comp.Ports.Metrics,
 				MetricsPath: comp.Metrics.Path,
-				PolicyPath:  policyPath,
-				FailOn:      failOn,
+				Policies:    policies,
 			})
 		}
 	} else {
@@ -397,8 +406,12 @@ func cmdVerify(args []string) {
 				ServiceName: app.Comp.Name,
 				Port:        app.Comp.Port,
 				MetricsPath: app.Comp.MetricsPath,
-				PolicyPath:  policyPath,
-				FailOn:      verification.FailOnFailOrNoGrade,
+				Policies: []resolvedPolicy{{
+					Name:       "smoke",
+					PolicyPath: policyPath,
+					FailOn:     verification.FailOnFailOrNoGrade,
+					Blocking:   false,
+				}},
 			})
 		}
 	}
@@ -416,10 +429,16 @@ func cmdVerify(args []string) {
 	overall := verification.GateResultPass
 	var compStatuses []artifact.CompStatus
 
+	halted := false
 	for _, t := range targets {
-		cs, gr := runOneVerification(ctx, t, runID, runDir, *profile, *smokeCmd, *smokeWait, provider, logf)
+		cs, gr, blocked := runOneVerification(ctx, t, runID, runDir, *profile, *smokeCmd, *smokeWait, provider, logf)
 		compStatuses = append(compStatuses, cs)
 		overall = verification.Max(overall, gr)
+		if blocked {
+			fmt.Fprintf(os.Stderr, "[bori] blocking gate failed for %s — halting verification\n", t.Name)
+			halted = true
+			break
+		}
 	}
 
 	status.Components = compStatuses
@@ -430,13 +449,20 @@ func cmdVerify(args []string) {
 		status.Phase = "Failed"
 	}
 
-	fmt.Printf("[bori] overall: %s  run-id: %s\n", overall, runID)
-	if verification.IsBlocking(overall, verification.FailOnFailOrNoGrade) {
+	fmt.Printf("[bori] overall: %s  run-id: %s", overall, runID)
+	if halted {
+		fmt.Println("  (halted: blocking gate)")
+	} else {
+		fmt.Println()
+	}
+	if verification.IsBlocking(overall, verification.FailOnFailOrNoGrade) || halted {
 		os.Exit(1)
 	}
 }
 
-// runOneVerification executes the two-step scrape→gate flow for one target.
+// runOneVerification executes the scrape→summary→gate flow for one target.
+// The sli-summary.json is built once and evaluated against ALL policies in t.Policies.
+// Returns (CompStatus, worstGateResult, blockedByHardGate).
 func runOneVerification(
 	ctx context.Context,
 	t verifyTarget,
@@ -444,10 +470,11 @@ func runOneVerification(
 	smokeWait time.Duration,
 	provider verification.Provider,
 	logf func(string, ...any),
-) (artifact.CompStatus, verification.GateResult) {
+) (artifact.CompStatus, verification.GateResult, bool) {
 	cs := artifact.CompStatus{Name: t.Name, GateResult: string(verification.GateResultNoGrade)}
 	evidenceDir := filepath.Join(runDir, "evidence", t.Name)
 
+	// Step 1: collect metrics before smoke
 	logf("pre-smoke scrape: %s", t.Name)
 	before, err := collect.ScrapeMetrics(ctx, collect.Target{
 		Namespace:   t.Namespace,
@@ -459,7 +486,7 @@ func runOneVerification(
 		msg := security.RedactString(err.Error())
 		fmt.Fprintf(os.Stderr, "[bori] %s: pre-smoke scrape: %v\n", t.Name, msg)
 		cs.Message = msg
-		return cs, verification.GateResultNoGrade
+		return cs, verification.GateResultNoGrade, false
 	}
 	preAt := time.Now().UTC()
 
@@ -467,9 +494,10 @@ func runOneVerification(
 		msg := security.RedactString(err.Error())
 		fmt.Fprintf(os.Stderr, "[bori] %s: smoke: %v\n", t.Name, msg)
 		cs.Message = msg
-		return cs, verification.GateResultFail
+		return cs, verification.GateResultFail, false
 	}
 
+	// Step 2: collect metrics after smoke
 	logf("post-smoke scrape: %s", t.Name)
 	after, err := collect.ScrapeMetrics(ctx, collect.Target{
 		Namespace:   t.Namespace,
@@ -481,64 +509,107 @@ func runOneVerification(
 		msg := security.RedactString(err.Error())
 		fmt.Fprintf(os.Stderr, "[bori] %s: post-smoke scrape: %v\n", t.Name, msg)
 		cs.Message = msg
-		return cs, verification.GateResultNoGrade
+		return cs, verification.GateResultNoGrade, false
 	}
 	postAt := time.Now().UTC()
 
+	// Step 3: build ONE sli-summary.json shared by all policies
 	summaryReq := adapter.RunRequest{
-		Profile:    profile,
-		App:        t.Name,
-		PolicyPath: t.PolicyPath,
-		Before:     adapter.AppSnapshot{App: t.Name, At: preAt, Values: before},
-		After:      adapter.AppSnapshot{App: t.Name, At: postAt, Values: after},
+		Profile: profile,
+		App:     t.Name,
+		Before:  adapter.AppSnapshot{App: t.Name, At: preAt, Values: before},
+		After:   adapter.AppSnapshot{App: t.Name, At: postAt, Values: after},
 	}
 	summaryPath, err := adapter.BuildMeasurementSummary(summaryReq, evidenceDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[bori] %s: build summary: %v\n", t.Name, err)
 		cs.Message = err.Error()
-		return cs, verification.GateResultNoGrade
+		return cs, verification.GateResultNoGrade, false
 	}
 
-	result, err := provider.Run(ctx, verification.Request{
-		RunID:                  runID,
-		App:                    t.Name,
-		PolicyPath:             t.PolicyPath,
-		MeasurementSummaryPath: summaryPath,
-		FailOn:                 t.FailOn,
-		OutDir:                 evidenceDir,
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[bori] %s: gate: %v\n", t.Name, err)
-		cs.Message = err.Error()
-		return cs, verification.GateResultNoGrade
+	// Step 4: evaluate each policy against the same summary
+	overall := verification.GateResultPass
+	for _, pol := range t.Policies {
+		if _, statErr := os.Stat(pol.PolicyPath); os.IsNotExist(statErr) {
+			logf("skip policy %q for %s: file not found: %s", pol.Name, t.Name, pol.PolicyPath)
+			// Missing churn policy file is not fatal in dev; mark as NO_GRADE.
+			overall = verification.Max(overall, verification.GateResultNoGrade)
+			if pol.Blocking {
+				cs.GateResult = string(overall)
+				cs.Message = fmt.Sprintf("blocking policy %q: policy file not found", pol.Name)
+				return cs, overall, true
+			}
+			continue
+		}
+
+		polOutDir := filepath.Join(evidenceDir, pol.Name)
+		result, err := provider.Run(ctx, verification.Request{
+			RunID:                  runID,
+			App:                    t.Name,
+			PolicyPath:             pol.PolicyPath,
+			MeasurementSummaryPath: summaryPath,
+			FailOn:                 pol.FailOn,
+			OutDir:                 polOutDir,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[bori] %s/%s: gate error: %v\n", t.Name, pol.Name, err)
+			overall = verification.Max(overall, verification.GateResultNoGrade)
+			if pol.Blocking {
+				cs.GateResult = string(overall)
+				cs.Message = fmt.Sprintf("blocking policy %q: gate error: %v", pol.Name, err)
+				return cs, overall, true
+			}
+			continue
+		}
+
+		fmt.Printf("[bori] %-24s %-32s %s\n", t.Name, pol.Name, result.GateResult)
+		overall = verification.Max(overall, result.GateResult)
+
+		// Check blocking: if this policy is blocking and the result is bad, halt.
+		if pol.Blocking && verification.IsBlocking(result.GateResult, pol.FailOn) {
+			cs.GateResult = string(overall)
+			cs.Message = fmt.Sprintf("blocking policy %q: %s — %s", pol.Name, result.GateResult, result.Message)
+			return cs, overall, true
+		}
 	}
 
-	fmt.Printf("[bori] %-24s %s — %s\n", t.Name, result.GateResult, result.Message)
-	cs.GateResult = string(result.GateResult)
-	cs.Message = result.Message
-	return cs, result.GateResult
+	cs.GateResult = string(overall)
+	return cs, overall, false
 }
 
-// resolvePolicy finds the kube-slint policy path and FailOn for a component.
-// It uses the component's first verification policy entry from the bori registry.
-func resolvePolicy(boriRoot, appsDir string, comp model.BoriComponent, profile string, logf func(string, ...any)) (string, verification.FailOn) {
-	if len(comp.VerificationPolicies) == 0 {
-		return "", verification.FailOnFailOrNoGrade
-	}
-	pol, err := model.LoadPolicyByName(boriRoot, comp.VerificationPolicies[0])
-	if err != nil {
-		logf("could not load policy %q: %v", comp.VerificationPolicies[0], err)
-		// Fall back to app-local policy convention.
-		fallback := filepath.Join(appsDir, comp.Name, ".bori", fmt.Sprintf("policy.%s.yaml", profile))
-		return fallback, verification.FailOnFailOrNoGrade
-	}
+// resolvePolicies returns all resolved verification policies for a component.
+// Each BoriVerificationPolicy in comp.VerificationPolicies becomes one resolvedPolicy.
+// Missing policy files in the bori registry fall back to the app-local convention.
+func resolvePolicies(boriRoot, appsDir string, comp model.BoriComponent, profile string, logf func(string, ...any)) []resolvedPolicy {
 	appDir := filepath.Join(appsDir, comp.Name)
-	policyPath := pol.ResolvePolicyPath(appDir, profile)
-	failOn := verification.FailOn(pol.FailOn)
-	if failOn == "" {
-		failOn = verification.FailOnFailOrNoGrade
+	var policies []resolvedPolicy
+
+	for _, polName := range comp.VerificationPolicies {
+		pol, err := model.LoadPolicyByName(boriRoot, polName)
+		if err != nil {
+			logf("policy %q not in registry, falling back to app-local convention: %v", polName, err)
+			// Fallback: resolve directly from app repo (.bori/policy.{profile}.yaml)
+			policies = append(policies, resolvedPolicy{
+				Name:       polName,
+				PolicyPath: filepath.Join(appDir, ".bori", fmt.Sprintf("policy.%s.yaml", profile)),
+				FailOn:     verification.FailOnFailOrNoGrade,
+				Blocking:   false,
+			})
+			continue
+		}
+		failOn := verification.FailOn(pol.FailOn)
+		if failOn == "" {
+			failOn = verification.FailOnFailOrNoGrade
+		}
+		policies = append(policies, resolvedPolicy{
+			Name:       pol.Name,
+			PolicyPath: pol.ResolvePolicyPath(appDir, profile),
+			FailOn:     failOn,
+			Blocking:   pol.Blocking,
+		})
 	}
-	return policyPath, failOn
+
+	return policies
 }
 
 // cmdStatus reads and prints the run archive status.json for a given run ID.
