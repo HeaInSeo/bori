@@ -35,6 +35,7 @@ import (
 	"github.com/HeaInSeo/bori/pkg/revision"
 	"github.com/HeaInSeo/bori/pkg/rollout"
 	"github.com/HeaInSeo/bori/pkg/security"
+	shadowpkg "github.com/HeaInSeo/bori/pkg/shadow"
 	"github.com/HeaInSeo/bori/pkg/verification"
 )
 
@@ -56,6 +57,8 @@ func main() {
 		cmdRevision(os.Args[2:])
 	case "rollout":
 		cmdRollout(os.Args[2:])
+	case "shadow":
+		cmdShadow(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "bori: unknown subcommand %q\n", os.Args[1])
 		usage()
@@ -67,10 +70,13 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `bori — genomic dataplane control plane gateway
 
 Usage:
-  bori plan   --release <name> --env <name> [--bori-root <dir>] [--bori-dir <dir>]
-  bori deploy --release <name> --env <name> [--bori-root <dir>] [--apps-dir <dir>] [--bori-dir <dir>]
-  bori verify [--apps-dir <dir>] [--profile <p>] [--bori-dir <dir>]
-  bori status --run <run-id> [--bori-dir <dir>]`)
+  bori plan          --release <name> --env <name> [--bori-root <dir>]
+  bori deploy        --release <name> --env <name> [--bori-root <dir>] [--apps-dir <dir>]
+  bori verify        [--release <name> --env <name>] [--changed <a,b>] [--bori-root <dir>]
+  bori status        --run <run-id> [--bori-dir <dir>]
+  bori revision list [--release <name>] [--bori-dir <dir>]
+  bori rollout plan  --release <name> --env <name> [--bori-root <dir>]
+  bori shadow status --release <name> [--bori-root <dir>] [--bori-dir <dir>]`)
 }
 
 // cmdPlan loads the release/environment model and prints the deploy plan.
@@ -912,6 +918,112 @@ func cmdRolloutPlan(args []string) {
 	_ = enc.Encode(ro)
 
 	fmt.Printf("[bori] rollout plan: %s  revision: %s\n", ro.RolloutID, rev.RevisionID)
+}
+
+// cmdShadow dispatches shadow mode sub-commands.
+func cmdShadow(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: bori shadow status --release <name> [--bori-root <dir>]")
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "status":
+		cmdShadowStatus(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "bori shadow: unknown sub-command %q\n", args[0])
+		os.Exit(1)
+	}
+}
+
+// cmdShadowStatus reconciles desired vs actual state for a release and prints
+// a status report — without applying anything to the cluster.
+func cmdShadowStatus(args []string) {
+	fs := flag.NewFlagSet("shadow status", flag.ExitOnError)
+	releaseName := fs.String("release", "", "release name (required)")
+	boriRoot := fs.String("bori-root", ".", "path to bori repo root")
+	boriDir := fs.String("bori-dir", ".bori", "local .bori directory")
+	outputJSON := fs.Bool("json", false, "output raw JSON instead of human-readable summary")
+	_ = fs.Parse(args)
+
+	if *releaseName == "" {
+		fmt.Fprintln(os.Stderr, "bori shadow status: --release is required")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(*boriRoot)
+	if err != nil {
+		fatalf("abs bori-root: %v", err)
+	}
+
+	rel, err := model.LoadReleaseByName(abs, *releaseName)
+	if err != nil {
+		fatalf("load release %q: %v", *releaseName, err)
+	}
+
+	state, err := shadowpkg.Reconcile(rel, *boriDir)
+	if err != nil {
+		fatalf("shadow reconcile: %v", err)
+	}
+
+	if *outputJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		enc.SetEscapeHTML(false)
+		_ = enc.Encode(state)
+		return
+	}
+
+	// Human-readable summary.
+	fmt.Printf("[bori shadow] release: %s\n", state.Release)
+	fmt.Printf("  computed at:      %s\n", state.ComputedAt.Format("2006-01-02 15:04:05 UTC"))
+	fmt.Printf("  actual revision:  %s\n", orNone(state.ActualRevision))
+	fmt.Println()
+	fmt.Println("  Conditions:")
+	for _, c := range state.Conditions {
+		icon := "  "
+		switch c.Status {
+		case "True":
+			icon = "✓ "
+		case "False":
+			icon = "✗ "
+		default:
+			icon = "? "
+		}
+		fmt.Printf("    %s%-12s  %s\n", icon, c.Type, c.Message)
+	}
+	fmt.Println()
+	fmt.Println("  Drift:")
+	for _, d := range state.Drift {
+		icon := "="
+		if d.SyncStatus == "out-of-sync" {
+			icon = "≠"
+		} else if d.SyncStatus == "unknown" {
+			icon = "?"
+		}
+		fmt.Printf("    %s  %-24s  desired: %-10s  actual: %s\n",
+			icon, d.Component, d.DesiredVersion, orNone(d.ActualVersion))
+	}
+
+	// Exit 1 if any component is out-of-sync or uninstalled.
+	degraded := false
+	for _, c := range state.Conditions {
+		if c.Type == "Degraded" && c.Status == "True" {
+			degraded = true
+		}
+		if c.Type == "Installed" && c.Status == "False" {
+			degraded = true
+		}
+	}
+	if degraded {
+		os.Exit(1)
+	}
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "(none)"
+	}
+	return s
 }
 
 func fatalf(format string, args ...any) {
