@@ -1,0 +1,26 @@
+name: artifact-handoff
+kind: control-component
+version: v0.2.0
+
+image:
+  ref: ghcr.io/heainseo/artifact-handoff:v0.2.0
+
+ports:
+  metrics: 8080
+  health: 8081
+
+health:
+  path: /healthz
+
+metrics:
+  path: /metrics
+
+dependencies: []
+
+contracts:
+  - artifact-handoff-resolve-v1
+  - artifact-handoff-placement-v1
+
+verificationPolicies:
+  - jumi-ah-smoke
+  - ah-materialization-smoke

@@ -1,0 +1,22 @@
+# releases/<name>/release.yaml schema
+# A release is a pinned, compatible set of component versions.
+
+# Required:
+name: ""              # release identifier
+
+components: []        # list of {name, version} component pins
+  # - name: jumi
+  #   version: v0.3.0
+
+# Optional:
+compatibility:
+  matrix: ""          # path to version compatibility matrix YAML
+
+verification:
+  policies: []        # list of BoriVerificationPolicy names to run
+
+promotion:
+  requiredGateResult: PASS   # PASS | WARN
+  baselinePolicy:
+    updateFrom: promoted-revision-evidence
+    reviewRequired: true

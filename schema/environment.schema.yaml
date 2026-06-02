@@ -1,0 +1,20 @@
+# environments/<name>/environment.yaml schema
+# Defines the Kubernetes cluster target and access policy for a bori environment.
+
+# Required:
+name: ""              # environment identifier
+
+cluster:
+  kubeconfig: ""      # path or ${KUBECONFIG} env reference
+  context: ""         # kubectl context name (optional, uses current if empty)
+
+namespacePolicy:
+  allowed: []         # list of namespaces bori may deploy into
+  allowClusterScopedResources: false  # CRD/ClusterRole etc. require explicit opt-in
+
+registry:
+  default: ""         # default container registry prefix (e.g. ghcr.io/heainseo)
+
+secrets:
+  mode: reference-only  # reference-only: Secret values never stored in run archive
+  redaction: strict     # strict: all TOKEN/PASSWORD/SECRET/KEY env vars redacted

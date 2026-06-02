@@ -1,0 +1,27 @@
+name: tori
+kind: control-component
+version: v0.1.0
+
+image:
+  ref: ghcr.io/heainseo/tori:v0.1.0
+
+ports:
+  metrics: 8080
+  health: 8081
+
+health:
+  path: /healthz
+
+metrics:
+  path: /metrics
+
+dependencies:
+  - jumi
+  - artifact-handoff
+
+contracts:
+  - tori-pipeline-authoring-v1
+  - tori-pipeline-execution-v1
+
+verificationPolicies:
+  - tori-pipeline-smoke

@@ -1,0 +1,20 @@
+name: kind
+
+cluster:
+  kubeconfig: ${KUBECONFIG}
+  context: kind-kind
+
+namespacePolicy:
+  allowed:
+    - jumi-system
+    - artifact-system
+    - nan-system
+    - tori-system
+  allowClusterScopedResources: false
+
+registry:
+  default: ghcr.io/heainseo
+
+secrets:
+  mode: reference-only
+  redaction: strict

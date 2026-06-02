@@ -1,0 +1,26 @@
+name: nan
+kind: data-component
+version: v0.1.5
+
+image:
+  ref: ghcr.io/heainseo/nan:v0.1.5
+
+ports:
+  metrics: 8080
+  health: 8081
+
+health:
+  path: /healthz
+
+metrics:
+  path: /metrics
+
+dependencies:
+  - artifact-handoff
+
+contracts:
+  - nan-materialization-v1
+  - nan-fetch-v1
+
+verificationPolicies:
+  - nan-materialization-smoke

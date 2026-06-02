@@ -1,0 +1,23 @@
+name: jumi-ah-dev
+
+components:
+  - name: jumi
+    version: v0.3.0
+  - name: artifact-handoff
+    version: v0.2.0
+  - name: nan
+    version: v0.1.5
+
+compatibility:
+  matrix: compatibility/jumi-ah-nan.yaml
+
+verification:
+  policies:
+    - jumi-ah-smoke
+    - jumi-upgrade-churn-gate
+
+promotion:
+  requiredGateResult: PASS
+  baselinePolicy:
+    updateFrom: promoted-revision-evidence
+    reviewRequired: true

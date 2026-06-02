@@ -1,0 +1,30 @@
+name: jumi
+kind: control-component
+version: v0.3.0
+
+image:
+  # Use digest over tag for immutability.
+  # Update this when promoting a new JUMI revision.
+  ref: ghcr.io/heainseo/jumi:v0.3.0
+
+ports:
+  metrics: 8080
+  health: 8081
+
+health:
+  path: /healthz
+
+metrics:
+  path: /metrics
+
+dependencies:
+  - artifact-handoff
+
+contracts:
+  - jumi-executor-spawner-v1
+
+# JUMI uses executor -> spawner -> client-go to create Kubernetes objects dynamically.
+# A churn gate is required in addition to the standard health/smoke/SLI gates.
+verificationPolicies:
+  - jumi-ah-smoke
+  - jumi-upgrade-churn-gate
