@@ -2,10 +2,12 @@
 //
 // Usage:
 //
-//	bori plan   --release <name> --env <name> [--bori-root <dir>]
-//	bori deploy --release <name> --env <name> [--bori-root <dir>] [--apps-dir <dir>]
-//	bori verify [--apps-dir <dir>] [--profile <p>] [--bori-dir <dir>]
-//	bori status --run <run-id> [--bori-dir <dir>]
+//	bori plan     --release <name> --env <name> [--bori-root <dir>]
+//	bori deploy   --release <name> --env <name> [--bori-root <dir>] [--apps-dir <dir>]
+//	bori verify   [--release <name> --env <name>] [--changed <a,b>] [--bori-root <dir>]
+//	bori status   --run <run-id> [--bori-dir <dir>]
+//	bori revision list [--release <name>] [--bori-dir <dir>]
+//	bori rollout  plan --release <name> --env <name> [--bori-root <dir>]
 package main
 
 import (
@@ -30,6 +32,8 @@ import (
 	"github.com/HeaInSeo/bori/pkg/model"
 	"github.com/HeaInSeo/bori/pkg/planner"
 	relpkg "github.com/HeaInSeo/bori/pkg/release"
+	"github.com/HeaInSeo/bori/pkg/revision"
+	"github.com/HeaInSeo/bori/pkg/rollout"
 	"github.com/HeaInSeo/bori/pkg/security"
 	"github.com/HeaInSeo/bori/pkg/verification"
 )
@@ -48,6 +52,10 @@ func main() {
 		cmdVerify(os.Args[2:])
 	case "status":
 		cmdStatus(os.Args[2:])
+	case "revision":
+		cmdRevision(os.Args[2:])
+	case "rollout":
+		cmdRollout(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "bori: unknown subcommand %q\n", os.Args[1])
 		usage()
@@ -90,6 +98,21 @@ func cmdPlan(args []string) {
 
 	if err := artifact.WritePlan(runDir, *plan); err != nil {
 		fmt.Fprintf(os.Stderr, "[bori] warning: could not write plan.json: %v\n", err)
+	}
+
+	// Build revision snapshot (pending) and rollout plan from the deploy plan.
+	rev, err := revision.BuildFromPlan(*plan, *boriRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[bori] warning: could not build revision: %v\n", err)
+	} else {
+		if _, err := revision.Write(*boriDir, rev); err != nil {
+			fmt.Fprintf(os.Stderr, "[bori] warning: could not write revision: %v\n", err)
+		}
+		ro := rollout.BuildFromPlan(*plan, rev.RevisionID)
+		if _, err := rollout.Write(*boriDir, ro); err != nil {
+			fmt.Fprintf(os.Stderr, "[bori] warning: could not write rollout: %v\n", err)
+		}
+		fmt.Printf("[bori] revision: %s  content-hash: %s\n", rev.RevisionID, rev.ContentHash)
 	}
 
 	enc := json.NewEncoder(os.Stdout)
@@ -150,7 +173,12 @@ func cmdDeploy(args []string) {
 		}
 	}()
 
-	p := planner.New(*boriRoot)
+	abs, err := filepath.Abs(*boriRoot)
+	if err != nil {
+		fatalf("abs bori-root: %v", err)
+	}
+
+	p := planner.New(abs)
 	plan, err := p.Plan(runID, *releaseName, *envName)
 	if err != nil {
 		fatalf("plan: %v", err)
@@ -164,6 +192,21 @@ func cmdDeploy(args []string) {
 			fmt.Fprintf(os.Stderr, "  - %s\n", v)
 		}
 		os.Exit(1)
+	}
+
+	// Create a pending revision snapshot before deploying.
+	rev, revErr := revision.BuildFromPlan(*plan, abs)
+	if revErr == nil {
+		if _, err := revision.Write(*boriDir, rev); err != nil {
+			fmt.Fprintf(os.Stderr, "[bori] warning: could not write revision: %v\n", err)
+			revErr = err
+		} else {
+			fmt.Printf("[bori] revision: %s  content-hash: %s\n", rev.RevisionID, rev.ContentHash)
+		}
+		ro := rollout.BuildFromPlan(*plan, rev.RevisionID)
+		if _, err := rollout.Write(*boriDir, ro); err != nil {
+			fmt.Fprintf(os.Stderr, "[bori] warning: could not write rollout: %v\n", err)
+		}
 	}
 
 	adapters := buildAdapterRegistry(*appsDir)
@@ -248,6 +291,18 @@ func cmdDeploy(args []string) {
 	}
 	if err := artifact.WriteDeployResult(runDir, dr); err != nil {
 		fmt.Fprintf(os.Stderr, "[bori] warning: could not write deploy-result.json: %v\n", err)
+	}
+
+	// On successful deploy, promote the revision and record baseline provenance.
+	if overall == verification.GateResultPass && revErr == nil {
+		baselineRef := fmt.Sprintf("%s/evidence", runDir)
+		revision.Promote(&rev, baselineRef)
+		rev.VerificationRunID = runID
+		if _, err := revision.Write(*boriDir, rev); err != nil {
+			fmt.Fprintf(os.Stderr, "[bori] warning: could not update promoted revision: %v\n", err)
+		} else {
+			fmt.Printf("[bori] revision promoted: %s\n", rev.RevisionID)
+		}
 	}
 
 	status.Components = compStatuses
@@ -754,6 +809,109 @@ func compForDeploy(boriRoot, name, version, imageRef string) (model.BoriComponen
 // envForDeploy loads a BoriEnvironment from the registry.
 func envForDeploy(boriRoot, envName string) (model.BoriEnvironment, error) {
 	return model.LoadEnvironmentByName(boriRoot, envName)
+}
+
+// cmdRevision dispatches revision sub-commands.
+func cmdRevision(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: bori revision list [--release <name>] [--bori-dir <dir>]")
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "list":
+		cmdRevisionList(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "bori revision: unknown sub-command %q\n", args[0])
+		os.Exit(1)
+	}
+}
+
+// cmdRevisionList prints stored revisions, newest first.
+func cmdRevisionList(args []string) {
+	fs := flag.NewFlagSet("revision list", flag.ExitOnError)
+	filterRelease := fs.String("release", "", "filter by release name")
+	boriDir := fs.String("bori-dir", ".bori", "local .bori directory")
+	_ = fs.Parse(args)
+
+	revs, err := revision.List(*boriDir)
+	if err != nil {
+		fatalf("list revisions: %v", err)
+	}
+	if len(revs) == 0 {
+		fmt.Println("[bori] no revisions found")
+		return
+	}
+
+	fmt.Printf("%-52s  %-18s  %-11s  %-16s  %s\n",
+		"REVISION ID", "RELEASE", "STATUS", "CONTENT HASH", "CREATED AT")
+	fmt.Println(strings.Repeat("-", 120))
+	for _, rev := range revs {
+		if *filterRelease != "" && rev.Release != *filterRelease {
+			continue
+		}
+		fmt.Printf("%-52s  %-18s  %-11s  %-16s  %s\n",
+			rev.RevisionID, rev.Release, rev.PromotionStatus,
+			rev.ContentHash, rev.CreatedAt.Format("2006-01-02 15:04:05"))
+	}
+}
+
+// cmdRollout dispatches rollout sub-commands.
+func cmdRollout(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: bori rollout plan --release <name> --env <name>")
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "plan":
+		cmdRolloutPlan(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "bori rollout: unknown sub-command %q\n", args[0])
+		os.Exit(1)
+	}
+}
+
+// cmdRolloutPlan generates a dry-run rollout plan without applying anything.
+func cmdRolloutPlan(args []string) {
+	fs := flag.NewFlagSet("rollout plan", flag.ExitOnError)
+	releaseName := fs.String("release", "", "release name (required)")
+	envName := fs.String("env", "", "environment name (required)")
+	boriRoot := fs.String("bori-root", ".", "path to bori repo root")
+	boriDir := fs.String("bori-dir", ".bori", "local .bori directory")
+	_ = fs.Parse(args)
+
+	if *releaseName == "" || *envName == "" {
+		fmt.Fprintln(os.Stderr, "bori rollout plan: --release and --env are required")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(*boriRoot)
+	if err != nil {
+		fatalf("abs bori-root: %v", err)
+	}
+
+	runID := time.Now().UTC().Format("20060102-150405")
+	p := planner.New(abs)
+	plan, err := p.Plan(runID, *releaseName, *envName)
+	if err != nil {
+		fatalf("plan: %v", err)
+	}
+
+	rev, err := revision.BuildFromPlan(*plan, abs)
+	if err != nil {
+		fatalf("build revision: %v", err)
+	}
+	ro := rollout.BuildFromPlan(*plan, rev.RevisionID)
+
+	if _, err := rollout.Write(*boriDir, ro); err != nil {
+		fmt.Fprintf(os.Stderr, "[bori] warning: could not write rollout: %v\n", err)
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(ro)
+
+	fmt.Printf("[bori] rollout plan: %s  revision: %s\n", ro.RolloutID, rev.RevisionID)
 }
 
 func fatalf(format string, args ...any) {
