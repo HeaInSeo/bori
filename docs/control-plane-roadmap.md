@@ -64,6 +64,7 @@ bori의 최종 목표는 다음이다.
 - artifact-handoff
 - node-artifact-runtime / nan
 - tori
+- NodeSentinel (2026-06-02 추가)
 - 이후 추가될 genomic dataplane app
 
 하지만 현재 단계의 목표는 operator 구현이 아니다.

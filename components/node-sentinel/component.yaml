@@ -1,0 +1,27 @@
+name: node-sentinel
+kind: data-component
+version: v0.1.0
+
+image:
+  ref: ghcr.io/heainseo/node-sentinel:v0.1.0
+
+ports:
+  metrics: 8080
+  health: 8081
+
+health:
+  path: /healthz
+
+metrics:
+  path: /metrics
+
+dependencies: []
+
+contracts:
+  - node-sentinel-v1
+
+verificationPolicies:
+  - node-sentinel-smoke
+
+deploy:
+  adapter: devspace
