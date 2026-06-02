@@ -2,10 +2,10 @@
 //
 // Usage:
 //
-//	bori plan   --release <name> --env <name>   (Phase 2: not yet implemented)
-//	bori deploy --release <name> --env <name>   (Phase 2: not yet implemented)
-//	bori verify [flags]
-//	bori status --run <run-id>
+//	bori plan   --release <name> --env <name> [--bori-root <dir>]
+//	bori deploy --release <name> --env <name> [--bori-root <dir>] [--apps-dir <dir>]
+//	bori verify [--apps-dir <dir>] [--profile <p>] [--bori-dir <dir>]
+//	bori status --run <run-id> [--bori-dir <dir>]
 package main
 
 import (
@@ -18,10 +18,16 @@ import (
 	"path/filepath"
 	"time"
 
+	devspaceadapter "github.com/HeaInSeo/bori/adapters/devspace"
+	koadapter "github.com/HeaInSeo/bori/adapters/ko"
+	kustomizeadapter "github.com/HeaInSeo/bori/adapters/kustomize"
+	shelladapter "github.com/HeaInSeo/bori/adapters/shell"
 	"github.com/HeaInSeo/bori/pkg/adapter"
 	"github.com/HeaInSeo/bori/pkg/artifact"
 	"github.com/HeaInSeo/bori/pkg/collect"
 	"github.com/HeaInSeo/bori/pkg/component"
+	"github.com/HeaInSeo/bori/pkg/model"
+	"github.com/HeaInSeo/bori/pkg/planner"
 	"github.com/HeaInSeo/bori/pkg/verification"
 )
 
@@ -50,32 +56,178 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `bori — genomic dataplane control plane gateway
 
 Usage:
-  bori plan   --release <name> --env <name>
-  bori deploy --release <name> --env <name>
-  bori verify [--apps-dir <dir>] [--profile <p>] [--out <dir>] [--smoke-cmd <cmd>]
+  bori plan   --release <name> --env <name> [--bori-root <dir>] [--bori-dir <dir>]
+  bori deploy --release <name> --env <name> [--bori-root <dir>] [--apps-dir <dir>] [--bori-dir <dir>]
+  bori verify [--apps-dir <dir>] [--profile <p>] [--bori-dir <dir>]
   bori status --run <run-id> [--bori-dir <dir>]`)
 }
 
-// cmdPlan is a skeleton for Phase 2 (component/environment/release model).
+// cmdPlan loads the release/environment model and prints the deploy plan.
 func cmdPlan(args []string) {
 	fs := flag.NewFlagSet("plan", flag.ExitOnError)
-	release := fs.String("release", "", "release name")
-	env := fs.String("env", "", "environment name")
+	releaseName := fs.String("release", "", "release name (required)")
+	envName := fs.String("env", "", "environment name (required)")
+	boriRoot := fs.String("bori-root", ".", "path to bori repo root")
+	boriDir := fs.String("bori-dir", ".bori", "local .bori directory for run archives")
 	_ = fs.Parse(args)
-	fmt.Printf("[bori] plan: release=%s env=%s\n", *release, *env)
-	fmt.Fprintln(os.Stderr, "[bori] plan: component/environment/release model not yet implemented (Phase 2)")
-	os.Exit(1)
+
+	if *releaseName == "" || *envName == "" {
+		fmt.Fprintln(os.Stderr, "bori plan: --release and --env are required")
+		os.Exit(1)
+	}
+
+	runID := time.Now().UTC().Format("20060102-150405")
+	runDir := artifact.RunDir(*boriDir, runID)
+
+	p := planner.New(*boriRoot)
+	plan, err := p.Plan(runID, *releaseName, *envName)
+	if err != nil {
+		fatalf("plan: %v", err)
+	}
+
+	if err := artifact.WritePlan(runDir, *plan); err != nil {
+		fmt.Fprintf(os.Stderr, "[bori] warning: could not write plan.json: %v\n", err)
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(plan)
+
+	if len(plan.Violations) > 0 {
+		fmt.Fprintf(os.Stderr, "[bori] plan: %d namespace violation(s) — deploy blocked\n", len(plan.Violations))
+		for _, v := range plan.Violations {
+			fmt.Fprintf(os.Stderr, "  - %s\n", v)
+		}
+		os.Exit(1)
+	}
+	fmt.Printf("[bori] plan ok — %d component(s)  run-id: %s\n", len(plan.Components), runID)
 }
 
-// cmdDeploy is a skeleton for Phase 2.
+// cmdDeploy runs the deploy plan and executes each adapter.
 func cmdDeploy(args []string) {
 	fs := flag.NewFlagSet("deploy", flag.ExitOnError)
-	release := fs.String("release", "", "release name")
-	env := fs.String("env", "", "environment name")
+	releaseName := fs.String("release", "", "release name (required)")
+	envName := fs.String("env", "", "environment name (required)")
+	boriRoot := fs.String("bori-root", ".", "path to bori repo root")
+	appsDir := fs.String("apps-dir", "", "directory containing app repos (default: parent of bori-root)")
+	boriDir := fs.String("bori-dir", ".bori", "local .bori directory for run archives")
+	dryRun := fs.Bool("dry-run", false, "print plan without applying")
 	_ = fs.Parse(args)
-	fmt.Printf("[bori] deploy: release=%s env=%s\n", *release, *env)
-	fmt.Fprintln(os.Stderr, "[bori] deploy: not yet implemented (Phase 2)")
-	os.Exit(1)
+
+	if *releaseName == "" || *envName == "" {
+		fmt.Fprintln(os.Stderr, "bori deploy: --release and --env are required")
+		os.Exit(1)
+	}
+	if *appsDir == "" {
+		abs, err := filepath.Abs(*boriRoot)
+		if err != nil {
+			fatalf("abs bori-root: %v", err)
+		}
+		*appsDir = filepath.Join(abs, "..")
+	}
+
+	runID := time.Now().UTC().Format("20060102-150405")
+	runDir := artifact.RunDir(*boriDir, runID)
+	startedAt := time.Now().UTC()
+
+	status := artifact.Status{
+		SchemaVersion: "bori.run.v1",
+		RunID:         runID,
+		Release:       *releaseName,
+		Environment:   *envName,
+		StartedAt:     startedAt,
+		Phase:         "Failed",
+		Result:        string(verification.GateResultNoGrade),
+	}
+	defer func() {
+		status.FinishedAt = time.Now().UTC()
+		if err := artifact.Write(runDir, status); err != nil {
+			fmt.Fprintf(os.Stderr, "[bori] warning: could not write status.json: %v\n", err)
+		}
+	}()
+
+	p := planner.New(*boriRoot)
+	plan, err := p.Plan(runID, *releaseName, *envName)
+	if err != nil {
+		fatalf("plan: %v", err)
+	}
+	if err := artifact.WritePlan(runDir, *plan); err != nil {
+		fmt.Fprintf(os.Stderr, "[bori] warning: could not write plan.json: %v\n", err)
+	}
+	if len(plan.Violations) > 0 {
+		fmt.Fprintf(os.Stderr, "[bori] deploy blocked: namespace violations\n")
+		for _, v := range plan.Violations {
+			fmt.Fprintf(os.Stderr, "  - %s\n", v)
+		}
+		os.Exit(1)
+	}
+
+	adapters := buildAdapterRegistry(*appsDir)
+	ctx := context.Background()
+	overall := verification.GateResultPass
+	var compStatuses []artifact.CompStatus
+
+	for _, cp := range plan.Components {
+		a, ok := adapters[cp.Adapter]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "[bori] %s: unknown adapter %q\n", cp.Name, cp.Adapter)
+			compStatuses = append(compStatuses, artifact.CompStatus{
+				Name:       cp.Name,
+				GateResult: string(verification.GateResultFail),
+				Message:    fmt.Sprintf("unknown adapter: %s", cp.Adapter),
+			})
+			overall = verification.Max(overall, verification.GateResultFail)
+			continue
+		}
+
+		comp, err := compForDeploy(*boriRoot, cp.Name, cp.Version, cp.ImageRef)
+		if err != nil {
+			fatalf("load component %s: %v", cp.Name, err)
+		}
+		env, err := envForDeploy(*boriRoot, *envName)
+		if err != nil {
+			fatalf("load environment %s: %v", *envName, err)
+		}
+
+		result, err := a.Deploy(ctx, adapter.DeployRequest{
+			Component:   comp,
+			Environment: env,
+			DryRun:      *dryRun,
+			OutDir:      filepath.Join(runDir, "deploy", cp.Name),
+		})
+		cs := artifact.CompStatus{Name: cp.Name}
+		if err != nil || (result != nil && !result.Success) {
+			msg := ""
+			if err != nil {
+				msg = err.Error()
+			} else {
+				msg = result.Message
+			}
+			fmt.Fprintf(os.Stderr, "[bori] %s: deploy failed: %s\n", cp.Name, msg)
+			cs.GateResult = string(verification.GateResultFail)
+			cs.Message = msg
+			overall = verification.Max(overall, verification.GateResultFail)
+		} else {
+			fmt.Printf("[bori] %-24s deployed  (%s)\n", cp.Name, result.Message)
+			cs.GateResult = string(verification.GateResultPass)
+			cs.Message = result.Message
+		}
+		compStatuses = append(compStatuses, cs)
+	}
+
+	status.Components = compStatuses
+	status.Result = string(overall)
+	if overall == verification.GateResultPass {
+		status.Phase = "Deployed"
+	} else {
+		status.Phase = "Failed"
+	}
+
+	fmt.Printf("[bori] deploy overall: %s  run-id: %s\n", overall, runID)
+	if overall == verification.GateResultFail {
+		os.Exit(1)
+	}
 }
 
 // cmdVerify discovers apps and runs verification, writing a run archive always.
@@ -297,6 +449,36 @@ func runSmoke(ctx context.Context, cmd string, wait time.Duration, appName strin
 	logf("waiting %s for %s", wait, appName)
 	time.Sleep(wait)
 	return nil
+}
+
+// buildAdapterRegistry returns all available deploy adapters keyed by name.
+func buildAdapterRegistry(appsDir string) map[string]adapter.DeployAdapter {
+	return map[string]adapter.DeployAdapter{
+		"devspace":  devspaceadapter.New(appsDir),
+		"ko":        koadapter.New(appsDir),
+		"kustomize": kustomizeadapter.New(appsDir),
+		"shell":     shelladapter.New(appsDir),
+	}
+}
+
+// compForDeploy loads a BoriComponent from the registry, overriding version/image from the plan.
+func compForDeploy(boriRoot, name, version, imageRef string) (model.BoriComponent, error) {
+	comp, err := model.LoadComponentByName(boriRoot, name)
+	if err != nil {
+		return model.BoriComponent{}, err
+	}
+	if version != "" {
+		comp.Version = version
+	}
+	if imageRef != "" {
+		comp.Image.Ref = imageRef
+	}
+	return comp, nil
+}
+
+// envForDeploy loads a BoriEnvironment from the registry.
+func envForDeploy(boriRoot, envName string) (model.BoriEnvironment, error) {
+	return model.LoadEnvironmentByName(boriRoot, envName)
 }
 
 func fatalf(format string, args ...any) {

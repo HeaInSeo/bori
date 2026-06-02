@@ -24,3 +24,6 @@ contracts:
 
 verificationPolicies:
   - nan-materialization-smoke
+
+deploy:
+  adapter: devspace

@@ -24,3 +24,6 @@ contracts:
 verificationPolicies:
   - jumi-ah-smoke
   - ah-materialization-smoke
+
+deploy:
+  adapter: devspace

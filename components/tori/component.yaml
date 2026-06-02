@@ -25,3 +25,6 @@ contracts:
 
 verificationPolicies:
   - tori-pipeline-smoke
+
+deploy:
+  adapter: devspace

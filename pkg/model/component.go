@@ -14,16 +14,24 @@ import (
 // BoriComponent is the managed component definition stored in
 // components/<name>/component.yaml inside the bori repo.
 type BoriComponent struct {
-	Name                 string   `yaml:"name"`
-	Kind                 string   `yaml:"kind"`    // control-component | data-component
-	Version              string   `yaml:"version"` // semver
-	Image                ImageRef `yaml:"image"`
-	Ports                Ports    `yaml:"ports"`
-	Health               Endpoint `yaml:"health"`
-	Metrics              Endpoint `yaml:"metrics"`
-	Dependencies         []string `yaml:"dependencies,omitempty"`
-	Contracts            []string `yaml:"contracts,omitempty"`
-	VerificationPolicies []string `yaml:"verificationPolicies,omitempty"`
+	Name                 string       `yaml:"name"`
+	Kind                 string       `yaml:"kind"`    // control-component | data-component
+	Version              string       `yaml:"version"` // semver
+	Image                ImageRef     `yaml:"image"`
+	Ports                Ports        `yaml:"ports"`
+	Health               Endpoint     `yaml:"health"`
+	Metrics              Endpoint     `yaml:"metrics"`
+	Dependencies         []string     `yaml:"dependencies,omitempty"`
+	Contracts            []string     `yaml:"contracts,omitempty"`
+	VerificationPolicies []string     `yaml:"verificationPolicies,omitempty"`
+	Deploy               DeployConfig `yaml:"deploy,omitempty"`
+}
+
+// DeployConfig specifies which adapter deploys this component.
+type DeployConfig struct {
+	// Adapter selects the deploy tool: devspace | ko | kustomize | shell.
+	// Defaults to "devspace" if empty.
+	Adapter string `yaml:"adapter"`
 }
 
 // ImageRef holds the full image reference including digest.

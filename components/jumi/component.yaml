@@ -3,8 +3,6 @@ kind: control-component
 version: v0.3.0
 
 image:
-  # Use digest over tag for immutability.
-  # Update this when promoting a new JUMI revision.
   ref: ghcr.io/heainseo/jumi:v0.3.0
 
 ports:
@@ -28,3 +26,6 @@ contracts:
 verificationPolicies:
   - jumi-ah-smoke
   - jumi-upgrade-churn-gate
+
+deploy:
+  adapter: devspace
