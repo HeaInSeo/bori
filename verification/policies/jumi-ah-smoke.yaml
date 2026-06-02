@@ -1,0 +1,13 @@
+name: jumi-ah-smoke
+provider: kube-slint
+mode: cli
+
+# policy references the kube-slint SLI policy file inside each app repo.
+# {profile} is substituted at runtime with the active profile name.
+policy: .bori/policy.{profile}.yaml
+
+# failOn: FAIL_OR_NOGRADE ensures NO_GRADE (scrape failure / insufficient data)
+# blocks promotion just like FAIL. See docs/verification-model.md §NO_GRADE 정책.
+failOn: FAIL_OR_NOGRADE
+
+blocking: false

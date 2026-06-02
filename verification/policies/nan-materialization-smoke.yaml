@@ -1,0 +1,8 @@
+name: nan-materialization-smoke
+provider: kube-slint
+mode: cli
+
+policy: .bori/policy.{profile}.yaml
+
+failOn: FAIL_OR_NOGRADE
+blocking: false

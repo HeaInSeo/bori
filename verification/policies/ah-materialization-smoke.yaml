@@ -1,0 +1,10 @@
+name: ah-materialization-smoke
+provider: kube-slint
+mode: cli
+
+policy: .bori/policy.{profile}.yaml
+
+# Materialization smoke validates artifact-handoff placement resolution.
+# Blocking is false here; jumi-ah-smoke is the primary gate.
+failOn: FAIL_OR_NOGRADE
+blocking: false
