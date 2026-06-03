@@ -1,78 +1,31 @@
-// Package v1alpha1 defines the Go type representations of bori's future API types.
+// Package v1alpha1 defines the bori API types for the bori.dev group.
 //
-// These are NOT Kubernetes CRDs. CRD definitions are deferred to Phase 6/7.
-// The types here describe the shape of what will become CRDs once the CLI model
-// is proven stable. See docs/api-design.md for the full design rationale.
+// These types are registered as Kubernetes CRDs starting from Phase 7.
+// The CLI model (releases/, components/, environments/ YAML files) maps to
+// the same data model via the type hierarchy below.
 //
-// Current bori YAML contracts map to these types as follows:
-//
-//	releases/<name>/release.yaml        → BoriRelease
-//	components/<name>/component.yaml    → BoriComponent (via pkg/model)
-//	environments/<name>/environment.yaml → BoriEnvironment (via pkg/model)
-//	.bori/revisions/<id>.json           → BoriRevision (via pkg/revision)
-//	.bori/runs/<id>/                    → BoriVerificationRun (via pkg/artifact)
+//	releases/<name>/release.yaml        → spec.release → BoriRelease
+//	environments/<name>/environment.yaml → spec.environment → BoriEnvironment
+//	.bori/revisions/<id>.json           → status.currentRevision
+//	.bori/runs/<id>/                    → status.conditions (via shadow reconcile)
 package v1alpha1
 
-import "time"
-
-// ConditionStatus is the value of a status condition.
-type ConditionStatus string
-
-const (
-	ConditionTrue    ConditionStatus = "True"
-	ConditionFalse   ConditionStatus = "False"
-	ConditionUnknown ConditionStatus = "Unknown"
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Condition represents a single status condition on a bori resource.
-// Mirrors the Kubernetes meta/v1 Condition pattern for future compatibility.
-type Condition struct {
-	// Type is the condition identifier: Installed | Ready | Verified | Promoted | Degraded
-	Type    string          `json:"type" yaml:"type"`
-	Status  ConditionStatus `json:"status" yaml:"status"`
-	Reason  string          `json:"reason,omitempty" yaml:"reason,omitempty"`
-	Message string          `json:"message,omitempty" yaml:"message,omitempty"`
-	// LastTransitionTime is when Status last changed.
-	LastTransitionTime time.Time `json:"lastTransitionTime" yaml:"lastTransitionTime"`
-}
+// Type aliases for Kubernetes-native condition types.
+// Code that uses v1alpha1.Condition interoperates directly with metav1.Condition.
+type Condition = metav1.Condition
+type ConditionStatus = metav1.ConditionStatus
 
-// BoriDataPlaneSpec describes the desired state of a genomic dataplane app set.
-type BoriDataPlaneSpec struct {
-	Release     string `json:"release" yaml:"release"`
-	Environment string `json:"environment" yaml:"environment"`
-}
+const (
+	ConditionTrue    = metav1.ConditionTrue
+	ConditionFalse   = metav1.ConditionFalse
+	ConditionUnknown = metav1.ConditionUnknown
+)
 
-// BoriDataPlaneStatus is the observed state of a BoriDataPlane.
-type BoriDataPlaneStatus struct {
-	// Conditions summarizes the state across all managed components.
-	Conditions []Condition `json:"conditions,omitempty" yaml:"conditions,omitempty"`
-	// CurrentRevision is the revision ID of the last promoted deployment.
-	CurrentRevision string `json:"currentRevision,omitempty" yaml:"currentRevision,omitempty"`
-	// Components holds per-component status.
-	Components []ComponentStatus `json:"components,omitempty" yaml:"components,omitempty"`
-	// ObservedAt is when this status was last computed.
-	ObservedAt time.Time `json:"observedAt" yaml:"observedAt"`
-}
-
-// ComponentStatus is the status of one managed component.
-type ComponentStatus struct {
-	Name            string `json:"name" yaml:"name"`
-	DeployedVersion string `json:"deployedVersion,omitempty" yaml:"deployedVersion,omitempty"`
-	DesiredVersion  string `json:"desiredVersion" yaml:"desiredVersion"`
-	// SyncStatus: in-sync | out-of-sync | unknown
-	SyncStatus string      `json:"syncStatus" yaml:"syncStatus"`
-	Conditions []Condition `json:"conditions,omitempty" yaml:"conditions,omitempty"`
-}
-
-// BoriDataPlane is the top-level type for a managed dataplane app set.
-// Future CRD candidate. Not registered with Kubernetes in this phase.
-type BoriDataPlane struct {
-	Name   string              `json:"name" yaml:"name"`
-	Spec   BoriDataPlaneSpec   `json:"spec" yaml:"spec"`
-	Status BoriDataPlaneStatus `json:"status" yaml:"status"`
-}
-
-// Standard condition type names used across bori status.
+// Standard condition type names used across bori resources.
 const (
 	// ConditionInstalled: all components have been deployed at least once.
 	ConditionInstalled = "Installed"
@@ -82,6 +35,68 @@ const (
 	ConditionVerified = "Verified"
 	// ConditionPromoted: the latest revision has been promoted.
 	ConditionPromoted = "Promoted"
-	// ConditionDegraded: one or more components have failed verification or health.
+	// ConditionDegraded: one or more components failed verification or are out-of-sync.
 	ConditionDegraded = "Degraded"
 )
+
+// BoriDataPlaneSpec describes the desired state of a genomic dataplane app set.
+// It references the release and environment definitions that live in the bori repo.
+type BoriDataPlaneSpec struct {
+	// Release is the name of the BoriRelease (releases/<name>/release.yaml).
+	Release string `json:"release"`
+	// Environment is the name of the BoriEnvironment (environments/<name>/environment.yaml).
+	Environment string `json:"environment"`
+}
+
+// ComponentStatus is the sync status of one managed component within a BoriDataPlane.
+type ComponentStatus struct {
+	Name            string `json:"name"`
+	DesiredVersion  string `json:"desiredVersion"`
+	DeployedVersion string `json:"deployedVersion,omitempty"`
+	// SyncStatus: in-sync | out-of-sync | unknown
+	SyncStatus string      `json:"syncStatus"`
+	Conditions []Condition `json:"conditions,omitempty"`
+}
+
+// BoriDataPlaneStatus is the observed state of a BoriDataPlane.
+// It is populated by the shadow reconciler and persisted to the Kubernetes API server.
+type BoriDataPlaneStatus struct {
+	// Conditions summarizes the overall state of the dataplane.
+	// Standard types: Installed, Ready, Verified, Promoted, Degraded.
+	Conditions []Condition `json:"conditions,omitempty"`
+	// CurrentRevision is the revision ID of the last promoted deployment.
+	CurrentRevision string `json:"currentRevision,omitempty"`
+	// Components holds per-component sync status.
+	Components []ComponentStatus `json:"components,omitempty"`
+	// ObservedAt is when this status was last computed.
+	ObservedAt metav1.Time `json:"observedAt,omitempty"`
+}
+
+// BoriDataPlane is the Kubernetes API resource for a managed dataplane app set.
+//
+// Each BoriDataPlane describes a release + environment combination. The bori
+// operator reconciles it by running plan→deploy→verify→promote and updating
+// status.conditions from the resulting shadow state.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Release",type=string,JSONPath=`.spec.release`
+// +kubebuilder:printcolumn:name="Environment",type=string,JSONPath=`.spec.environment`
+// +kubebuilder:printcolumn:name="Revision",type=string,JSONPath=`.status.currentRevision`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+type BoriDataPlane struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   BoriDataPlaneSpec   `json:"spec,omitempty"`
+	Status BoriDataPlaneStatus `json:"status,omitempty"`
+}
+
+// BoriDataPlaneList contains a list of BoriDataPlane objects.
+//
+// +kubebuilder:object:root=true
+type BoriDataPlaneList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []BoriDataPlane `json:"items"`
+}

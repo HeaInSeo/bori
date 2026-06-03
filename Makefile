@@ -2,10 +2,13 @@
 
 # ── Build ───────────────────────────────────────────────────────────────────
 
-build: build-bori
+build: build-bori build-operator
 
 build-bori:
 	go build -o bin/bori ./cmd/bori
+
+build-operator:
+	go build -o bin/bori-operator ./cmd/bori-operator
 
 build-devspace-adapter:
 	go build -o bin/bori-devspace ./cmd/bori-devspace
@@ -13,7 +16,7 @@ build-devspace-adapter:
 # ── Test ────────────────────────────────────────────────────────────────────
 
 test:
-	go test ./...
+	GOPROXY=off go test ./...
 
 # ── Clean ───────────────────────────────────────────────────────────────────
 

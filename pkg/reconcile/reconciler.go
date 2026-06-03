@@ -4,7 +4,7 @@
 // decisions based on shadow state (drift detection). This is the prototype
 // for what a future bori operator would do in a reconcile loop.
 //
-// CRD registration and Kubernetes controller-runtime are deferred to Phase 7.
+// CRD registration and Kubernetes controller-runtime are active from Phase 7.
 package reconcile
 
 import (
@@ -23,6 +23,12 @@ import (
 	"github.com/HeaInSeo/bori/pkg/rollout"
 	shadowpkg "github.com/HeaInSeo/bori/pkg/shadow"
 )
+
+// Runner is the interface implemented by Reconciler.
+// Controllers use this interface to allow mock injection in tests.
+type Runner interface {
+	Run(ctx context.Context, req Request) (*Result, error)
+}
 
 // Request describes one reconciliation pass.
 type Request struct {

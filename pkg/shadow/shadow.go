@@ -5,12 +5,14 @@
 // without applying any changes to the cluster.
 //
 // This is the prototype for what a future bori operator reconciler would do.
-// CRD registration and Kubernetes status condition writes are deferred to Phase 7.
+// CRD registration and Kubernetes status condition writes are active from Phase 7.
 package shadow
 
 import (
 	"fmt"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/HeaInSeo/bori/apis/bori/v1alpha1"
 	"github.com/HeaInSeo/bori/pkg/model"
@@ -138,7 +140,7 @@ func computeConditions(
 			Status:             s,
 			Reason:             reason,
 			Message:            msg,
-			LastTransitionTime: now,
+			LastTransitionTime: metav1.NewTime(now),
 		}
 	}
 
