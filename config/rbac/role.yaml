@@ -1,0 +1,40 @@
+# ClusterRole for the bori operator.
+#
+# Scope rationale:
+# - boridataplanes: full CRUD — operator owns this resource
+# - boridataplanes/status: update only — status subresource
+# - namespaces: read-only — validate NamespacePolicy allowed list
+# - leases: full CRUD — leader election
+# - events: create/patch — surface reconcile errors
+#
+# Phase 7 note: tighten to per-namespace Role once namespace isolation is validated.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: bori-operator-role
+  labels:
+    app.kubernetes.io/name: bori-operator
+    app.kubernetes.io/component: controller
+rules:
+  # BoriDataPlane CRD
+  - apiGroups: ["bori.dev"]
+    resources: ["boridataplanes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["bori.dev"]
+    resources: ["boridataplanes/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["bori.dev"]
+    resources: ["boridataplanes/finalizers"]
+    verbs: ["update"]
+  # Namespace read — enforces NamespacePolicy allowed list
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+  # Leader election
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Events
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]

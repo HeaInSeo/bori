@@ -120,6 +120,75 @@ Kubernetes `apiextensions.k8s.io/v1` CRD YAML은 Phase 7에 추가한다.
 
 ---
 
+---
+
+## Phase 7 — Limited Operator Apply Mode
+
+Phase: 7 (준비 완료, 실구현 대기)  
+대상 파일: `config/crd/`, `config/rbac/`, `controllers/`
+
+### 준비 완료 산출물 (Phase 7 준비 커밋)
+
+| 파일 | 내용 |
+|------|------|
+| `config/crd/boridataplanes.bori.dev.yaml` | BoriDataPlane CRD YAML |
+| `config/rbac/service_account.yaml` | bori-operator ServiceAccount (namespace: bori-system) |
+| `config/rbac/role.yaml` | ClusterRole — CRD CRUD + namespace 읽기 + leader election |
+| `config/rbac/role_binding.yaml` | ClusterRoleBinding |
+| `controllers/dataplane_controller.go` | DataPlaneReconciler 스켈레톤 |
+
+### controller-runtime 추가 절차
+
+Phase 7 실구현 시작 전에 한 번만 실행한다.
+
+```bash
+go get sigs.k8s.io/controller-runtime@latest
+go mod tidy
+```
+
+이후 `controllers/dataplane_controller.go`의 stub 타입들을 실제 controller-runtime 타입으로 교체한다.
+
+```go
+// stub → real
+import ctrl "sigs.k8s.io/controller-runtime"
+import "sigs.k8s.io/controller-runtime/pkg/client"
+```
+
+### CRD 설치 / 제거
+
+```bash
+make install-crds    # kubectl apply -f config/crd/
+make uninstall-crds  # kubectl delete -f config/crd/
+```
+
+### RBAC 설치
+
+```bash
+kubectl create namespace bori-system
+kubectl apply -f config/rbac/
+```
+
+### DataPlaneReconciler 설계 원칙
+
+- reconcile 루프는 `pkg/reconcile.Reconciler.Run()`을 통해서만 deploy를 수행한다.
+- 컨트롤러는 plan/deploy/verify 로직을 재구현하지 않는다.
+- 컨트롤러의 역할: CR spec 읽기 → reconcile.Request 변환 → Run() 호출 → CR status 패치.
+
+```text
+BoriDataPlane CR
+  spec.release      ─┐
+  spec.environment  ─┴→ reconcile.Request → Reconciler.Run() → status patch
+```
+
+### 완료 기준 (Phase 7)
+
+- `kubectl apply -f` 로 BoriDataPlane CR 생성 시 operator가 deploy를 수행한다.
+- `.status.conditions` 가 Kubernetes API 서버에 기록된다.
+- NamespacePolicy 위반 시 deploy를 거부하고 Degraded=True condition을 설정한다.
+- CLI(`bori deploy`)와 operator가 동일한 결과를 생성한다.
+
+---
+
 ## 참고 문서
 
 - [control-plane-roadmap.md](control-plane-roadmap.md) §Phase 6, §Phase 7

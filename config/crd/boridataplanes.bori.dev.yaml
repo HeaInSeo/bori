@@ -1,0 +1,101 @@
+# BoriDataPlane CRD — Phase 7 (Limited Operator Apply Mode)
+#
+# Apply with:  kubectl apply -f config/crd/boridataplanes.bori.dev.yaml
+# Remove with: kubectl delete -f config/crd/boridataplanes.bori.dev.yaml
+#
+# Phase 6 note: This CRD YAML is created in Phase 7 preparation.
+# The Go type definitions live in apis/bori/v1alpha1/types.go.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: boridataplanes.bori.dev
+  annotations:
+    bori.dev/phase: "7"
+spec:
+  group: bori.dev
+  names:
+    kind: BoriDataPlane
+    listKind: BoriDataPlaneList
+    plural: boridataplanes
+    singular: boridataplane
+    shortNames:
+      - bdp
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [release, environment]
+              properties:
+                release:
+                  description: Name of the BoriRelease (releases/<name>/release.yaml).
+                  type: string
+                environment:
+                  description: Name of the BoriEnvironment (environments/<name>/environment.yaml).
+                  type: string
+            status:
+              type: object
+              properties:
+                currentRevision:
+                  description: Revision ID of the last promoted deployment.
+                  type: string
+                observedAt:
+                  description: When this status was last computed.
+                  type: string
+                  format: date-time
+                conditions:
+                  description: Standard status conditions (Installed/Ready/Verified/Promoted/Degraded).
+                  type: array
+                  items:
+                    type: object
+                    required: [type, status]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum: [True, False, Unknown]
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                components:
+                  description: Per-component sync status.
+                  type: array
+                  items:
+                    type: object
+                    required: [name, desiredVersion, syncStatus]
+                    properties:
+                      name:
+                        type: string
+                      desiredVersion:
+                        type: string
+                      deployedVersion:
+                        type: string
+                      syncStatus:
+                        description: "in-sync | out-of-sync | unknown"
+                        type: string
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Release
+          type: string
+          jsonPath: .spec.release
+        - name: Environment
+          type: string
+          jsonPath: .spec.environment
+        - name: Revision
+          type: string
+          jsonPath: .status.currentRevision
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
