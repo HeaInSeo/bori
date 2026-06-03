@@ -2,12 +2,14 @@
 //
 // Usage:
 //
-//	bori plan     --release <name> --env <name> [--bori-root <dir>]
-//	bori deploy   --release <name> --env <name> [--bori-root <dir>] [--apps-dir <dir>]
-//	bori verify   [--release <name> --env <name>] [--changed <a,b>] [--bori-root <dir>]
-//	bori status   --run <run-id> [--bori-dir <dir>]
-//	bori revision list [--release <name>] [--bori-dir <dir>]
-//	bori rollout  plan --release <name> --env <name> [--bori-root <dir>]
+//	bori plan       --release <name> --env <name> [--bori-root <dir>]
+//	bori deploy     --release <name> --env <name> [--bori-root <dir>] [--apps-dir <dir>]
+//	bori verify     [--release <name> --env <name>] [--changed <a,b>] [--bori-root <dir>]
+//	bori status     --run <run-id> [--bori-dir <dir>]
+//	bori revision   list [--release <name>] [--bori-dir <dir>]
+//	bori rollout    plan --release <name> --env <name> [--bori-root <dir>]
+//	bori shadow     status --release <name> [--bori-root <dir>] [--bori-dir <dir>]
+//	bori reconcile  --release <name> --env <name> [--bori-root <dir>] [--dry-run] [--skip-if-in-sync]
 package main
 
 import (
@@ -31,6 +33,7 @@ import (
 	"github.com/HeaInSeo/bori/pkg/component"
 	"github.com/HeaInSeo/bori/pkg/model"
 	"github.com/HeaInSeo/bori/pkg/planner"
+	reconcilepkg "github.com/HeaInSeo/bori/pkg/reconcile"
 	relpkg "github.com/HeaInSeo/bori/pkg/release"
 	"github.com/HeaInSeo/bori/pkg/revision"
 	"github.com/HeaInSeo/bori/pkg/rollout"
@@ -59,6 +62,8 @@ func main() {
 		cmdRollout(os.Args[2:])
 	case "shadow":
 		cmdShadow(os.Args[2:])
+	case "reconcile":
+		cmdReconcile(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "bori: unknown subcommand %q\n", os.Args[1])
 		usage()
@@ -70,13 +75,15 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `bori — genomic dataplane control plane gateway
 
 Usage:
-  bori plan          --release <name> --env <name> [--bori-root <dir>]
-  bori deploy        --release <name> --env <name> [--bori-root <dir>] [--apps-dir <dir>]
-  bori verify        [--release <name> --env <name>] [--changed <a,b>] [--bori-root <dir>]
-  bori status        --run <run-id> [--bori-dir <dir>]
-  bori revision list [--release <name>] [--bori-dir <dir>]
-  bori rollout plan  --release <name> --env <name> [--bori-root <dir>]
-  bori shadow status --release <name> [--bori-root <dir>] [--bori-dir <dir>]`)
+  bori plan           --release <name> --env <name> [--bori-root <dir>]
+  bori deploy         --release <name> --env <name> [--bori-root <dir>] [--apps-dir <dir>]
+  bori verify         [--release <name> --env <name>] [--changed <a,b>] [--bori-root <dir>]
+  bori status         --run <run-id> [--bori-dir <dir>]
+  bori revision list  [--release <name>] [--bori-dir <dir>]
+  bori rollout plan   --release <name> --env <name> [--bori-root <dir>]
+  bori shadow status  --release <name> [--bori-root <dir>] [--bori-dir <dir>] [--json]
+  bori reconcile      --release <name> --env <name> [--bori-root <dir>] [--apps-dir <dir>]
+                      [--dry-run] [--skip-if-in-sync] [-v]`)
 }
 
 // cmdPlan loads the release/environment model and prints the deploy plan.
@@ -965,6 +972,10 @@ func cmdShadowStatus(args []string) {
 		fatalf("shadow reconcile: %v", err)
 	}
 
+	if err := shadowpkg.WriteState(*boriDir, *releaseName, *state); err != nil {
+		fmt.Fprintf(os.Stderr, "[bori] warning: could not persist shadow state: %v\n", err)
+	}
+
 	if *outputJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -1015,6 +1026,80 @@ func cmdShadowStatus(args []string) {
 		}
 	}
 	if degraded {
+		os.Exit(1)
+	}
+}
+
+// cmdReconcile runs one shadow-mode reconcile pass: drift detection → plan →
+// deploy (unless dry-run or in-sync) → promote → shadow state update.
+// This is the CLI prototype for what a future bori operator reconcile loop would do.
+func cmdReconcile(args []string) {
+	fs := flag.NewFlagSet("reconcile", flag.ExitOnError)
+	releaseName := fs.String("release", "", "release name (required)")
+	envName := fs.String("env", "", "environment name (required)")
+	boriRoot := fs.String("bori-root", ".", "path to bori repo root")
+	appsDir := fs.String("apps-dir", "", "directory containing app repos (default: parent of bori-root)")
+	boriDir := fs.String("bori-dir", ".bori", "local .bori directory for run archives")
+	dryRun := fs.Bool("dry-run", false, "compute plan and drift without applying")
+	skipIfInSync := fs.Bool("skip-if-in-sync", false, "skip deploy when all components are in-sync")
+	verbose := fs.Bool("v", false, "verbose output")
+	_ = fs.Parse(args)
+
+	if *releaseName == "" || *envName == "" {
+		fmt.Fprintln(os.Stderr, "bori reconcile: --release and --env are required")
+		os.Exit(1)
+	}
+	if *appsDir == "" {
+		abs, err := filepath.Abs(*boriRoot)
+		if err != nil {
+			fatalf("abs bori-root: %v", err)
+		}
+		*appsDir = filepath.Join(abs, "..")
+	}
+
+	logf := func(string, ...any) {}
+	if *verbose {
+		logf = func(f string, a ...any) { fmt.Printf("[bori reconcile] "+f+"\n", a...) }
+	}
+
+	r := reconcilepkg.NewReconciler(*appsDir, logf)
+	r.AdapterRegistry = buildAdapterRegistry(*appsDir)
+
+	res, err := r.Run(context.Background(), reconcilepkg.Request{
+		BoriRoot:     *boriRoot,
+		AppsDir:      *appsDir,
+		BoriDir:      *boriDir,
+		ReleaseName:  *releaseName,
+		EnvName:      *envName,
+		DryRun:       *dryRun,
+		SkipIfInSync: *skipIfInSync,
+	})
+	if err != nil {
+		fatalf("reconcile: %v", err)
+	}
+
+	fmt.Printf("[bori reconcile] release: %s  env: %s  run: %s\n", res.Release, res.Environment, res.RunID)
+	fmt.Printf("  drift:    %v\n", res.DriftDetected)
+	fmt.Printf("  deploy:   %s\n", res.DeployStatus)
+	fmt.Printf("  promoted: %v\n", res.Promoted)
+	if res.RevisionID != "" {
+		fmt.Printf("  revision: %s\n", res.RevisionID)
+	}
+	if res.ShadowState != nil {
+		fmt.Println("  conditions:")
+		for _, c := range res.ShadowState.Conditions {
+			icon := "? "
+			switch c.Status {
+			case "True":
+				icon = "✓ "
+			case "False":
+				icon = "✗ "
+			}
+			fmt.Printf("    %s%-12s  %s\n", icon, c.Type, c.Message)
+		}
+	}
+
+	if res.DeployStatus == "failed" {
 		os.Exit(1)
 	}
 }
