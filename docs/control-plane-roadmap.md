@@ -1,6 +1,6 @@
-# bori Control Plane 전환 개발 기획서 v0.6
+# bori Control Plane 전환 개발 기획서 v0.7
 
-상태: Draft v0.6  
+상태: Draft v0.7  
 작성일: 2026-06-01  
 최종 업데이트: 2026-06-05  
 대상 저장소: `bori`  
@@ -9,6 +9,23 @@
 ---
 
 ## 0. 변경 이력
+
+### v0.7에서 바뀐 점 (2026-06-05)
+
+Phase 8이 완료됐다. operator를 실제 클러스터에 배포 가능한 수준으로 hardening했다.
+
+v0.7의 핵심 변경점은 다음이다.
+
+1. Phase 8 완료 표시 (2026-06-05).
+   - Finalizer(`bori.dev/cleanup`) 구현으로 graceful deletion 보장.
+   - Generation-aware reconcile로 불필요한 full reconcile 방지.
+   - `ViolationError` 타입 분리로 namespace 위반을 에러 backoff 없이 condition으로 처리.
+   - `security.RedactString()` 을 모든 event 메시지에 적용.
+   - `config/operator/` 배포 매니페스트(`make deploy`) 추가.
+
+2. Phase 8 산출물 및 완료 기준을 §12(개발 로드맵) 섹션에 추가.
+
+---
 
 ### v0.6에서 바뀐 점 (2026-06-05)
 
@@ -1942,6 +1959,81 @@ k8s.io/apimachinery v0.36.0
 k8s.io/client-go v0.36.0
 k8s.io/api v0.36.0
 ```
+
+### Phase 8 — Operator Deployment Hardening ✅ 완료 (2026-06-05)
+
+~~예상 기간: Phase 7 직후~~  
+실제 완료: 2026-06-05
+
+목표:
+
+- operator를 실제 kind/lab 클러스터에 배포 가능한 수준으로 hardening
+- Finalizer로 graceful deletion 보장
+- Generation-aware reconcile로 불필요한 full reconcile 방지
+- Namespace 위반을 에러가 아닌 condition으로 처리
+- 배포 매니페스트 완성 (`make deploy`)
+
+비목표:
+
+```text
+- traffic routing / progressive delivery
+- kube-slint Track K0-K5 (별도 트랙 유지)
+- BoriRelease CRD
+- multi-tenant 분리
+```
+
+산출물:
+
+```text
+apis/bori/v1alpha1/types.go
+  - ConditionViolation = "Violation" 추가
+  - BoriDataPlaneStatus.ObservedGeneration int64 추가
+
+pkg/reconcile/reconciler.go
+  - ViolationError{Violations []string} 타입 추가
+  - Run()이 namespace violations 시 *ViolationError 반환
+
+controllers/dataplane_controller.go
+  - Finalizer(bori.dev/cleanup): 첫 reconcile에 추가, 삭제 시 제거
+    shadow state + revision history는 디스크에 보존
+  - Generation-aware reconcile:
+    ObservedGeneration > 0 && ObservedGeneration == Generation && !isUnhealthy
+    이면 Runner.Run() skip → 30s RequeueAfter만 반환
+  - reconcileViolation(): ViolationError → Violation=True + Degraded=True condition
+    에러 backoff 없이 5분 requeue
+  - isUnhealthy(): Degraded=True 또는 Violation=True이면 항상 full reconcile
+  - setCondition(): Status 변경 시만 LastTransitionTime 갱신
+  - 모든 event 메시지에 security.RedactString() 적용
+
+controllers/dataplane_controller_test.go
+  - TestReconcile_addsFinalizer: 첫 reconcile → bori.dev/cleanup 추가
+  - TestReconcile_handlesDeletion: DeletionTimestamp → finalizer 제거
+  - TestReconcile_skipsIfGenerationMatches: Gen 일치 + 정상 → runner skip
+  - TestReconcile_namespaceViolation: ViolationError → condition 설정, no error
+
+config/operator/
+  - namespace.yaml: bori-system Namespace
+  - configmap.yaml: bori-root, bori-dir, requeue-interval 설정
+  - deployment.yaml: bori-operator Deployment
+    liveness/readiness probe, securityContext, resource limits, hostPath volume
+
+config/crd/boridataplanes.bori.dev.yaml
+  - status.observedGeneration 필드 추가
+  - ObservedGen printer column 추가
+
+Makefile
+  - make deploy:          CRD + RBAC + operator 한 번에 배포
+  - make undeploy:        역순 제거
+  - make deploy-dry-run:  전체 매니페스트 dry-run 검증
+```
+
+완료 기준:
+
+- [x] `make deploy` 후 kind 클러스터에서 bori-operator pod Running 가능
+- [x] BoriDataPlane 삭제 → finalizer cleanup → 오브젝트 제거
+- [x] 허용되지 않은 namespace → Violation condition, Degraded=True (에러 아님)
+- [x] event 메시지에 secrets 미노출
+- [x] 컨트롤러 테스트 8개 통과 (4개 Phase 7 + 4개 Phase 8 신규)
 
 ---
 
