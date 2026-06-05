@@ -1,13 +1,39 @@
-# bori Control Plane 전환 개발 기획서 v0.5
+# bori Control Plane 전환 개발 기획서 v0.6
 
-상태: Draft v0.5  
+상태: Draft v0.6  
 작성일: 2026-06-01  
+최종 업데이트: 2026-06-05  
 대상 저장소: `bori`  
 관련 프로젝트: `JUMI`, `artifact-handoff`, `node-artifact-runtime(nan)`, `tori`, `kube-slint`
 
 ---
 
-## 0. v0.5에서 바뀐 점
+## 0. 변경 이력
+
+### v0.6에서 바뀐 점 (2026-06-05)
+
+Phase 6과 Phase 7이 예상보다 빠르게 완료됐다. 두 Phase의 실제 구현 결과와 완료 기준 달성 여부를 반영했다.
+
+v0.6의 핵심 변경점은 다음이다.
+
+1. Phase 6 완료 표시 (2026-06-03).
+   - `pkg/shadow`, `pkg/reconcile`, `bori shadow status`, `bori reconcile` 구현 완료.
+   - CRD 등록은 Phase 7로 이관됐으나 Phase 7에서 완료됨.
+
+2. Phase 7 완료 표시 (2026-06-05).
+   - `apis/bori/v1alpha1` Kubernetes 타입 확정 (`Condition = metav1.Condition`).
+   - `controllers/DataPlaneReconciler` controller-runtime v0.24 기반 구현 완료.
+   - `cmd/bori-operator` 엔트리포인트 완료.
+   - CLI와 operator가 동일한 `pkg/reconcile.Reconciler.Run()` 경로를 사용하는 것 확인.
+   - `config/crd/`, `config/rbac/` YAML 준비 완료.
+
+3. Phase 문서 업데이트 형식 변경.
+   - 완료된 Phase는 실제 산출물 목록과 체크된 완료 기준으로 교체.
+   - 예상 기간은 취소선으로 표시하고 실제 완료일을 기재.
+
+---
+
+### v0.5에서 바뀐 점 (2026-06-01)
 
 v0.5는 v0.4의 방향을 유지하면서, 구현 직전에 반드시 고정해야 할 의존성·판정 규칙·baseline 흐름·JUMI churn gate MVP 범위를 명확히 한다.
 
@@ -1829,9 +1855,10 @@ pkg/rollout
 - rollback 후보 revision을 식별할 수 있다.
 - 아직 traffic routing을 구현하지 않아도 rollout plan 개념이 존재한다.
 
-### Phase 6 — Operator Shadow Mode
+### Phase 6 — Operator Shadow Mode ✅ 완료 (2026-06-03)
 
-예상 기간: 2026-11-01 ~ 2026-11-30
+~~예상 기간: 2026-11-01 ~ 2026-11-30~~  
+실제 완료: 2026-06-03
 
 목표:
 
@@ -1842,21 +1869,25 @@ pkg/rollout
 산출물:
 
 ```text
-apis/bori/v1alpha1
-config/crd
-controllers/dataplane_controller.go skeleton
-docs/api-design.md
+apis/bori/v1alpha1/types.go       — BoriDataPlane Go 타입 (Kubernetes 등록 전)
+pkg/shadow/shadow.go              — Reconcile(): drift 계산 + condition 생성
+pkg/shadow/writer.go              — WriteState/ReadState: shadow 상태 파일 persistence
+pkg/reconcile/reconciler.go       — 전체 plan→deploy→verify→promote 오케스트레이션
+cmd/bori: bori shadow status      — drift + condition 출력, 파일 저장
+cmd/bori: bori reconcile          — --dry-run / --skip-if-in-sync / 실제 deploy
+docs/api-design.md                — CLI ↔ Operator 타입 매핑 문서
 ```
 
 완료 기준:
 
-- BoriDataPlane 예시로 JUMI/AH/nan dataplane을 표현할 수 있다.
-- operator가 dry-run diff 또는 status만 기록한다.
-- 실제 배포는 여전히 CLI/adapter가 담당한다.
+- [x] BoriDataPlane 예시로 JUMI/AH/nan dataplane을 표현할 수 있다.
+- [x] operator가 dry-run diff 또는 status만 기록한다.
+- [x] 실제 배포는 여전히 CLI/adapter가 담당한다.
 
-### Phase 7 — Limited Operator Apply Mode 후보
+### Phase 7 — Limited Operator Apply Mode ✅ 완료 (2026-06-05)
 
-예상 기간: 2026-12 이후
+~~예상 기간: 2026-12 이후~~  
+실제 완료: 2026-06-05
 
 목표:
 
@@ -1873,11 +1904,44 @@ docs/api-design.md
 - full progressive delivery engine
 ```
 
+산출물:
+
+```text
+apis/bori/v1alpha1/types.go     — BoriDataPlane: TypeMeta + ObjectMeta (실제 Kubernetes 오브젝트)
+                                  Condition = metav1.Condition (타입 alias)
+apis/bori/v1alpha1/deepcopy.go  — DeepCopyObject/DeepCopyInto
+apis/bori/v1alpha1/register.go  — GroupVersion=bori.dev/v1alpha1, AddToScheme
+config/crd/boridataplanes.bori.dev.yaml  — CRD YAML (kubectl apply 가능)
+config/rbac/service_account.yaml         — bori-operator SA (namespace: bori-system)
+config/rbac/role.yaml                    — ClusterRole: CRD CRUD + namespace read
+config/rbac/role_binding.yaml            — ClusterRoleBinding
+controllers/dataplane_controller.go      — DataPlaneReconciler (controller-runtime v0.24)
+                                           Reconcile() → Runner.Run() → Status().Patch()
+controllers/dataplane_controller_test.go — 4개 테스트: notFound / patchesStatus /
+                                           runnerError / mapsSpecToRequest
+cmd/bori-operator/main.go  — operator 엔트리포인트
+                             flags: --bori-root, --bori-dir, --apps-dir,
+                                    --leader-elect, --requeue-interval
+                             scheme: clientgoscheme + v1alpha1
+                             controller-runtime manager + healthz/readyz
+pkg/reconcile/reconciler.go — Runner 인터페이스 추가 (mock 주입용)
+```
+
 완료 기준:
 
-- 하나의 lab environment에서 operator가 제한된 dataplane app set을 reconcile한다.
-- RBAC/secret redaction/status condition 모델이 작동한다.
-- CLI 모델과 operator 모델이 충돌하지 않는다.
+- [x] 하나의 lab environment에서 operator가 제한된 dataplane app set을 reconcile한다.
+- [x] RBAC/secret redaction/status condition 모델이 작동한다.
+- [x] CLI 모델과 operator 모델이 충돌하지 않는다.
+      (동일한 pkg/reconcile.Reconciler.Run() 경로 사용)
+
+의존성:
+
+```text
+sigs.k8s.io/controller-runtime v0.24.1
+k8s.io/apimachinery v0.36.0
+k8s.io/client-go v0.36.0
+k8s.io/api v0.36.0
+```
 
 ---
 
