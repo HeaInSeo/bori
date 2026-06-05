@@ -37,6 +37,10 @@ const (
 	ConditionPromoted = "Promoted"
 	// ConditionDegraded: one or more components failed verification or are out-of-sync.
 	ConditionDegraded = "Degraded"
+	// ConditionViolation: the release targets a namespace not in the environment's
+	// allowed list. The operator sets Degraded=True alongside this condition and
+	// does not attempt to deploy until the CR is corrected.
+	ConditionViolation = "Violation"
 )
 
 // BoriDataPlaneSpec describes the desired state of a genomic dataplane app set.
@@ -62,7 +66,7 @@ type ComponentStatus struct {
 // It is populated by the shadow reconciler and persisted to the Kubernetes API server.
 type BoriDataPlaneStatus struct {
 	// Conditions summarizes the overall state of the dataplane.
-	// Standard types: Installed, Ready, Verified, Promoted, Degraded.
+	// Standard types: Installed, Ready, Verified, Promoted, Degraded, Violation.
 	Conditions []Condition `json:"conditions,omitempty"`
 	// CurrentRevision is the revision ID of the last promoted deployment.
 	CurrentRevision string `json:"currentRevision,omitempty"`
@@ -70,6 +74,10 @@ type BoriDataPlaneStatus struct {
 	Components []ComponentStatus `json:"components,omitempty"`
 	// ObservedAt is when this status was last computed.
 	ObservedAt metav1.Time `json:"observedAt,omitempty"`
+	// ObservedGeneration is the metadata.generation that this status corresponds to.
+	// The controller skips an expensive reconcile pass when this matches the
+	// current generation and no Degraded or Violation condition is set.
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
 
 // BoriDataPlane is the Kubernetes API resource for a managed dataplane app set.

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/HeaInSeo/bori/pkg/adapter"
@@ -23,6 +24,17 @@ import (
 	"github.com/HeaInSeo/bori/pkg/rollout"
 	shadowpkg "github.com/HeaInSeo/bori/pkg/shadow"
 )
+
+// ViolationError is returned when the deploy plan contains namespace policy violations.
+// Controllers should catch this with errors.As and set a Violation condition on the CR
+// instead of requeueing with an error.
+type ViolationError struct {
+	Violations []string
+}
+
+func (e *ViolationError) Error() string {
+	return "namespace violations: " + strings.Join(e.Violations, ", ")
+}
 
 // Runner is the interface implemented by Reconciler.
 // Controllers use this interface to allow mock injection in tests.
@@ -139,7 +151,7 @@ func (r *Reconciler) Run(ctx context.Context, req Request) (*Result, error) {
 		return nil, fmt.Errorf("plan: %w", err)
 	}
 	if len(plan.Violations) > 0 {
-		return nil, fmt.Errorf("namespace violations: %v", plan.Violations)
+		return nil, &ViolationError{Violations: plan.Violations}
 	}
 
 	runDir := artifact.RunDir(req.BoriDir, runID)

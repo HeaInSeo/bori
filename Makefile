@@ -32,9 +32,28 @@ uninstall-crds:
 	kubectl delete -f config/crd/ --ignore-not-found
 
 install-rbac:
-	kubectl create namespace bori-system --dry-run=client -o yaml | kubectl apply -f -
+	kubectl apply -f config/operator/namespace.yaml
 	kubectl apply -f config/rbac/
 
 uninstall-rbac:
 	kubectl delete -f config/rbac/ --ignore-not-found
-	kubectl delete namespace bori-system --ignore-not-found
+	kubectl delete -f config/operator/namespace.yaml --ignore-not-found
+
+# ── Phase 8: Operator deploy ─────────────────────────────────────────────────
+
+deploy: install-crds install-rbac
+	kubectl apply -f config/operator/configmap.yaml
+	kubectl apply -f config/operator/deployment.yaml
+
+undeploy:
+	kubectl delete -f config/operator/deployment.yaml --ignore-not-found
+	kubectl delete -f config/operator/configmap.yaml --ignore-not-found
+	$(MAKE) uninstall-rbac
+	$(MAKE) uninstall-crds
+
+deploy-dry-run:
+	kubectl apply -f config/crd/           --dry-run=client
+	kubectl apply -f config/operator/namespace.yaml --dry-run=client
+	kubectl apply -f config/rbac/          --dry-run=client
+	kubectl apply -f config/operator/configmap.yaml --dry-run=client
+	kubectl apply -f config/operator/deployment.yaml --dry-run=client

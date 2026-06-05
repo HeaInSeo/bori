@@ -1,23 +1,20 @@
 // Package controllers implements the bori operator controller loop.
 //
-// Phase 7 — Limited Operator Apply Mode.
+// Phase 8 — Operator Deployment Hardening.
 //
-// DataPlaneReconciler bridges BoriDataPlane CRs to the existing
-// pkg/reconcile.Reconciler engine. The controller:
-//  1. Fetches a BoriDataPlane object from the Kubernetes API server.
-//  2. Maps spec.release + spec.environment → pkg/reconcile.Request.
-//  3. Calls Runner.Run() — existing plan→deploy→verify→promote logic.
-//  4. Patches .status.conditions + .status.currentRevision via the status subresource.
-//  5. Records a Kubernetes event for the outcome.
-//  6. Returns RequeueAfter for periodic re-evaluation.
-//
-// Design invariant: all deploy logic lives in pkg/reconcile. This controller
-// only bridges the Kubernetes API ↔ reconciler boundary.
+// Changes from Phase 7:
+//   - Finalizer (bori.dev/cleanup): ensures graceful deletion
+//   - Generation-aware reconcile: skips expensive Runner.Run() when the CR
+//     spec hasn't changed and no problem condition is set
+//   - Namespace policy enforcement: ViolationError → Violation condition, no error requeue
+//   - Secret redaction: all event messages pass through security.RedactString()
 package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -26,11 +23,15 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1alpha1 "github.com/HeaInSeo/bori/apis/bori/v1alpha1"
 	reconcilepkg "github.com/HeaInSeo/bori/pkg/reconcile"
+	"github.com/HeaInSeo/bori/pkg/security"
 )
+
+const finalizerName = "bori.dev/cleanup"
 
 // DataPlaneReconciler reconciles BoriDataPlane objects.
 type DataPlaneReconciler struct {
@@ -38,35 +39,50 @@ type DataPlaneReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 
-	// BoriRoot is the local bori repo root (releases/, components/, environments/).
 	BoriRoot string
-	// BoriDir is the bori state directory (.bori/ by default).
-	BoriDir string
-	// AppsDir is the parent directory of app repos (used by deploy adapters).
-	AppsDir string
-	// Runner executes the plan→deploy→verify→promote cycle.
-	// In production this is *pkg/reconcile.Reconciler; in tests a mock.
-	Runner reconcilepkg.Runner
-	// RequeueInterval controls how often a healthy BoriDataPlane is re-evaluated.
+	BoriDir  string
+	AppsDir  string
+	// Runner executes plan→deploy→verify→promote.
+	// *pkg/reconcile.Reconciler in production; mock in tests.
+	Runner          reconcilepkg.Runner
 	RequeueInterval time.Duration
 }
 
-// Reconcile processes one BoriDataPlane reconcile event.
+// Reconcile processes one BoriDataPlane event.
 //
 // +kubebuilder:rbac:groups=bori.dev,resources=boridataplanes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=bori.dev,resources=boridataplanes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=bori.dev,resources=boridataplanes/finalizers,verbs=update
 func (r *DataPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
-	interval := r.RequeueInterval
-	if interval == 0 {
-		interval = 30 * time.Second
-	}
+	interval := r.requeueInterval()
 
 	var bdp v1alpha1.BoriDataPlane
 	if err := r.Get(ctx, req.NamespacedName, &bdp); err != nil {
-		// Not-found is not an error: the object was deleted between enqueue and reconcile.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Handle deletion: clean up and remove finalizer.
+	if !bdp.DeletionTimestamp.IsZero() {
+		return r.reconcileDelete(ctx, &bdp)
+	}
+
+	// Ensure finalizer is present.
+	if !controllerutil.ContainsFinalizer(&bdp, finalizerName) {
+		controllerutil.AddFinalizer(&bdp, finalizerName)
+		if err := r.Update(ctx, &bdp); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// Generation-aware: skip expensive Runner.Run() when the CR spec hasn't
+	// changed since the last reconcile and there is no active problem condition.
+	// ObservedGeneration > 0 ensures we always run at least once.
+	if bdp.Status.ObservedGeneration > 0 &&
+		bdp.Status.ObservedGeneration == bdp.Generation &&
+		!isUnhealthy(&bdp) {
+		return ctrl.Result{RequeueAfter: interval}, nil
 	}
 
 	res, err := r.Runner.Run(ctx, reconcilepkg.Request{
@@ -77,15 +93,22 @@ func (r *DataPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		EnvName:      bdp.Spec.Environment,
 		SkipIfInSync: true,
 	})
+
+	// Namespace policy violations are not runtime errors: set a condition and
+	// requeue slowly instead of returning an error that would trigger backoff.
+	var violErr *reconcilepkg.ViolationError
+	if errors.As(err, &violErr) {
+		return r.reconcileViolation(ctx, &bdp, violErr)
+	}
+
 	if err != nil {
 		r.Recorder.Event(&bdp, corev1.EventTypeWarning, "ReconcileFailed",
-			fmt.Sprintf("reconcile error: %v", err))
+			security.RedactString(fmt.Sprintf("reconcile error: %v", err)))
 		return ctrl.Result{RequeueAfter: interval}, err
 	}
 
-	// Patch .status from the shadow reconcile result.
 	patch := client.MergeFrom(bdp.DeepCopy())
-	bdp.Status = buildStatus(res)
+	bdp.Status = buildStatus(res, bdp.Generation)
 	if patchErr := r.Status().Patch(ctx, &bdp, patch); patchErr != nil {
 		logger.Error(patchErr, "failed to patch BoriDataPlane status")
 		return ctrl.Result{RequeueAfter: interval}, patchErr
@@ -93,10 +116,62 @@ func (r *DataPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	if res.DeployStatus != "skipped" && res.DeployStatus != "skipped (dry-run)" {
 		r.Recorder.Event(&bdp, corev1.EventTypeNormal, "Reconciled",
-			fmt.Sprintf("deploy=%s promoted=%v revision=%s",
-				res.DeployStatus, res.Promoted, res.RevisionID))
+			security.RedactString(fmt.Sprintf("deploy=%s promoted=%v revision=%s",
+				res.DeployStatus, res.Promoted, res.RevisionID)))
 	}
 	return ctrl.Result{RequeueAfter: interval}, nil
+}
+
+// reconcileDelete removes the finalizer after recording that the object was deleted.
+// bori retains shadow state and revision history on disk — the adapters own the
+// actual Kubernetes resources (Deployments etc.) and they are not cleaned up here.
+func (r *DataPlaneReconciler) reconcileDelete(ctx context.Context, bdp *v1alpha1.BoriDataPlane) (ctrl.Result, error) {
+	log.FromContext(ctx).Info("handling deletion",
+		"release", bdp.Spec.Release, "environment", bdp.Spec.Environment)
+
+	controllerutil.RemoveFinalizer(bdp, finalizerName)
+	if err := r.Update(ctx, bdp); err != nil {
+		return ctrl.Result{}, err
+	}
+	r.Recorder.Event(bdp, corev1.EventTypeNormal, "Deleted",
+		fmt.Sprintf("BoriDataPlane %s/%s deleted; shadow state and revision history retained on disk",
+			bdp.Namespace, bdp.Name))
+	return ctrl.Result{}, nil
+}
+
+// reconcileViolation sets Violation + Degraded conditions and requeues slowly.
+// Violations (namespace not in allowed list) don't self-heal — they require a CR
+// or environment spec change. Using a long requeue avoids high-frequency retries.
+func (r *DataPlaneReconciler) reconcileViolation(ctx context.Context, bdp *v1alpha1.BoriDataPlane, violErr *reconcilepkg.ViolationError) (ctrl.Result, error) {
+	now := metav1.NewTime(time.Now().UTC())
+	msg := strings.Join(violErr.Violations, "; ")
+
+	patch := client.MergeFrom(bdp.DeepCopy())
+	bdp.Status.ObservedGeneration = bdp.Generation
+	bdp.Status.ObservedAt = now
+	bdp.Status.Conditions = setCondition(bdp.Status.Conditions, v1alpha1.Condition{
+		Type:               v1alpha1.ConditionViolation,
+		Status:             v1alpha1.ConditionTrue,
+		Reason:             "NamespaceViolation",
+		Message:            msg,
+		LastTransitionTime: now,
+	})
+	bdp.Status.Conditions = setCondition(bdp.Status.Conditions, v1alpha1.Condition{
+		Type:               v1alpha1.ConditionDegraded,
+		Status:             v1alpha1.ConditionTrue,
+		Reason:             "NamespaceViolation",
+		Message:            "namespace policy violations prevent deployment",
+		LastTransitionTime: now,
+	})
+
+	if err := r.Status().Patch(ctx, bdp, patch); err != nil {
+		return ctrl.Result{}, err
+	}
+	r.Recorder.Event(bdp, corev1.EventTypeWarning, "NamespaceViolation",
+		security.RedactString(msg))
+
+	// Long requeue: violations require manual correction, not rapid retry.
+	return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 }
 
 // SetupWithManager registers the controller with a controller-runtime Manager.
@@ -106,17 +181,57 @@ func (r *DataPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// buildStatus converts a reconcile result into the BoriDataPlane status subresource.
-func buildStatus(res *reconcilepkg.Result) v1alpha1.BoriDataPlaneStatus {
+// requeueInterval returns the configured interval, falling back to 30s.
+func (r *DataPlaneReconciler) requeueInterval() time.Duration {
+	if r.RequeueInterval > 0 {
+		return r.RequeueInterval
+	}
+	return 30 * time.Second
+}
+
+// buildStatus converts a reconcile result into BoriDataPlaneStatus.
+func buildStatus(res *reconcilepkg.Result, generation int64) v1alpha1.BoriDataPlaneStatus {
 	if res == nil || res.ShadowState == nil {
 		return v1alpha1.BoriDataPlaneStatus{
-			ObservedAt: metav1.NewTime(time.Now().UTC()),
+			ObservedAt:         metav1.NewTime(time.Now().UTC()),
+			ObservedGeneration: generation,
 		}
 	}
 	return v1alpha1.BoriDataPlaneStatus{
-		CurrentRevision: res.ShadowState.ActualRevision,
-		ObservedAt:      metav1.NewTime(res.ShadowState.ComputedAt),
-		Conditions:      res.ShadowState.Conditions,
-		Components:      res.ShadowState.Components,
+		CurrentRevision:    res.ShadowState.ActualRevision,
+		ObservedAt:         metav1.NewTime(res.ShadowState.ComputedAt),
+		ObservedGeneration: generation,
+		Conditions:         res.ShadowState.Conditions,
+		Components:         res.ShadowState.Components,
 	}
+}
+
+// setCondition upserts a condition into the slice, preserving LastTransitionTime
+// when the Status value has not changed.
+func setCondition(conditions []v1alpha1.Condition, cond v1alpha1.Condition) []v1alpha1.Condition {
+	for i, c := range conditions {
+		if c.Type == cond.Type {
+			if c.Status == cond.Status {
+				cond.LastTransitionTime = c.LastTransitionTime
+			}
+			conditions[i] = cond
+			return conditions
+		}
+	}
+	return append(conditions, cond)
+}
+
+// isUnhealthy reports whether the BoriDataPlane has an active Degraded or
+// Violation condition. Unhealthy objects are always fully reconciled regardless
+// of generation matching.
+func isUnhealthy(bdp *v1alpha1.BoriDataPlane) bool {
+	for _, c := range bdp.Status.Conditions {
+		switch c.Type {
+		case v1alpha1.ConditionDegraded, v1alpha1.ConditionViolation:
+			if c.Status == v1alpha1.ConditionTrue {
+				return true
+			}
+		}
+	}
+	return false
 }

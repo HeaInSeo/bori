@@ -68,6 +68,10 @@ spec:
                       lastTransitionTime:
                         type: string
                         format: date-time
+                observedGeneration:
+                  description: metadata.generation reconciled into this status.
+                  type: integer
+                  format: int64
                 components:
                   description: Per-component sync status.
                   type: array
@@ -96,6 +100,9 @@ spec:
         - name: Revision
           type: string
           jsonPath: .status.currentRevision
+        - name: ObservedGen
+          type: integer
+          jsonPath: .status.observedGeneration
         - name: Age
           type: date
           jsonPath: .metadata.creationTimestamp

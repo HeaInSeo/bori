@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bori-operator-config
+  namespace: bori-system
+  labels:
+    app.kubernetes.io/name: bori-operator
+data:
+  # Path to the bori repo root inside the operator pod.
+  # Mount the bori repo as a volume and set this to the mount path.
+  bori-root: /bori
+  bori-dir: /bori/.bori
+  # How often to re-evaluate each BoriDataPlane when already in-sync.
+  requeue-interval: 30s
+  # apps-dir: parent directory of app repos used by deploy adapters.
+  # Defaults to parent of bori-root when empty.
+  apps-dir: ""
