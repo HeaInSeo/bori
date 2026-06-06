@@ -1,14 +1,31 @@
-# bori Control Plane 전환 개발 기획서 v0.7
+# bori Control Plane 전환 개발 기획서 v0.8
 
-상태: Draft v0.7  
+상태: Draft v0.8  
 작성일: 2026-06-01  
-최종 업데이트: 2026-06-05  
+최종 업데이트: 2026-06-06  
 대상 저장소: `bori`  
 관련 프로젝트: `JUMI`, `artifact-handoff`, `node-artifact-runtime(nan)`, `tori`, `kube-slint`
 
 ---
 
 ## 0. 변경 이력
+
+### v0.8에서 바뀐 점 (2026-06-06)
+
+Phase 9가 완료됐다. `BoriRelease`가 파일시스템 YAML에서 Kubernetes CR로 승격됐다.
+
+v0.8의 핵심 변경점은 다음이다.
+
+1. Phase 9 완료 표시 (2026-06-06).
+   - `BoriRelease` CRD 추가 — `releases/<name>/release.yaml`의 Kubernetes CR 버전.
+   - operator가 K8s API에서 BoriRelease를 읽고, 없으면 파일시스템 fallback (CLI 호환).
+   - `BoriRelease` 변경 시 참조하는 `BoriDataPlane` 자동 enqueue.
+   - `bori release apply` CLI 서브커맨드 추가 — 기존 YAML을 CR로 변환.
+   - `network-baseline` 저장소 통합 가능성 확인 (별도 트랙으로 관리 예정).
+
+2. Phase 9 산출물 및 완료 기준을 §12(개발 로드맵) 섹션에 추가.
+
+---
 
 ### v0.7에서 바뀐 점 (2026-06-05)
 
@@ -2034,6 +2051,83 @@ Makefile
 - [x] 허용되지 않은 namespace → Violation condition, Degraded=True (에러 아님)
 - [x] event 메시지에 secrets 미노출
 - [x] 컨트롤러 테스트 8개 통과 (4개 Phase 7 + 4개 Phase 8 신규)
+
+### Phase 9 — BoriRelease CRD ✅ 완료 (2026-06-06)
+
+~~예상 기간: Phase 8 직후~~  
+실제 완료: 2026-06-06
+
+목표:
+
+- `BoriRelease`를 파일시스템 YAML에서 Kubernetes CR로 승격
+- operator가 K8s API에서 릴리즈 정의를 읽음 (파일시스템 fallback 유지)
+- `BoriRelease` 변경 → 참조하는 `BoriDataPlane` 자동 reconcile 트리거
+- `bori release apply` CLI 서브커맨드 추가
+
+비목표:
+
+```text
+- BoriRevision CRD (Phase 10 후보)
+- BoriVerificationRun CRD (Phase 10 후보)
+- traffic routing / progressive delivery
+- kube-slint Track K0-K5 (별도 트랙 유지)
+```
+
+산출물:
+
+```text
+apis/bori/v1alpha1/release_types.go
+  - BoriRelease + BoriReleaseList — CRD 타입
+  - BoriReleaseSpec: components[], compatibility, verification, promotion
+  - BoriReleaseStatus: observedGeneration, activeDataPlanes, observedAt
+  - ToModel(): BoriRelease CR → pkg/model.BoriRelease
+  - FromModelRelease(): pkg/model.BoriRelease → BoriRelease CR (CLI 사용)
+
+apis/bori/v1alpha1/release_deepcopy.go
+  - DeepCopyObject/DeepCopyInto for BoriRelease + BoriReleaseList
+
+apis/bori/v1alpha1/register.go
+  - BoriRelease + BoriReleaseList SchemeBuilder 등록
+
+config/crd/borireleases.bori.dev.yaml
+  - BoriRelease CRD (group: bori.dev, scope: Namespaced, shortName: br)
+
+config/rbac/role.yaml
+  - borireleases get/list/watch 권한 추가
+
+pkg/reconcile/reconciler.go
+  - Request.Release *model.BoriRelease — nil이면 파일시스템 fallback
+
+pkg/planner/planner.go
+  - Planner.Release *model.BoriRelease — 동일 override 패턴
+
+controllers/dataplane_controller.go
+  - resolveRelease(): K8s API → nil이면 파일시스템 fallback
+  - SetupWithManager(): Watches(BoriRelease) → findDataPlanesForRelease
+  - findDataPlanesForRelease(): BoriRelease 변경 → 참조 BDP enqueue
+
+controllers/dataplane_controller_test.go
+  - TestResolveRelease_fromKubernetesAPI
+  - TestResolveRelease_filesystemFallback
+  - TestReconcile_injectsResolvedRelease
+  - TestReconcile_findDataPlanesForRelease
+
+cmd/bori/main.go
+  - bori release apply --name <name> [--namespace <ns>] [--apply]
+```
+
+완료 기준:
+
+- [x] `kubectl apply` 로 BoriRelease CR 생성 → operator가 이를 사용해 reconcile
+- [x] BoriRelease spec 변경 → 연관 BoriDataPlane 자동 재실행
+- [x] 기존 `bori deploy --release <name>` 은 파일시스템 fallback으로 그대로 동작
+- [x] `bori release apply` 로 기존 YAML을 CR로 변환 가능
+- [x] 컨트롤러 테스트 12개 통과 (8개 Phase 7/8 + 4개 Phase 9 신규)
+
+비고:
+
+- `network-baseline` 저장소(타 agent 개발 중)가 통합 계약 문서를 준비 중임.
+  NetworkBaselineRun CRD가 안정화되면 Phase 10 또는 별도 Track으로 추가 예정.
 
 ---
 
