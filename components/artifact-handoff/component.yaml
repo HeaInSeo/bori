@@ -26,4 +26,5 @@ verificationPolicies:
   - ah-materialization-smoke
 
 deploy:
+  namespace: artifact-handoff-system
   adapter: devspace

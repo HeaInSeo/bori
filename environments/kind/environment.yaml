@@ -7,8 +7,9 @@ cluster:
 namespacePolicy:
   allowed:
     - jumi-system
-    - artifact-system
+    - artifact-handoff-system
     - nan-system
+    - node-sentinel-system
     - tori-system
   allowClusterScopedResources: false
 

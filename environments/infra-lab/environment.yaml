@@ -1,0 +1,25 @@
+# infra-lab: 공용 원격 실행 기반 (100.123.80.48)
+# Kubernetes cluster: libvirt VM 기반, Harbor 레지스트리 사용
+# 접근: SSH (seoy@100.123.80.48) 또는 kubeconfig 직접 지정
+name: infra-lab
+
+cluster:
+  kubeconfig: ${KUBECONFIG}
+  context: infra-lab
+
+namespacePolicy:
+  allowed:
+    - jumi-system
+    - artifact-handoff-system
+    - nan-system
+    - node-sentinel-system
+    - tori-system
+  allowClusterScopedResources: false
+
+registry:
+  # infra-lab 전용 Harbor 레지스트리
+  default: harbor.10.113.24.96.nip.io/heainseo
+
+secrets:
+  mode: reference-only
+  redaction: strict

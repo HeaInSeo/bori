@@ -26,4 +26,5 @@ verificationPolicies:
   - nan-materialization-smoke
 
 deploy:
+  namespace: nan-system
   adapter: devspace

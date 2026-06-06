@@ -27,11 +27,16 @@ type BoriComponent struct {
 	Deploy               DeployConfig `yaml:"deploy,omitempty"`
 }
 
-// DeployConfig specifies which adapter deploys this component.
+// DeployConfig specifies how a component is deployed.
 type DeployConfig struct {
 	// Adapter selects the deploy tool: devspace | ko | kustomize | shell.
 	// Defaults to "devspace" if empty.
 	Adapter string `yaml:"adapter"`
+	// Namespace is the Kubernetes namespace this component is deployed into.
+	// Overrides the planner default of "{name}-system" when set.
+	// Namespace ownership belongs to the environment (namespacePolicy.allowed);
+	// this field declares the component's target, not grants permission.
+	Namespace string `yaml:"namespace,omitempty"`
 }
 
 // ImageRef holds the full image reference including digest.

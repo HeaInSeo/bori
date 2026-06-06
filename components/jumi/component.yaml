@@ -28,4 +28,5 @@ verificationPolicies:
   - jumi-upgrade-churn-gate
 
 deploy:
+  namespace: jumi-system
   adapter: devspace

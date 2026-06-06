@@ -27,4 +27,5 @@ verificationPolicies:
   - tori-pipeline-smoke
 
 deploy:
+  namespace: tori-system
   adapter: devspace

@@ -24,4 +24,5 @@ verificationPolicies:
   - node-sentinel-smoke
 
 deploy:
+  namespace: node-sentinel-system
   adapter: devspace

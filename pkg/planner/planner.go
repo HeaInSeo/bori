@@ -91,7 +91,10 @@ func (p *Planner) Plan(runID, releaseName, envName string) (*artifact.Plan, erro
 
 	for _, ref := range orderedRefs {
 		comp := comps[ref.Name]
-		ns := defaultNamespace(comp.Name)
+		ns := comp.Deploy.Namespace
+		if ns == "" {
+			ns = defaultNamespace(comp.Name)
+		}
 		adapterName := comp.Deploy.Adapter
 		if adapterName == "" {
 			adapterName = "devspace"
