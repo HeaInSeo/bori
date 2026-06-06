@@ -20,16 +20,25 @@ import (
 //
 // This matches the recommended pattern from docs/kube-slint-integration.md §slint-gate 호출 방식.
 type KubeSlintProvider struct {
-	SlintGateBin string
+	SlintGateBin    string
+	DetectedVersion string // set by NewKubeSlintProvider after version check
 }
 
 // NewKubeSlintProvider returns a Provider backed by slint-gate.
 // If slintGateBin is empty, "slint-gate" is resolved via PATH.
+// It performs a non-fatal version check and warns to stderr if slint-gate
+// is older than RequiredSlintGateVersion or doesn't support the version command.
 func NewKubeSlintProvider(slintGateBin string) Provider {
 	if slintGateBin == "" {
 		slintGateBin = "slint-gate"
 	}
-	return &KubeSlintProvider{SlintGateBin: slintGateBin}
+	p := &KubeSlintProvider{SlintGateBin: slintGateBin}
+	if v, err := CheckSlintGateVersion(slintGateBin); err != nil {
+		fmt.Fprintf(os.Stderr, "[bori] warning: %v\n", err)
+	} else {
+		p.DetectedVersion = v
+	}
+	return p
 }
 
 func (p *KubeSlintProvider) Run(ctx context.Context, req Request) (*Result, error) {

@@ -1,6 +1,7 @@
 name: tori-pipeline-smoke
 provider: kube-slint
 mode: cli
+source: metric-2point
 
 policy: .bori/policy.{profile}.yaml
 

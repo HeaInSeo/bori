@@ -2,18 +2,27 @@ name: jumi-upgrade-churn-gate
 provider: kube-slint
 mode: cli
 
-# churn-policy.{profile}.yaml is the kube-slint SLI policy that evaluates
-# JUMI's Kubernetes object churn metrics (jobs/pods created delta, orphan count,
-# stuck terminating count, ownerRef missing count, cleanup duration, etc.).
+# source: k8s-object-snapshot — kube-slint K5 (v1.2.0+)
+# Uses K8sObjectFetcher to measure Kubernetes object churn:
+#   jumi_jobs_count, jumi_jobs_orphan_end, jumi_jobs_stuck_terminating_end
+#   jumi_pods_count, jumi_pods_orphan_end, jumi_pods_stuck_terminating_end
+# App repo must define SLI specs using pkg/slo/spec.JUMIChurnSpecs() or equivalent.
+source: k8s-object-snapshot
+
+# policy references the kube-slint SLI policy inside JUMI's repo.
 policy: .bori/churn-policy.{profile}.yaml
 
-# blocking: true — if this gate FAILS or produces NO_GRADE, bori halts
-# the entire verification run and blocks promotion immediately.
-# JUMI's client-go object churn is a hard gate; no partial pass is acceptable.
+# blocking: true — JUMI's client-go object churn is a hard gate.
+# Counter reset, orphan accumulation, or stuck terminating pods MUST block promotion.
 blocking: true
 
-# failOn: FAIL_OR_NOGRADE — counter reset (JUMI restart / metric reset)
-# must NOT silently pass. Until kube-slint K2 (onCounterReset policy) is merged,
-# bori treats FAIL_OR_NOGRADE as the correct promotion gate policy here.
-# See docs/jumi-churn-gate.md §Counter reset 정책.
+# onCounterReset: no_grade — kube-slint K2 (v1.1.0+)
+# JUMI's SLI spec sets OnCounterReset: CounterResetNoGrade for:
+#   jumi_jobs_created_delta, jumi_fast_fail_trigger_delta
+# Effect: counter reset → StatusSkip (no value) → gate NO_GRADE → blocked by FAIL_OR_NOGRADE.
+# This prevents a JUMI restart from silently resetting churn counters and passing as PASS.
+onCounterReset: no_grade
+
+# failOn: FAIL_OR_NOGRADE — correct with K2 in place.
+# NO_GRADE now covers both "measurement unreliable" and "counter reset" cases.
 failOn: FAIL_OR_NOGRADE

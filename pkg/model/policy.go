@@ -25,6 +25,17 @@ type BoriVerificationPolicy struct {
 	// NEVER | FAIL | FAIL_OR_NOGRADE | WARN
 	FailOn   string `yaml:"failOn"`
 	Blocking bool   `yaml:"blocking"`
+	// Source documents the primary data source used by the kube-slint policy.
+	// Informational — does not change how bori invokes slint-gate.
+	// Values: metric-2point | k8s-object-snapshot | network-baseline
+	// k8s-object-snapshot: uses K8sObjectFetcher (kube-slint v1.2.0+, Track K5).
+	Source string `yaml:"source,omitempty"`
+	// OnCounterReset documents the CounterResetPolicy set in the kube-slint SLI spec.
+	// Advisory — the actual policy is in the app repo's kube-slint policy file.
+	// Values: warn | no_grade | fail | skip (matches kube-slint CounterResetPolicy).
+	// no_grade: counter reset → StatusSkip → gate NO_GRADE → blocks FAIL_OR_NOGRADE.
+	// Requires kube-slint v1.1.0+ (Track K2).
+	OnCounterReset string `yaml:"onCounterReset,omitempty"`
 }
 
 // ResolvePolicyPath substitutes {profile} in the Policy field and joins it

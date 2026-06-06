@@ -375,7 +375,7 @@ func cmdVerify(args []string) {
 	smokeCmd := fs.String("smoke-cmd", "", "shell command for smoke step — developer mode only")
 	smokeWait := fs.Duration("smoke-wait", 10*time.Second, "wait if --smoke-cmd is not set")
 	boriDir := fs.String("bori-dir", ".bori", "local .bori directory for run archives")
-	slintGate := fs.String("slint-gate", "slint-gate", "path to slint-gate binary")
+	slintGate := fs.String("slint-gate", "slint-gate", "path to slint-gate binary (requires v1.2.0+; K0-K5 all available from v1.2.0)")
 	verbose := fs.Bool("v", false, "verbose output")
 	_ = fs.Parse(args)
 
