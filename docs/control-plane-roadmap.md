@@ -1,6 +1,6 @@
-# bori Control Plane 전환 개발 기획서 v0.8
+# bori Control Plane 전환 개발 기획서 v0.9
 
-상태: Draft v0.8  
+상태: Draft v0.9  
 작성일: 2026-06-01  
 최종 업데이트: 2026-06-06  
 대상 저장소: `bori`  
@@ -9,6 +9,27 @@
 ---
 
 ## 0. 변경 이력
+
+### v0.9에서 바뀐 점 (2026-06-06)
+
+Phase 10이 완료됐다. 배포 이력이 Kubernetes CR로 승격됐고, BoriRelease status가 완성됐다.
+
+v0.9의 핵심 변경점은 다음이다.
+
+1. Phase 10 완료 표시 (2026-06-06).
+   - `BoriRevision` CRD 추가 — promoted 배포마다 CR 생성, `kubectl get borirevisions` 조회 가능.
+   - `upsertBoriRevision()` — promote 후 disk + K8s CR 동시 기록 (dual write, CLI 호환 유지).
+   - `BoriReleaseReconciler` — BoriDataPlane 변경 시 `status.activeDataPlanes` 실시간 갱신.
+   - RBAC 보완 — `borireleases/status`, `borirevisions` 권한 추가.
+
+2. 기타 완료 사항.
+   - component.yaml에 namespace 명시, environment.yaml 정규화.
+   - `infra-lab` 환경 추가 (context: kubernetes-admin@kubernetes, registry: ghcr.io).
+   - `pkg/model.DeployConfig.Namespace` 필드 추가, planner override 지원.
+
+3. Phase 10 산출물 및 완료 기준을 §12(개발 로드맵) 섹션에 추가.
+
+---
 
 ### v0.8에서 바뀐 점 (2026-06-06)
 
@@ -2127,7 +2148,84 @@ cmd/bori/main.go
 비고:
 
 - `network-baseline` 저장소(타 agent 개발 중)가 통합 계약 문서를 준비 중임.
-  NetworkBaselineRun CRD가 안정화되면 Phase 10 또는 별도 Track으로 추가 예정.
+  NetworkBaselineRun CRD가 안정화되면 Phase 11 또는 별도 Track으로 추가 예정.
+
+### Phase 10 — BoriRevision CRD + BoriRelease status 완성 ✅ 완료 (2026-06-06)
+
+~~예상 기간: Phase 9 직후~~  
+실제 완료: 2026-06-06
+
+목표:
+
+- `BoriRevision`을 파일 → Kubernetes CR로 승격: `kubectl get borirevisions`로 배포 이력 조회
+- `BoriRelease.status.activeDataPlanes` 실시간 유지
+- `BoriReleaseReconciler` — BoriDataPlane 변경 → BoriRelease status 자동 갱신
+
+비목표:
+
+```text
+- BoriVerificationRun CRD (Phase 11 후보)
+- network-baseline 통합 (별도 트랙)
+- kube-slint Track K0-K5 (별도 트랙)
+```
+
+산출물:
+
+```text
+apis/bori/v1alpha1/revision_types.go
+  - BoriRevision + BoriRevisionList CRD 타입
+  - BoriRevisionSpec: release, environment, contentHash, components[], parentRevisionId
+  - RevisionComponentRef: name, version, imageRef, digest 필드들
+  - BoriRevisionStatus: promotionStatus, promotedAt, verificationRunId, observedAt
+  - CR name = revisionID (jumi-ah-dev-20260606-120000-abc123 형식)
+
+apis/bori/v1alpha1/revision_deepcopy.go
+config/crd/borirevisions.bori.dev.yaml
+  - BoriRevision CRD (group: bori.dev, scope: Namespaced, shortName: brev)
+  - additionalPrinterColumns: Release, Environment, Status, Age
+
+config/rbac/role.yaml
+  - borireleases/status get/update/patch
+  - borirevisions get/list/watch/create/update/patch + status
+
+controllers/dataplane_controller.go
+  - upsertBoriRevision(): promote 후 disk에서 읽어 BoriRevision CR upsert
+    non-fatal — disk artifact는 항상 보존 (CLI 호환)
+  - revisionToCR(): pkg/revision.BoriRevision → v1alpha1.BoriRevision 변환
+
+controllers/release_reconciler.go (new)
+  - BoriReleaseReconciler: BoriRelease.status.activeDataPlanes 유지
+  - Reconcile(): 같은 namespace의 BDP를 List, 비삭제 참조 수 계산
+  - SetupWithManager(): For(BoriRelease) + Watches(BoriDataPlane)
+  - findReleaseForDataPlane(): BDP 이벤트 → BoriRelease enqueue
+
+controllers/release_reconciler_test.go (new)
+  - TestBoriReleaseReconciler_countsActiveDataPlanes: 2 BDPs → count=2
+  - TestBoriReleaseReconciler_excludesDeletingDataPlanes: 삭제중 BDP 제외
+  - TestBoriReleaseReconciler_releaseNotFound: no error
+  - TestBoriReleaseReconciler_zeroWhenNoDataPlanes: count=0
+  - TestBoriReleaseReconciler_findReleaseForDataPlane: mapper 검증
+
+cmd/bori-operator/main.go
+  - BoriReleaseReconciler 등록
+```
+
+완료 기준:
+
+- [x] `kubectl get borirevisions` → promoted revision 이력 조회
+- [x] BoriRevision은 K8s CR + 디스크 양쪽에 기록 (CLI 호환 유지)
+- [x] `kubectl get borireleases` → `DATAPLANES` 컬럼 실시간 표시
+- [x] BoriDataPlane 삭제 시 BoriRelease.status.activeDataPlanes 자동 감소
+- [x] 컨트롤러 테스트 17개 통과 (12개 이전 + 5개 Phase 10 신규)
+
+부록 — 이번에 함께 완료된 작업:
+
+- `pkg/model.DeployConfig.Namespace` 추가 → component.yaml에 namespace 명시
+- `pkg/planner`: `comp.Deploy.Namespace` override 지원
+- 모든 component.yaml에 개별 namespace 추가 (jumi-system, artifact-handoff-system, …)
+- 모든 environment.yaml namespace 정규화 (artifact-system → artifact-handoff-system)
+- `environments/infra-lab/environment.yaml` 추가
+  (context: kubernetes-admin@kubernetes, registry: ghcr.io/heainseo)
 
 ---
 
