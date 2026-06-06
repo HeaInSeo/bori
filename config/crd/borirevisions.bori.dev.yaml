@@ -1,0 +1,92 @@
+# BoriRevision CRD — Phase 10
+#
+# BoriRevision is an immutable snapshot of one promoted deployment.
+# The operator creates one CR per promoted revision.
+# The CR name is the revision ID: {release}-{timestamp}-{hash6}
+#
+# Disk artifacts (.bori/revisions/) are preserved for CLI backward compat.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: borirevisions.bori.dev
+  annotations:
+    bori.dev/phase: "10"
+spec:
+  group: bori.dev
+  names:
+    kind: BoriRevision
+    listKind: BoriRevisionList
+    plural: borirevisions
+    singular: borirevision
+    shortNames:
+      - brev
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [release, environment, contentHash]
+              properties:
+                release:
+                  type: string
+                environment:
+                  type: string
+                contentHash:
+                  type: string
+                parentRevisionId:
+                  type: string
+                baselineRef:
+                  type: string
+                components:
+                  type: array
+                  items:
+                    type: object
+                    required: [name, version]
+                    properties:
+                      name:
+                        type: string
+                      version:
+                        type: string
+                      imageRef:
+                        type: string
+                      componentSpecDigest:
+                        type: string
+                      environmentDigest:
+                        type: string
+                      verificationPolicyDigest:
+                        type: string
+            status:
+              type: object
+              properties:
+                promotionStatus:
+                  description: "pending | promoted | rejected"
+                  type: string
+                promotedAt:
+                  type: string
+                  format: date-time
+                verificationRunId:
+                  type: string
+                observedAt:
+                  type: string
+                  format: date-time
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Release
+          type: string
+          jsonPath: .spec.release
+        - name: Environment
+          type: string
+          jsonPath: .spec.environment
+        - name: Status
+          type: string
+          jsonPath: .status.promotionStatus
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

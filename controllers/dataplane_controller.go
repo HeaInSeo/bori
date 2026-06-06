@@ -32,6 +32,7 @@ import (
 	v1alpha1 "github.com/HeaInSeo/bori/apis/bori/v1alpha1"
 	"github.com/HeaInSeo/bori/pkg/model"
 	reconcilepkg "github.com/HeaInSeo/bori/pkg/reconcile"
+	"github.com/HeaInSeo/bori/pkg/revision"
 	"github.com/HeaInSeo/bori/pkg/security"
 )
 
@@ -132,6 +133,14 @@ func (r *DataPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			security.RedactString(fmt.Sprintf("deploy=%s promoted=%v revision=%s",
 				res.DeployStatus, res.Promoted, res.RevisionID)))
 	}
+
+	// Upsert BoriRevision CR after a successful promotion (non-fatal on error).
+	if res.Promoted && res.RevisionID != "" {
+		if err := r.upsertBoriRevision(ctx, bdp.Namespace, res.RevisionID); err != nil {
+			log.FromContext(ctx).Error(err, "failed to upsert BoriRevision CR — disk artifact is preserved")
+		}
+	}
+
 	return ctrl.Result{RequeueAfter: interval}, nil
 }
 
@@ -281,6 +290,73 @@ func setCondition(conditions []v1alpha1.Condition, cond v1alpha1.Condition) []v1
 		}
 	}
 	return append(conditions, cond)
+}
+
+// upsertBoriRevision creates or updates a BoriRevision CR from the on-disk
+// revision file. This is a dual-write: disk remains the source of truth for
+// the CLI; the K8s CR makes history queryable via kubectl.
+func (r *DataPlaneReconciler) upsertBoriRevision(ctx context.Context, namespace, revisionID string) error {
+	rev, err := revision.Read(r.BoriDir, revisionID)
+	if err != nil {
+		return fmt.Errorf("read revision %s from disk: %w", revisionID, err)
+	}
+
+	cr := revisionToCR(namespace, rev)
+
+	var existing v1alpha1.BoriRevision
+	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: revisionID}, &existing); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("get BoriRevision: %w", err)
+		}
+		// First time: create the CR.
+		return r.Create(ctx, &cr)
+	}
+
+	// Already exists: update status only (spec is immutable after creation).
+	patch := client.MergeFrom(existing.DeepCopy())
+	existing.Status = cr.Status
+	return r.Status().Patch(ctx, &existing, patch)
+}
+
+// revisionToCR converts a pkg/revision.BoriRevision into a v1alpha1.BoriRevision CR.
+func revisionToCR(namespace string, rev revision.BoriRevision) v1alpha1.BoriRevision {
+	cr := v1alpha1.BoriRevision{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: v1alpha1.GroupVersion.String(),
+			Kind:       "BoriRevision",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rev.RevisionID,
+			Namespace: namespace,
+		},
+		Spec: v1alpha1.BoriRevisionSpec{
+			Release:          rev.Release,
+			Environment:      rev.Environment,
+			ContentHash:      rev.ContentHash,
+			ParentRevisionID: rev.ParentRevisionID,
+			BaselineRef:      rev.BaselineRef,
+		},
+		Status: v1alpha1.BoriRevisionStatus{
+			PromotionStatus:   rev.PromotionStatus,
+			VerificationRunID: rev.VerificationRunID,
+			ObservedAt:        metav1.NewTime(time.Now().UTC()),
+		},
+	}
+	if rev.PromotedAt != nil {
+		t := metav1.NewTime(*rev.PromotedAt)
+		cr.Status.PromotedAt = &t
+	}
+	for _, c := range rev.Components {
+		cr.Spec.Components = append(cr.Spec.Components, v1alpha1.RevisionComponentRef{
+			Name:                     c.Name,
+			Version:                  c.Version,
+			ImageRef:                 c.ImageRef,
+			ComponentSpecDigest:      c.ComponentSpecDigest,
+			EnvironmentDigest:        c.EnvironmentDigest,
+			VerificationPolicyDigest: c.VerificationPolicyDigest,
+		})
+	}
+	return cr
 }
 
 // isUnhealthy reports whether the BoriDataPlane has an active Degraded or
