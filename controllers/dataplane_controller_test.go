@@ -41,6 +41,13 @@ func setupScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
+func newBoriRelease(namespace, name string, components ...v1alpha1.BoriReleaseComponentRef) *v1alpha1.BoriRelease {
+	return &v1alpha1.BoriRelease{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec:       v1alpha1.BoriReleaseSpec{Components: components},
+	}
+}
+
 func newBDP(namespace, name, release, env string) *v1alpha1.BoriDataPlane {
 	return &v1alpha1.BoriDataPlane{
 		ObjectMeta: metav1.ObjectMeta{
@@ -386,6 +393,130 @@ func TestReconcile_skipsIfGenerationMatches(t *testing.T) {
 	}
 	if res.RequeueAfter != 10*time.Second {
 		t.Errorf("requeue: want 10s, got %v", res.RequeueAfter)
+	}
+}
+
+// ── Phase 9 new tests ───────────────────────────────────────────────────────
+
+func TestResolveRelease_fromKubernetesAPI(t *testing.T) {
+	scheme := setupScheme(t)
+	br := newBoriRelease("default", "jumi-ah-dev",
+		v1alpha1.BoriReleaseComponentRef{Name: "jumi", Version: "v0.3.0"},
+		v1alpha1.BoriReleaseComponentRef{Name: "artifact-handoff", Version: "v0.2.0"},
+	)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(br).Build()
+
+	r := &DataPlaneReconciler{Client: fakeClient}
+	bdp := newBDP("default", "test", "jumi-ah-dev", "dev")
+
+	rel, err := r.resolveRelease(context.Background(), bdp)
+	if err != nil {
+		t.Fatalf("resolveRelease: %v", err)
+	}
+	if rel == nil {
+		t.Fatal("expected non-nil release from K8s API")
+	}
+	if rel.Name != "jumi-ah-dev" {
+		t.Errorf("name: want %q, got %q", "jumi-ah-dev", rel.Name)
+	}
+	if len(rel.Components) != 2 {
+		t.Errorf("components: want 2, got %d", len(rel.Components))
+	}
+	if rel.Components[0].Name != "jumi" || rel.Components[0].Version != "v0.3.0" {
+		t.Errorf("component[0]: want jumi@v0.3.0, got %s@%s", rel.Components[0].Name, rel.Components[0].Version)
+	}
+}
+
+func TestResolveRelease_filesystemFallback(t *testing.T) {
+	scheme := setupScheme(t)
+	// No BoriRelease CR in the cluster.
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	r := &DataPlaneReconciler{Client: fakeClient}
+	bdp := newBDP("default", "test", "nonexistent-release", "dev")
+
+	rel, err := r.resolveRelease(context.Background(), bdp)
+	if err != nil {
+		t.Fatalf("resolveRelease: %v", err)
+	}
+	if rel != nil {
+		t.Errorf("expected nil (filesystem fallback), got %+v", rel)
+	}
+}
+
+func TestReconcile_injectsResolvedRelease(t *testing.T) {
+	scheme := setupScheme(t)
+	br := newBoriRelease("default", "my-release",
+		v1alpha1.BoriReleaseComponentRef{Name: "jumi", Version: "v0.5.0"},
+	)
+	bdp := newBDP("default", "test", "my-release", "dev")
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(bdp).
+		WithObjects(bdp, br).
+		Build()
+
+	runner := &mockRunner{
+		result: &reconcilepkg.Result{
+			DeployStatus: "skipped",
+			ShadowState:  &shadowpkg.ShadowState{ComputedAt: time.Now().UTC()},
+		},
+	}
+	r := &DataPlaneReconciler{
+		Client:          fakeClient,
+		Recorder:        record.NewFakeRecorder(10),
+		Runner:          runner,
+		RequeueInterval: 10 * time.Second,
+	}
+
+	// Add finalizer pass.
+	r.Reconcile(context.Background(), ctrl.Request{ //nolint:errcheck
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "test"},
+	})
+	// Actual reconcile.
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "test"},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if runner.lastReq.Release == nil {
+		t.Fatal("runner.lastReq.Release must not be nil when BoriRelease CR exists")
+	}
+	if len(runner.lastReq.Release.Components) != 1 {
+		t.Fatalf("components: want 1, got %d", len(runner.lastReq.Release.Components))
+	}
+	if runner.lastReq.Release.Components[0].Version != "v0.5.0" {
+		t.Errorf("version: want v0.5.0, got %s", runner.lastReq.Release.Components[0].Version)
+	}
+}
+
+func TestReconcile_findDataPlanesForRelease(t *testing.T) {
+	scheme := setupScheme(t)
+	bdp1 := newBDP("default", "dp-one", "rel-a", "dev")
+	bdp2 := newBDP("default", "dp-two", "rel-a", "dev")
+	bdp3 := newBDP("default", "dp-other", "rel-b", "dev")
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(bdp1, bdp2, bdp3).
+		Build()
+
+	r := &DataPlaneReconciler{Client: fakeClient}
+	br := newBoriRelease("default", "rel-a")
+
+	requests := r.findDataPlanesForRelease(context.Background(), br)
+	if len(requests) != 2 {
+		t.Fatalf("want 2 requests for rel-a, got %d", len(requests))
+	}
+	names := map[string]bool{}
+	for _, req := range requests {
+		names[req.Name] = true
+	}
+	if !names["dp-one"] || !names["dp-two"] {
+		t.Errorf("expected dp-one and dp-two, got %v", names)
+	}
+	if names["dp-other"] {
+		t.Error("dp-other references rel-b, must not be enqueued")
 	}
 }
 

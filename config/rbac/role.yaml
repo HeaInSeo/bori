@@ -26,6 +26,10 @@ rules:
   - apiGroups: ["bori.dev"]
     resources: ["boridataplanes/finalizers"]
     verbs: ["update"]
+  # BoriRelease CRD — operator reads release definitions from K8s API
+  - apiGroups: ["bori.dev"]
+    resources: ["borireleases"]
+    verbs: ["get", "list", "watch"]
   # Namespace read — enforces NamespacePolicy allowed list
   - apiGroups: [""]
     resources: ["namespaces"]

@@ -18,15 +18,19 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1alpha1 "github.com/HeaInSeo/bori/apis/bori/v1alpha1"
+	"github.com/HeaInSeo/bori/pkg/model"
 	reconcilepkg "github.com/HeaInSeo/bori/pkg/reconcile"
 	"github.com/HeaInSeo/bori/pkg/security"
 )
@@ -85,6 +89,14 @@ func (r *DataPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: interval}, nil
 	}
 
+	// Resolve release: K8s API first, filesystem fallback.
+	release, err := r.resolveRelease(ctx, &bdp)
+	if err != nil {
+		r.Recorder.Event(&bdp, corev1.EventTypeWarning, "ReleaseResolveFailed",
+			security.RedactString(fmt.Sprintf("resolve BoriRelease: %v", err)))
+		return ctrl.Result{RequeueAfter: interval}, err
+	}
+
 	res, err := r.Runner.Run(ctx, reconcilepkg.Request{
 		BoriRoot:     r.BoriRoot,
 		BoriDir:      r.BoriDir,
@@ -92,6 +104,7 @@ func (r *DataPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		ReleaseName:  bdp.Spec.Release,
 		EnvName:      bdp.Spec.Environment,
 		SkipIfInSync: true,
+		Release:      release,
 	})
 
 	// Namespace policy violations are not runtime errors: set a condition and
@@ -174,11 +187,60 @@ func (r *DataPlaneReconciler) reconcileViolation(ctx context.Context, bdp *v1alp
 	return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 }
 
+// resolveRelease tries to fetch the BoriRelease from the Kubernetes API.
+// If the CR is not found, it returns nil — the reconciler falls back to the filesystem.
+// This allows CLI users (no BoriRelease CRs) and operator users to coexist.
+func (r *DataPlaneReconciler) resolveRelease(ctx context.Context, bdp *v1alpha1.BoriDataPlane) (*model.BoriRelease, error) {
+	var br v1alpha1.BoriRelease
+	if err := r.Get(ctx, types.NamespacedName{
+		Namespace: bdp.Namespace,
+		Name:      bdp.Spec.Release,
+	}, &br); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil // not a CR — use filesystem
+		}
+		return nil, fmt.Errorf("get BoriRelease %s/%s: %w", bdp.Namespace, bdp.Spec.Release, err)
+	}
+	rel := br.ToModel()
+	return &rel, nil
+}
+
 // SetupWithManager registers the controller with a controller-runtime Manager.
+// It watches both BoriDataPlane and BoriRelease objects:
+// when a BoriRelease changes, all BoriDataPlanes that reference it are enqueued.
 func (r *DataPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.BoriDataPlane{}).
+		Watches(
+			&v1alpha1.BoriRelease{},
+			handler.EnqueueRequestsFromMapFunc(r.findDataPlanesForRelease),
+		).
 		Complete(r)
+}
+
+// findDataPlanesForRelease maps a BoriRelease event to the BoriDataPlane objects
+// that reference it, so they are re-reconciled when the release definition changes.
+func (r *DataPlaneReconciler) findDataPlanesForRelease(ctx context.Context, obj client.Object) []ctrl.Request {
+	release, ok := obj.(*v1alpha1.BoriRelease)
+	if !ok {
+		return nil
+	}
+	var bdpList v1alpha1.BoriDataPlaneList
+	if err := r.List(ctx, &bdpList, client.InNamespace(release.Namespace)); err != nil {
+		return nil
+	}
+	var requests []ctrl.Request
+	for _, bdp := range bdpList.Items {
+		if bdp.Spec.Release == release.Name {
+			requests = append(requests, ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: bdp.Namespace,
+					Name:      bdp.Name,
+				},
+			})
+		}
+	}
+	return requests
 }
 
 // requeueInterval returns the configured interval, falling back to 30s.

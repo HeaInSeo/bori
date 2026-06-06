@@ -53,6 +53,10 @@ type Request struct {
 	DryRun bool
 	// SkipIfInSync skips deploy/verify when shadow state shows all components in-sync.
 	SkipIfInSync bool
+	// Release overrides filesystem-based LoadReleaseByName when set.
+	// The operator injects a BoriRelease fetched from the Kubernetes API;
+	// nil falls back to the filesystem (backward-compatible for CLI users).
+	Release *model.BoriRelease
 }
 
 // Result summarizes one reconciliation pass.
@@ -108,10 +112,16 @@ func (r *Reconciler) Run(ctx context.Context, req Request) (*Result, error) {
 		return nil, fmt.Errorf("abs bori-root: %w", err)
 	}
 
-	// Step 1: Load release and check shadow state for drift.
-	rel, err := model.LoadReleaseByName(abs, req.ReleaseName)
-	if err != nil {
-		return nil, fmt.Errorf("load release: %w", err)
+	// Step 1: Load release — use injected release (operator path) or filesystem (CLI path).
+	var rel model.BoriRelease
+	if req.Release != nil {
+		rel = *req.Release
+	} else {
+		var loadErr error
+		rel, loadErr = model.LoadReleaseByName(abs, req.ReleaseName)
+		if loadErr != nil {
+			return nil, fmt.Errorf("load release: %w", loadErr)
+		}
 	}
 
 	shadowState, err := shadowpkg.Reconcile(rel, req.BoriDir)
@@ -144,8 +154,9 @@ func (r *Reconciler) Run(ctx context.Context, req Request) (*Result, error) {
 		return result, nil
 	}
 
-	// Step 2: Plan.
+	// Step 2: Plan (pass injected release to avoid double filesystem read).
 	p := planner.New(abs)
+	p.Release = req.Release
 	plan, err := p.Plan(runID, req.ReleaseName, req.EnvName)
 	if err != nil {
 		return nil, fmt.Errorf("plan: %w", err)

@@ -2,14 +2,15 @@
 //
 // Usage:
 //
-//	bori plan       --release <name> --env <name> [--bori-root <dir>]
-//	bori deploy     --release <name> --env <name> [--bori-root <dir>] [--apps-dir <dir>]
-//	bori verify     [--release <name> --env <name>] [--changed <a,b>] [--bori-root <dir>]
-//	bori status     --run <run-id> [--bori-dir <dir>]
-//	bori revision   list [--release <name>] [--bori-dir <dir>]
-//	bori rollout    plan --release <name> --env <name> [--bori-root <dir>]
-//	bori shadow     status --release <name> [--bori-root <dir>] [--bori-dir <dir>]
-//	bori reconcile  --release <name> --env <name> [--bori-root <dir>] [--dry-run] [--skip-if-in-sync]
+//	bori plan          --release <name> --env <name> [--bori-root <dir>]
+//	bori deploy        --release <name> --env <name> [--bori-root <dir>] [--apps-dir <dir>]
+//	bori verify        [--release <name> --env <name>] [--changed <a,b>] [--bori-root <dir>]
+//	bori status        --run <run-id> [--bori-dir <dir>]
+//	bori revision      list [--release <name>] [--bori-dir <dir>]
+//	bori rollout       plan --release <name> --env <name> [--bori-root <dir>]
+//	bori shadow        status --release <name> [--bori-root <dir>] [--bori-dir <dir>]
+//	bori reconcile     --release <name> --env <name> [--bori-root <dir>] [--dry-run]
+//	bori release apply --name <name> [--bori-root <dir>] [--namespace <ns>] [--apply]
 package main
 
 import (
@@ -27,6 +28,7 @@ import (
 	koadapter "github.com/HeaInSeo/bori/adapters/ko"
 	kustomizeadapter "github.com/HeaInSeo/bori/adapters/kustomize"
 	shelladapter "github.com/HeaInSeo/bori/adapters/shell"
+	v1alpha1 "github.com/HeaInSeo/bori/apis/bori/v1alpha1"
 	"github.com/HeaInSeo/bori/pkg/adapter"
 	"github.com/HeaInSeo/bori/pkg/artifact"
 	"github.com/HeaInSeo/bori/pkg/collect"
@@ -40,6 +42,7 @@ import (
 	"github.com/HeaInSeo/bori/pkg/security"
 	shadowpkg "github.com/HeaInSeo/bori/pkg/shadow"
 	"github.com/HeaInSeo/bori/pkg/verification"
+	sigsyaml "sigs.k8s.io/yaml"
 )
 
 func main() {
@@ -64,6 +67,8 @@ func main() {
 		cmdShadow(os.Args[2:])
 	case "reconcile":
 		cmdReconcile(os.Args[2:])
+	case "release":
+		cmdRelease(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "bori: unknown subcommand %q\n", os.Args[1])
 		usage()
@@ -75,15 +80,15 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `bori — genomic dataplane control plane gateway
 
 Usage:
-  bori plan           --release <name> --env <name> [--bori-root <dir>]
-  bori deploy         --release <name> --env <name> [--bori-root <dir>] [--apps-dir <dir>]
-  bori verify         [--release <name> --env <name>] [--changed <a,b>] [--bori-root <dir>]
-  bori status         --run <run-id> [--bori-dir <dir>]
-  bori revision list  [--release <name>] [--bori-dir <dir>]
-  bori rollout plan   --release <name> --env <name> [--bori-root <dir>]
-  bori shadow status  --release <name> [--bori-root <dir>] [--bori-dir <dir>] [--json]
-  bori reconcile      --release <name> --env <name> [--bori-root <dir>] [--apps-dir <dir>]
-                      [--dry-run] [--skip-if-in-sync] [-v]`)
+  bori plan              --release <name> --env <name> [--bori-root <dir>]
+  bori deploy            --release <name> --env <name> [--bori-root <dir>] [--apps-dir <dir>]
+  bori verify            [--release <name> --env <name>] [--changed <a,b>] [--bori-root <dir>]
+  bori status            --run <run-id> [--bori-dir <dir>]
+  bori revision list     [--release <name>] [--bori-dir <dir>]
+  bori rollout plan      --release <name> --env <name> [--bori-root <dir>]
+  bori shadow status     --release <name> [--bori-root <dir>] [--bori-dir <dir>] [--json]
+  bori reconcile         --release <name> --env <name> [--bori-root <dir>] [--dry-run] [-v]
+  bori release apply     --name <name> [--bori-root <dir>] [--namespace <ns>] [--apply]`)
 }
 
 // cmdPlan loads the release/environment model and prints the deploy plan.
@@ -1101,6 +1106,68 @@ func cmdReconcile(args []string) {
 
 	if res.DeployStatus == "failed" {
 		os.Exit(1)
+	}
+}
+
+// cmdRelease dispatches release sub-commands.
+func cmdRelease(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: bori release apply --name <name> [--bori-root <dir>] [--namespace <ns>] [--apply]")
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "apply":
+		cmdReleaseApply(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "bori release: unknown sub-command %q\n", args[0])
+		os.Exit(1)
+	}
+}
+
+// cmdReleaseApply converts a filesystem release.yaml into a BoriRelease CR manifest
+// and prints it to stdout. With --apply, it pipes the manifest to kubectl apply.
+//
+// Example:
+//
+//	bori release apply --name jumi-ah-dev --namespace bori-system | kubectl apply -f -
+//	bori release apply --name jumi-ah-dev --namespace bori-system --apply
+func cmdReleaseApply(args []string) {
+	fs := flag.NewFlagSet("release apply", flag.ExitOnError)
+	name := fs.String("name", "", "release name (required)")
+	boriRoot := fs.String("bori-root", ".", "path to bori repo root")
+	namespace := fs.String("namespace", "bori-system", "Kubernetes namespace for the BoriRelease CR")
+	apply := fs.Bool("apply", false, "pipe output to kubectl apply -f - instead of printing")
+	_ = fs.Parse(args)
+
+	if *name == "" {
+		fmt.Fprintln(os.Stderr, "bori release apply: --name is required")
+		os.Exit(1)
+	}
+
+	rel, err := model.LoadReleaseByName(*boriRoot, *name)
+	if err != nil {
+		fatalf("load release %q: %v", *name, err)
+	}
+
+	br := v1alpha1.FromModelRelease(rel, *namespace)
+
+	data, err := sigsyaml.Marshal(&br)
+	if err != nil {
+		fatalf("marshal BoriRelease: %v", err)
+	}
+
+	if !*apply {
+		os.Stdout.Write(data)
+		return
+	}
+
+	// Pipe to kubectl apply -f -
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(string(data))
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fatalf("kubectl apply: %v", err)
 	}
 }
 

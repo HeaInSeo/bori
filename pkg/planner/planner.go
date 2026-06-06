@@ -16,6 +16,10 @@ import (
 type Planner struct {
 	// BoriRoot is the absolute path to the bori repo root.
 	BoriRoot string
+	// Release overrides LoadReleaseByName when set.
+	// The operator injects a BoriRelease fetched from the Kubernetes API;
+	// nil falls back to the filesystem.
+	Release *model.BoriRelease
 }
 
 // New returns a Planner rooted at boriRoot.
@@ -29,9 +33,15 @@ func New(boriRoot string) *Planner {
 //   - Namespace policy violations
 //   - Compatibility matrix violations
 func (p *Planner) Plan(runID, releaseName, envName string) (*artifact.Plan, error) {
-	rel, err := model.LoadReleaseByName(p.BoriRoot, releaseName)
-	if err != nil {
-		return nil, fmt.Errorf("load release %q: %w", releaseName, err)
+	var rel model.BoriRelease
+	if p.Release != nil {
+		rel = *p.Release
+	} else {
+		var err error
+		rel, err = model.LoadReleaseByName(p.BoriRoot, releaseName)
+		if err != nil {
+			return nil, fmt.Errorf("load release %q: %w", releaseName, err)
+		}
 	}
 	env, err := model.LoadEnvironmentByName(p.BoriRoot, envName)
 	if err != nil {
