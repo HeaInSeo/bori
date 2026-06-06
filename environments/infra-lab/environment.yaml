@@ -2,8 +2,8 @@
 # 클러스터: kubeadm 기반 3노드 (1 master + 2 workers), libvirt VM
 # kubeconfig: infra-lab 저장소의 kubeconfig 파일을 KUBECONFIG 환경변수로 지정
 #   예) export KUBECONFIG=/path/to/infra-lab/kubeconfig
-# 레지스트리: BORI_REGISTRY 환경변수로 주입
-#   예) export BORI_REGISTRY=harbor.YOUR_LAB_IP.nip.io/heainseo
+# 레지스트리: ghcr.io 사용 (Harbor 구성 완료 후 override 예정)
+#   Harbor 준비 시: export BORI_REGISTRY=harbor.YOUR_LAB_IP.nip.io/heainseo
 name: infra-lab
 
 cluster:
@@ -20,7 +20,7 @@ namespacePolicy:
   allowClusterScopedResources: false
 
 registry:
-  default: ${BORI_REGISTRY}
+  default: ghcr.io/heainseo
 
 secrets:
   mode: reference-only
