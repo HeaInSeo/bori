@@ -1,11 +1,14 @@
-# infra-lab: 공용 원격 실행 기반 (100.123.80.48)
-# Kubernetes cluster: libvirt VM 기반, Harbor 레지스트리 사용
-# 접근: SSH (seoy@100.123.80.48) 또는 kubeconfig 직접 지정
+# infra-lab: 공용 원격 K8s 클러스터 환경
+# 클러스터: kubeadm 기반 3노드 (1 master + 2 workers), libvirt VM
+# kubeconfig: infra-lab 저장소의 kubeconfig 파일을 KUBECONFIG 환경변수로 지정
+#   예) export KUBECONFIG=/path/to/infra-lab/kubeconfig
+# 레지스트리: BORI_REGISTRY 환경변수로 주입
+#   예) export BORI_REGISTRY=harbor.YOUR_LAB_IP.nip.io/heainseo
 name: infra-lab
 
 cluster:
   kubeconfig: ${KUBECONFIG}
-  context: infra-lab
+  context: kubernetes-admin@kubernetes
 
 namespacePolicy:
   allowed:
@@ -17,8 +20,7 @@ namespacePolicy:
   allowClusterScopedResources: false
 
 registry:
-  # infra-lab 전용 Harbor 레지스트리
-  default: harbor.10.113.24.96.nip.io/heainseo
+  default: ${BORI_REGISTRY}
 
 secrets:
   mode: reference-only
