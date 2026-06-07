@@ -996,14 +996,12 @@ func cmdShadowStatus(args []string) {
 	fmt.Println()
 	fmt.Println("  Conditions:")
 	for _, c := range state.Conditions {
-		icon := "  "
+		icon := "? "
 		switch c.Status {
 		case "True":
 			icon = "✓ "
 		case "False":
 			icon = "✗ "
-		default:
-			icon = "? "
 		}
 		fmt.Printf("    %s%-12s  %s\n", icon, c.Type, c.Message)
 	}

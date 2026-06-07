@@ -10,7 +10,7 @@ var (
 	GroupVersion = schema.GroupVersion{Group: "bori.dev", Version: "v1alpha1"}
 
 	// SchemeBuilder registers BoriDataPlane and BoriDataPlaneList with a scheme.
-	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
+	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion} //nolint:staticcheck
 
 	// AddToScheme adds all v1alpha1 types to the given scheme.
 	// Use this when building a controller-runtime manager:

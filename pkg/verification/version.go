@@ -58,6 +58,6 @@ func versionSufficient(detected, required string) bool {
 // parseSemver splits "1.2.3" into [1, 2, 3]. Returns [0,0,0] on any error.
 func parseSemver(v string) [3]int {
 	var major, minor, patch int
-	fmt.Sscanf(strings.TrimPrefix(v, "v"), "%d.%d.%d", &major, &minor, &patch)
+	_, _ = fmt.Sscanf(strings.TrimPrefix(v, "v"), "%d.%d.%d", &major, &minor, &patch)
 	return [3]int{major, minor, patch}
 }

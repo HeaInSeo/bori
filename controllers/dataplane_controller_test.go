@@ -62,13 +62,6 @@ func newBDP(namespace, name, release, env string) *v1alpha1.BoriDataPlane {
 	}
 }
 
-func newReconciler(scheme *runtime.Scheme, runner reconcilepkg.Runner, objects ...runtime.Object) (*DataPlaneReconciler, *fake.ClientBuilder) {
-	objs := make([]runtime.Object, len(objects))
-	copy(objs, objects)
-	_ = objs
-	return nil, fake.NewClientBuilder().WithScheme(scheme)
-}
-
 // ── Phase 7 tests (still valid) ────────────────────────────────────────────
 
 func TestReconcile_notFound(t *testing.T) {
@@ -142,7 +135,7 @@ func TestReconcile_patchesStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Reconcile (add finalizer): %v", err)
 	}
-	if !res.Requeue {
+	if !res.Requeue { //nolint:staticcheck
 		t.Error("expected Requeue=true after adding finalizer")
 	}
 
@@ -282,7 +275,7 @@ func TestReconcile_addsFinalizer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if !res.Requeue {
+	if !res.Requeue { //nolint:staticcheck
 		t.Error("expected Requeue=true after adding finalizer")
 	}
 	if runner.called {

@@ -120,7 +120,7 @@ func main() {
 	if err := (&controllers.DataPlaneReconciler{
 		Client:          mgr.GetClient(),
 		Scheme:          mgr.GetScheme(),
-		Recorder:        mgr.GetEventRecorderFor("bori-operator"),
+		Recorder:        mgr.GetEventRecorderFor("bori-operator"), //nolint:staticcheck
 		BoriRoot:        boriRoot,
 		BoriDir:         boriDir,
 		AppsDir:         appsDir,

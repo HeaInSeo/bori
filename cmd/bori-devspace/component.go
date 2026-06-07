@@ -6,5 +6,4 @@ import "github.com/HeaInSeo/bori/pkg/component"
 type Component = component.Component
 type RegisteredApp = component.RegisteredApp
 
-func loadComponent(path string) (Component, error)         { return component.Load(path) }
 func discoverApps(appsDir string) ([]RegisteredApp, error) { return component.Discover(appsDir) }
