@@ -1,216 +1,165 @@
-# bori — Build, Orchestration, and Runtime Integration
+# bori — Genomic Dataplane Control Plane
 
-bori connects your K8s dataplane app to an SLI gate with **two files**.
+[![golangci-lint](https://github.com/HeaInSeo/bori/actions/workflows/golangci-lint.yaml/badge.svg)](https://github.com/HeaInSeo/bori/actions/workflows/golangci-lint.yaml)
+[![kube-linter](https://github.com/HeaInSeo/bori/actions/workflows/kubelint.yaml/badge.svg)](https://github.com/HeaInSeo/bori/actions/workflows/kubelint.yaml)
+[![kubeconform](https://github.com/HeaInSeo/bori/actions/workflows/kubeconform.yaml/badge.svg)](https://github.com/HeaInSeo/bori/actions/workflows/kubeconform.yaml)
 
-Add a `.bori/` directory to any app repository. bori discovers it automatically,
-scrapes `/metrics` before and after a smoke step, and invokes `slint-gate` to
-evaluate whether the deployment regressed.
+bori is a Kubernetes operator that manages the lifecycle of genomic dataplane applications — JUMI, artifact-handoff, nan, tori, and NodeSentinel.
 
-- **Self-registration**: each app owns its own policy. bori has no hardcoded app list.
-- **DevSpace integration**: runs as an `after:deploy` hook — zero changes to your deploy flow.
-- **kube-slint independence**: bori shell-outs to the `slint-gate` binary only. kube-slint is fully usable without bori.
+It reconciles `BoriDataPlane` custom resources, tracks deployment history via `BoriRevision`, and gates promotion through [kube-slint](https://github.com/HeaInSeo/kube-slint)'s `slint-gate`.
 
 한국어 문서: [README.ko.md](README.ko.md)
 
 ---
 
-## How it works
+## Architecture
 
 ```
-Your app repository
-  └── .bori/
-        ├── component.yaml          # where to scrape metrics
-        └── policy.devspace.yaml    # what counts as a regression
-
-devspace dev  (run from your app directory)
-  └── after:deploy hook → bin/bori-devspace
-        ① scrape /metrics  (pre-smoke)
-        ② run smoke command (or wait)
-        ③ scrape /metrics  (post-smoke)
-        ④ compute deltas → sli-summary.json
-        ⑤ slint-gate evaluate → PASS / FAIL / WARN
+BoriDataPlane CR  →  bori-operator  →  deploy / verify / promote
+                           │
+                    BoriRelease (release.yaml)
+                    BoriRevision (immutable history)
+                           │
+                    slint-gate (kube-slint)
+                      └── sli-summary.json → PASS / FAIL / WARN
 ```
 
-bori scans the **parent directory** for sibling repos that contain `.bori/component.yaml`.
-All discovered apps are evaluated in the same run.
+### Custom Resources
+
+| CRD | Purpose |
+|-----|---------|
+| `BoriDataPlane` | Desired state: which release runs in which environment |
+| `BoriRelease` | Versioned component manifest (jumi, artifact-handoff, nan, …) |
+| `BoriRevision` | Immutable deployment snapshot; gates promotion via kube-slint |
+
+### Conditions on BoriDataPlane
+
+| Condition | Meaning |
+|-----------|---------|
+| `Installed` | All release components are deployed |
+| `Ready` | All components pass readiness checks |
+| `Verified` | slint-gate evaluation returned PASS |
+| `Promoted` | Revision promoted to active |
+| `Degraded` | One or more components are out-of-sync |
 
 ---
 
-## Prerequisites
+## Quick Start
 
-Run the following on the **K8s VM host** (the machine running your cluster).
+### Prerequisites
 
-### Install DevSpace
+- Go 1.26+
+- kubectl configured for the target cluster
+- `slint-gate` binary on PATH ([kube-slint](https://github.com/HeaInSeo/kube-slint))
+- k8sgpt on the cluster host (`/usr/bin/k8sgpt`)
 
-```bash
-curl -sSL https://github.com/loft-sh/devspace/releases/latest/download/devspace-linux-amd64 \
-  -o /usr/local/bin/devspace
-chmod +x /usr/local/bin/devspace
-devspace version
-```
-
-### Build bori
+### Build
 
 ```bash
 git clone https://github.com/HeaInSeo/bori.git
 cd bori
-make build          # produces bin/bori-devspace
+make build          # produces bin/bori and bin/bori-operator
 ```
 
-### Install slint-gate
-
-bori resolves `slint-gate` from PATH.
+### Build operator image (no Docker)
 
 ```bash
-cd ../kube-slint
-go build -o /usr/local/bin/slint-gate ./cmd/slint-gate
+# buildah (available on RHEL/CentOS)
+buildah build -t localhost/bori-operator:latest .
+
+# transfer to cluster nodes
+podman save localhost/bori-operator:latest -o /tmp/bori-operator.tar
+for node in 192.168.122.99 192.168.122.232 192.168.122.207; do
+  scp /tmp/bori-operator.tar ubuntu@$node:/tmp/
+  ssh ubuntu@$node "sudo ctr -n k8s.io images import /tmp/bori-operator.tar"
+done
 ```
 
----
+### Deploy to cluster
 
-## Adding bori to your app (self-registration)
-
-### Step 1 — `.bori/component.yaml`
-
-```yaml
-name: my-app        # must match the Kubernetes Service name
-port: 8080
-metrics_path: /metrics
-namespace: my-ns
-```
-
-### Step 2 — `.bori/policy.devspace.yaml`
-
-Uses the standard slint-gate policy format directly.
-
-```yaml
-thresholds:
-  - name: "requests served"
-    metric: my_app_requests_total
-    operator: ">="
-    value: 0
-  - name: "error rate acceptable"
-    metric: my_app_errors_total
-    operator: "<="
-    value: 5
-
-regression:
-  enabled: false
-  tolerance_percent: 10
-
-reliability:
-  required: false
-
-fail_on:
-  - threshold_miss
-```
-
-One file per profile:
-
-| File | Environment |
-|------|-------------|
-| `policy.devspace.yaml` | DevSpace inner-loop |
-| `policy.kind.yaml` | kind cluster |
-| `policy.multipass.yaml` | Multipass VM |
-
-### Step 3 — add the hook to your `devspace.yaml`
-
-```yaml
-vars:
-  BORI_SMOKE_CMD:
-    source: env
-    default: ""
-  BORI_SMOKE_WAIT:
-    source: env
-    default: "15s"
-
-hooks:
-  - events: ["after:deploy"]
-    command: "bori-devspace"
-    args:
-      - "--profile"
-      - "devspace"
-      - "--apps-dir"
-      - ".."
-      - "--smoke-cmd"
-      - "${BORI_SMOKE_CMD}"
-      - "--smoke-wait"
-      - "${BORI_SMOKE_WAIT}"
-      - "--v"
-```
-
-`bori-devspace` must be on PATH, or specify the full path (`/path/to/bori/bin/bori-devspace`).
-
-### That's it
+`make deploy` applies CRDs, RBAC, ConfigMap, and the operator Deployment — then automatically runs the regression check.
 
 ```bash
-cd your-app
-devspace dev
-# DevSpace deploys your app, then bori evaluates the SLI gate automatically.
+make deploy
 ```
 
----
-
-## Running bori standalone
+To tear down:
 
 ```bash
-# default: scan parent directory, devspace profile, 10s wait
-./bin/bori-devspace --profile devspace --v
-
-# with a smoke command
-./bin/bori-devspace \
-  --profile devspace \
-  --smoke-cmd "kubectl exec -n my-ns deploy/my-app -- /bin/smoke-test" \
-  --v
-
-# explicit apps directory
-./bin/bori-devspace \
-  --apps-dir /path/to/repos \
-  --profile devspace \
-  --v
-```
-
-### Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--profile` | `devspace` | Profile: `devspace`, `kind`, `multipass` |
-| `--apps-dir` | parent of bori root | Directory to scan for app repos |
-| `--smoke-cmd` | _(none)_ | Shell command to run as smoke step |
-| `--smoke-wait` | `10s` | Wait duration when `--smoke-cmd` is not set |
-| `--out` | `bori-gate-output` | Output directory for gate artifacts |
-| `--slint-gate` | `slint-gate` | Path to the slint-gate binary |
-| `--v` | false | Verbose output |
-
-### Sample output
-
-```
-[bori] found 2 registered app(s)
-[bori] pre-smoke scrape: my-app
-[bori] waiting 15s for my-app
-[bori] post-smoke scrape: my-app
-[bori] my-app                PASS — Policy checks passed.
-[bori] overall: PASS
+make undeploy
 ```
 
 ---
 
-## Relationship with kube-slint
+## Release and Environment definitions
 
-bori does **not** import kube-slint as a Go library.
-It writes a `sli-summary.json` (slint.summary.v4 schema) and invokes `slint-gate` as a subprocess.
-kube-slint remains fully usable without bori.
+A `BoriRelease` lives in `releases/<name>/release.yaml`:
+
+```yaml
+name: jumi-ah-dev
+components:
+  - name: jumi
+    version: v0.3.0
+  - name: artifact-handoff
+    version: v0.2.0
+  - name: nan
+    version: v0.1.5
+verification:
+  policies:
+    - jumi-ah-smoke
+```
+
+An environment lives in `environments/<name>/environment.yaml`:
+
+```yaml
+name: infra-lab
+cluster:
+  kubeconfig: ${KUBECONFIG}
+  context: kubernetes-admin@kubernetes
+registry:
+  default: ghcr.io/heainseo
+```
+
+Apply a `BoriDataPlane` to wire them together:
+
+```bash
+kubectl apply -f testdata/fixtures/bdp-infra-lab-smoke.yaml
+```
 
 ---
 
-## Roadmap
+## kube-slint integration
 
-| Item | Status |
-|------|--------|
-| DevSpace adapter | done |
-| Tilt adapter | planned |
-| Parallel multi-app evaluation | planned |
-| kind / multipass profiles | supported via policy file |
+bori does **not** import kube-slint as a Go library. It writes `sli-summary.json` (slint.summary.v4 schema) and invokes `slint-gate` as a subprocess.
+
+```
+bori verify  →  sli-summary.json  →  slint-gate --fail-on NEVER  →  gate_result
+```
+
+kube-slint is fully usable independently of bori.
+
+---
+
+## Regression testing
+
+After every `make deploy`, bori automatically checks that the operator is still writing the expected `BoriDataPlane` conditions:
+
+```bash
+make regression                       # compare against baseline
+make regression -- --update-baseline  # accept current state as new baseline
+```
+
+The script (`scripts/regression-check.sh`) auto-detects whether it is running on the cluster node or from a local machine (SSH fallback), runs k8sgpt analysis, and diffs conditions against `testdata/baseline/`.
+
+---
+
+## CI
+
+| Workflow | Trigger | What it checks |
+|----------|---------|----------------|
+| `golangci-lint` | `*.go`, `go.mod` | govet, staticcheck, errcheck, unused, ineffassign, revive |
+| `kube-linter` | `config/**` | K8s manifest best practices |
+| `kubeconform` | `config/**` | Schema validation against K8s 1.30 |
 
 ---
 
@@ -218,22 +167,40 @@ kube-slint remains fully usable without bori.
 
 ```
 bori/
-├── pkg/adapter/
-│   ├── adapter.go        # Runner interface, AppSnapshot / RunRequest / RunResult
-│   ├── gate_runner.go    # slint-gate shell-out implementation
-│   └── summary.go        # sli-summary.json builder (slint.summary.v4 compatible)
-├── adapters/
-│   ├── devspace/
-│   │   ├── main.go       # CLI: discovery → scrape → smoke → gate
-│   │   ├── component.go  # .bori/component.yaml parser
-│   │   └── collect.go    # kubectl port-forward + /metrics scraping
-│   └── tilt/             # planned
-├── schema/
-│   ├── component.schema.yaml
-│   └── policy.schema.yaml
-├── example/
-│   └── .bori/
-│       ├── component.yaml
-│       └── policy.yaml
-└── Makefile
+├── apis/bori/v1alpha1/     # CRD Go types (BoriDataPlane, BoriRelease, BoriRevision)
+├── controllers/            # controller-runtime reconcilers
+├── cmd/
+│   ├── bori/               # CLI: plan / deploy / verify / status / revision …
+│   ├── bori-operator/      # Kubernetes operator entrypoint
+│   └── bori-devspace/      # DevSpace after:deploy adapter
+├── pkg/
+│   ├── adapter/            # Runner interface + slint-gate shell-out + sli-summary builder
+│   ├── verification/       # kube-slint policy evaluation
+│   ├── reconcile/          # core reconcile loop
+│   ├── revision/           # BoriRevision management
+│   └── …
+├── adapters/               # Deploy adapters (devspace, ko, kustomize, shell)
+├── config/
+│   ├── crd/                # BoriDataPlane / BoriRelease / BoriRevision CRD YAML
+│   ├── rbac/               # ClusterRole, ServiceAccount, binding
+│   └── operator/           # Deployment, ConfigMap, Namespace
+├── releases/               # BoriRelease definitions (e.g. jumi-ah-dev)
+├── environments/           # Environment definitions (infra-lab, kind, multipass, …)
+├── components/             # Per-app component.yaml specs
+├── verification/policies/  # slint-gate policy files
+├── testdata/
+│   ├── fixtures/           # Test BoriDataPlane CRs
+│   └── baseline/           # Condition snapshots for regression check
+├── scripts/
+│   └── regression-check.sh # BoriDataPlane condition regression check
+├── Dockerfile              # Multi-stage: golang:1.26 → distroless/static
+└── docs/                   # Architecture, roadmap, API design, security model
 ```
+
+---
+
+## Roadmap
+
+Full roadmap: [docs/control-plane-roadmap.md](docs/control-plane-roadmap.md)
+
+All Phases 0–10 and kube-slint Tracks K0–K5 are complete as of 2026-06-07.

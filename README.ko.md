@@ -1,215 +1,165 @@
-# bori — Build, Orchestration, and Runtime Integration
+# bori — 유전체 데이터플레인 컨트롤 플레인
 
-bori는 **파일 2개만 추가**하면 K8s 앱에 SLI 게이트를 붙여주는 도구입니다.
+[![golangci-lint](https://github.com/HeaInSeo/bori/actions/workflows/golangci-lint.yaml/badge.svg)](https://github.com/HeaInSeo/bori/actions/workflows/golangci-lint.yaml)
+[![kube-linter](https://github.com/HeaInSeo/bori/actions/workflows/kubelint.yaml/badge.svg)](https://github.com/HeaInSeo/bori/actions/workflows/kubelint.yaml)
+[![kubeconform](https://github.com/HeaInSeo/bori/actions/workflows/kubeconform.yaml/badge.svg)](https://github.com/HeaInSeo/bori/actions/workflows/kubeconform.yaml)
 
-앱 저장소에 `.bori/` 디렉터리를 추가하면, bori가 자동으로 발견하고
-smoke 전후 `/metrics`를 스크레이핑한 뒤 `slint-gate`로 회귀 여부를 판단합니다.
+bori는 유전체 데이터플레인 앱(JUMI, artifact-handoff, nan, tori, NodeSentinel)의 생명주기를 관리하는 Kubernetes 오퍼레이터입니다.
 
-- **Self-registration**: 각 앱이 자신의 policy를 소유합니다. bori는 앱 목록을 하드코딩하지 않습니다.
-- **DevSpace 연동**: `after:deploy` hook으로 실행 — 배포 흐름을 변경할 필요 없습니다.
-- **kube-slint 독립성**: bori는 `slint-gate` 바이너리만 호출합니다. kube-slint는 bori 없이도 완전히 독립적으로 사용 가능합니다.
+`BoriDataPlane` 커스텀 리소스를 조정하고, `BoriRevision`으로 배포 이력을 추적하며, [kube-slint](https://github.com/HeaInSeo/kube-slint)의 `slint-gate`를 통해 프로모션을 게이팅합니다.
 
 English document: [README.md](README.md)
 
 ---
 
-## 동작 방식
+## 아키텍처
 
 ```
-앱 저장소
-  └── .bori/
-        ├── component.yaml          # 메트릭 스크레이핑 위치
-        └── policy.devspace.yaml    # 회귀 판단 기준
-
-devspace dev  (앱 디렉터리에서 실행)
-  └── after:deploy hook → bin/bori-devspace
-        ① /metrics 수집  (smoke 전)
-        ② smoke 실행 (또는 대기)
-        ③ /metrics 수집  (smoke 후)
-        ④ delta 계산 → sli-summary.json 생성
-        ⑤ slint-gate 평가 → PASS / FAIL / WARN
+BoriDataPlane CR  →  bori-operator  →  deploy / verify / promote
+                           │
+                    BoriRelease (release.yaml)
+                    BoriRevision (불변 이력)
+                           │
+                    slint-gate (kube-slint)
+                      └── sli-summary.json → PASS / FAIL / WARN
 ```
 
-bori는 **상위 디렉터리**를 스캔하여 `.bori/component.yaml`이 있는 형제 저장소를 찾습니다.
-발견된 모든 앱을 한 번의 실행에서 평가합니다.
+### 커스텀 리소스
+
+| CRD | 역할 |
+|-----|------|
+| `BoriDataPlane` | 원하는 상태: 어떤 릴리스가 어떤 환경에서 실행되는지 |
+| `BoriRelease` | 버전화된 컴포넌트 매니페스트 (jumi, artifact-handoff, nan, …) |
+| `BoriRevision` | 불변 배포 스냅샷; kube-slint를 통해 프로모션 게이팅 |
+
+### BoriDataPlane Conditions
+
+| Condition | 의미 |
+|-----------|------|
+| `Installed` | 모든 릴리스 컴포넌트가 배포됨 |
+| `Ready` | 모든 컴포넌트가 준비 상태 통과 |
+| `Verified` | slint-gate 평가 결과 PASS |
+| `Promoted` | Revision이 active로 승격됨 |
+| `Degraded` | 하나 이상의 컴포넌트가 릴리스 정의와 불일치 |
 
 ---
 
-## 사전 준비
+## 빠른 시작
 
-아래 작업은 **K8s VM 호스트** (클러스터가 실행 중인 장비)에서 수행합니다.
+### 사전 준비
 
-### DevSpace 설치
+- Go 1.26+
+- 대상 클러스터에 kubectl 설정됨
+- PATH에 `slint-gate` 바이너리 ([kube-slint](https://github.com/HeaInSeo/kube-slint))
+- 클러스터 호스트에 k8sgpt 설치 (`/usr/bin/k8sgpt`)
 
-```bash
-curl -sSL https://github.com/loft-sh/devspace/releases/latest/download/devspace-linux-amd64 \
-  -o /usr/local/bin/devspace
-chmod +x /usr/local/bin/devspace
-devspace version
-```
-
-### bori 빌드
+### 빌드
 
 ```bash
 git clone https://github.com/HeaInSeo/bori.git
 cd bori
-make build          # bin/bori-devspace 생성
+make build          # bin/bori, bin/bori-operator 생성
 ```
 
-### slint-gate 설치
-
-bori는 PATH에서 `slint-gate` 바이너리를 찾습니다.
+### 오퍼레이터 이미지 빌드 (Docker 없이)
 
 ```bash
-cd ../kube-slint
-go build -o /usr/local/bin/slint-gate ./cmd/slint-gate
+# buildah (RHEL/CentOS 환경)
+buildah build -t localhost/bori-operator:latest .
+
+# 클러스터 노드에 전송
+podman save localhost/bori-operator:latest -o /tmp/bori-operator.tar
+for node in 192.168.122.99 192.168.122.232 192.168.122.207; do
+  scp /tmp/bori-operator.tar ubuntu@$node:/tmp/
+  ssh ubuntu@$node "sudo ctr -n k8s.io images import /tmp/bori-operator.tar"
+done
+```
+
+### 클러스터에 배포
+
+`make deploy`는 CRD, RBAC, ConfigMap, Deployment를 적용한 뒤 자동으로 회귀 검사를 실행합니다.
+
+```bash
+make deploy
+```
+
+제거할 때:
+
+```bash
+make undeploy
 ```
 
 ---
 
-## 앱에 bori 추가하기 (self-registration)
+## 릴리스와 환경 정의
 
-### Step 1 — `.bori/component.yaml`
-
-```yaml
-name: my-app        # Kubernetes Service 이름과 일치해야 함
-port: 8080
-metrics_path: /metrics
-namespace: my-ns
-```
-
-### Step 2 — `.bori/policy.devspace.yaml`
-
-slint-gate policy 포맷을 그대로 사용합니다.
+`BoriRelease`는 `releases/<name>/release.yaml`에 위치합니다:
 
 ```yaml
-thresholds:
-  - name: "요청 처리 확인"
-    metric: my_app_requests_total
-    operator: ">="
-    value: 0
-  - name: "에러율 허용 범위"
-    metric: my_app_errors_total
-    operator: "<="
-    value: 5
-
-regression:
-  enabled: false
-  tolerance_percent: 10
-
-reliability:
-  required: false
-
-fail_on:
-  - threshold_miss
+name: jumi-ah-dev
+components:
+  - name: jumi
+    version: v0.3.0
+  - name: artifact-handoff
+    version: v0.2.0
+  - name: nan
+    version: v0.1.5
+verification:
+  policies:
+    - jumi-ah-smoke
 ```
 
-프로파일별 파일:
-
-| 파일 | 환경 |
-|------|------|
-| `policy.devspace.yaml` | DevSpace inner-loop |
-| `policy.kind.yaml` | kind cluster |
-| `policy.multipass.yaml` | Multipass VM |
-
-### Step 3 — `devspace.yaml`에 hook 추가
+환경 정의는 `environments/<name>/environment.yaml`에 위치합니다:
 
 ```yaml
-vars:
-  BORI_SMOKE_CMD:
-    source: env
-    default: ""
-  BORI_SMOKE_WAIT:
-    source: env
-    default: "15s"
-
-hooks:
-  - events: ["after:deploy"]
-    command: "bori-devspace"
-    args:
-      - "--profile"
-      - "devspace"
-      - "--apps-dir"
-      - ".."
-      - "--smoke-cmd"
-      - "${BORI_SMOKE_CMD}"
-      - "--smoke-wait"
-      - "${BORI_SMOKE_WAIT}"
-      - "--v"
+name: infra-lab
+cluster:
+  kubeconfig: ${KUBECONFIG}
+  context: kubernetes-admin@kubernetes
+registry:
+  default: ghcr.io/heainseo
 ```
 
-`bori-devspace`는 PATH에 있어야 합니다. 또는 전체 경로로 지정하세요 (`/path/to/bori/bin/bori-devspace`).
-
-### 이후 사용법
+`BoriDataPlane`을 적용하여 둘을 연결합니다:
 
 ```bash
-cd your-app
-devspace dev
-# DevSpace가 앱을 배포하고, bori가 SLI 게이트를 자동으로 평가합니다.
+kubectl apply -f testdata/fixtures/bdp-infra-lab-smoke.yaml
 ```
 
 ---
 
-## bori 단독 실행
+## kube-slint 연동
 
-```bash
-# 기본: 상위 디렉터리 스캔, devspace 프로파일, 10초 대기
-./bin/bori-devspace --profile devspace --v
-
-# smoke 커맨드 지정
-./bin/bori-devspace \
-  --profile devspace \
-  --smoke-cmd "kubectl exec -n my-ns deploy/my-app -- /bin/smoke-test" \
-  --v
-
-# 앱 디렉터리 명시
-./bin/bori-devspace \
-  --apps-dir /path/to/repos \
-  --profile devspace \
-  --v
-```
-
-### 플래그
-
-| 플래그 | 기본값 | 설명 |
-|--------|--------|------|
-| `--profile` | `devspace` | 프로파일: `devspace`, `kind`, `multipass` |
-| `--apps-dir` | bori root 상위 디렉터리 | 앱 저장소 스캔 경로 |
-| `--smoke-cmd` | _(없음)_ | smoke 단계 셸 명령 |
-| `--smoke-wait` | `10s` | `--smoke-cmd` 미지정 시 대기 시간 |
-| `--out` | `bori-gate-output` | 게이트 아티팩트 출력 경로 |
-| `--slint-gate` | `slint-gate` | slint-gate 바이너리 경로 |
-| `--v` | false | 상세 출력 |
-
-### 출력 예시
+bori는 kube-slint를 Go 라이브러리로 임포트하지 않습니다. `sli-summary.json`(slint.summary.v4 스키마)을 작성하고 `slint-gate`를 서브프로세스로 호출합니다.
 
 ```
-[bori] found 2 registered app(s)
-[bori] pre-smoke scrape: my-app
-[bori] waiting 15s for my-app
-[bori] post-smoke scrape: my-app
-[bori] my-app                PASS — Policy checks passed.
-[bori] overall: PASS
+bori verify  →  sli-summary.json  →  slint-gate --fail-on NEVER  →  gate_result
 ```
 
----
-
-## kube-slint와의 관계
-
-bori는 kube-slint를 **Go 라이브러리로 import하지 않습니다.**
-`sli-summary.json` (slint.summary.v4 스키마)을 작성하고 `slint-gate`를 서브프로세스로 호출합니다.
 kube-slint는 bori 없이도 완전히 독립적으로 사용 가능합니다.
 
 ---
 
-## 향후 계획
+## 회귀 측정
 
-| 항목 | 상태 |
-|------|------|
-| DevSpace adapter | 구현 완료 |
-| Tilt adapter | 계획 중 |
-| 다중 앱 병렬 평가 | 계획 중 |
-| kind / multipass 프로파일 | policy 파일 추가로 지원 |
+`make deploy` 이후 자동으로 오퍼레이터가 기대하는 `BoriDataPlane` conditions를 올바르게 쓰고 있는지 확인합니다:
+
+```bash
+make regression                       # baseline과 비교
+make regression -- --update-baseline  # 현재 상태를 새 baseline으로 저장
+```
+
+스크립트(`scripts/regression-check.sh`)는 클러스터 노드에서 실행되는지 로컬 머신에서 실행되는지 자동 감지하고(SSH 폴백), k8sgpt 분석을 실행한 뒤 `testdata/baseline/`과 conditions를 비교합니다.
+
+---
+
+## CI
+
+| 워크플로우 | 트리거 | 검사 항목 |
+|-----------|--------|-----------|
+| `golangci-lint` | `*.go`, `go.mod` | govet, staticcheck, errcheck, unused, ineffassign, revive |
+| `kube-linter` | `config/**` | K8s 매니페스트 best practices |
+| `kubeconform` | `config/**` | K8s 1.30 스키마 검증 |
 
 ---
 
@@ -217,22 +167,40 @@ kube-slint는 bori 없이도 완전히 독립적으로 사용 가능합니다.
 
 ```
 bori/
-├── pkg/adapter/
-│   ├── adapter.go        # Runner interface, AppSnapshot / RunRequest / RunResult
-│   ├── gate_runner.go    # slint-gate shell-out 구현
-│   └── summary.go        # sli-summary.json builder (slint.summary.v4 호환)
-├── adapters/
-│   ├── devspace/
-│   │   ├── main.go       # CLI: discovery → scrape → smoke → gate
-│   │   ├── component.go  # .bori/component.yaml 파서
-│   │   └── collect.go    # kubectl port-forward + /metrics 스크레이핑
-│   └── tilt/             # 향후
-├── schema/
-│   ├── component.schema.yaml
-│   └── policy.schema.yaml
-├── example/
-│   └── .bori/
-│       ├── component.yaml
-│       └── policy.yaml
-└── Makefile
+├── apis/bori/v1alpha1/     # CRD Go 타입 (BoriDataPlane, BoriRelease, BoriRevision)
+├── controllers/            # controller-runtime 리컨사일러
+├── cmd/
+│   ├── bori/               # CLI: plan / deploy / verify / status / revision …
+│   ├── bori-operator/      # Kubernetes 오퍼레이터 엔트리포인트
+│   └── bori-devspace/      # DevSpace after:deploy 어댑터
+├── pkg/
+│   ├── adapter/            # Runner 인터페이스 + slint-gate 호출 + sli-summary 빌더
+│   ├── verification/       # kube-slint 정책 평가
+│   ├── reconcile/          # 핵심 리컨사일 루프
+│   ├── revision/           # BoriRevision 관리
+│   └── …
+├── adapters/               # 배포 어댑터 (devspace, ko, kustomize, shell)
+├── config/
+│   ├── crd/                # BoriDataPlane / BoriRelease / BoriRevision CRD YAML
+│   ├── rbac/               # ClusterRole, ServiceAccount, 바인딩
+│   └── operator/           # Deployment, ConfigMap, Namespace
+├── releases/               # BoriRelease 정의 (예: jumi-ah-dev)
+├── environments/           # 환경 정의 (infra-lab, kind, multipass, …)
+├── components/             # 앱별 component.yaml 스펙
+├── verification/policies/  # slint-gate 정책 파일
+├── testdata/
+│   ├── fixtures/           # 테스트용 BoriDataPlane CR
+│   └── baseline/           # 회귀 검사용 conditions 스냅샷
+├── scripts/
+│   └── regression-check.sh # BoriDataPlane condition 회귀 측정
+├── Dockerfile              # 멀티스테이지: golang:1.26 → distroless/static
+└── docs/                   # 아키텍처, 로드맵, API 설계, 보안 모델
 ```
+
+---
+
+## 로드맵
+
+전체 로드맵: [docs/control-plane-roadmap.md](docs/control-plane-roadmap.md)
+
+Phase 0–10 및 kube-slint Track K0–K5 모두 2026-06-07 기준 완료.
