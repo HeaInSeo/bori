@@ -1,0 +1,33 @@
+name: kubeconform
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "config/**"
+      - ".github/workflows/kubeconform.yaml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "config/**"
+      - ".github/workflows/kubeconform.yaml"
+
+jobs:
+  validate:
+    name: Validate Kubernetes schemas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin kubeconform
+
+      - name: Validate manifests
+        run: |
+          find config/ -name '*.yaml' | xargs kubeconform \
+            -strict \
+            -summary \
+            -kubernetes-version 1.30.0 \
+            -skip CustomResourceDefinition

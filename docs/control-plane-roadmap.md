@@ -1,14 +1,56 @@
-# bori Control Plane 전환 개발 기획서 v0.9
+# bori Control Plane 전환 개발 기획서 v1.1
 
-상태: Draft v0.9  
+상태: Draft v1.1  
 작성일: 2026-06-01  
-최종 업데이트: 2026-06-06  
+최종 업데이트: 2026-06-07  
 대상 저장소: `bori`  
 관련 프로젝트: `JUMI`, `artifact-handoff`, `node-artifact-runtime(nan)`, `tori`, `kube-slint`
 
 ---
 
 ## 0. 변경 이력
+
+### v1.1에서 바뀐 점 (2026-06-07)
+
+Phase 0~5 및 Phase 1.5 완료 표시를 추가했다. 코드는 이미 구현되어 있었으나 로드맵 반영이 누락된 상태였다.
+
+v1.1의 핵심 변경점은 다음이다.
+
+1. Phase 0 완료 표시 (2026-06-01, `d7d642b`).
+2. Phase 1 완료 표시 (2026-06-01, `fc93eb0`).
+3. Phase 1.5 완료 표시 (2026-06-01, `dfa01e3`).
+4. Phase 2 완료 표시 (2026-06-02, `fb572e4` + `1b9a5f8`).
+5. Phase 3 완료 표시 (2026-06-02, `9d1ec7f`).
+6. Phase 3.5 완료 표시 (2026-06-02, `48c46ea`).
+7. Phase 4 완료 표시 (2026-06-02, `27fc9a2`).
+8. Phase 5 완료 표시 (2026-06-02, `7541bf5`).
+
+---
+
+### v1.0에서 바뀐 점 (2026-06-06)
+
+kube-slint Track K0~K5가 완료됐다. kube-slint v1.1.0과 v1.2.0에서 구현된 기능들을 완료 표시했다.
+
+v1.0의 핵심 변경점은 다음이다.
+
+1. kube-slint Track K0 완료 표시 (2026-06-01).
+   - schemaVersion 검증 — 누락/unknown schema → NO_GRADE.
+   - `summary.Validate` 추가 — invalid schema가 PASS로 통과하지 않음.
+
+2. kube-slint Track K1/K2 완료 표시 (2026-06-01).
+   - SLIResult.Status → gate_result 반영 (warn/fail/block/skip).
+   - `OnCounterReset` 정책 — warn/no_grade/fail/skip 선택 가능.
+
+3. kube-slint Track K3/K4 완료 표시 (2026-06-01).
+   - curlpod run-id label + cleanup evidence 기록.
+   - `RedactString()` 유틸리티 — secret/token/password 평문 노출 방지.
+
+4. kube-slint Track K5 완료 표시 (2026-06-02).
+   - `K8sObjectFetcher` — before/after object snapshot → scalar SLI metric.
+   - created/remaining/orphan/stuck/ownerRefMissing count 지원.
+   - raw object evidence 보존.
+
+---
 
 ### v0.9에서 바뀐 점 (2026-06-06)
 
@@ -1595,9 +1637,9 @@ K5가 지연될 경우:
 
 이 의존성 때문에 일정은 병렬처럼 보이더라도 실제 acceptance criteria는 Track 진행 상황에 따라 조정될 수 있다.
 
-### Phase 0 — 설계/정합성/보안 기준선
+### Phase 0 — 설계/정합성/보안 기준선 ✅ 완료 (2026-06-01)
 
-예상 기간: 2026-06-01 ~ 2026-06-07
+~~예상 기간: 2026-06-01 ~ 2026-06-07~~ 실제 완료: 2026-06-01 (`d7d642b`)
 
 목표:
 
@@ -1610,105 +1652,87 @@ K5가 지연될 경우:
 
 산출물:
 
-```text
-docs/architecture.md 업데이트
-docs/control-plane-roadmap.md
-docs/agent-contract.md
-docs/security-model.md
-docs/verification-model.md
-docs/kube-slint-integration.md
-docs/migration-inventory.md
-```
+- [x] `docs/architecture.md` 업데이트
+- [x] `docs/control-plane-roadmap.md`
+- [x] `docs/agent-contract.md`
+- [x] `docs/security-model.md`
+- [x] `docs/verification-model.md`
+- [x] `docs/kube-slint-integration.md`
+- [x] `docs/migration-inventory.md`
 
 완료 기준:
 
-- bori가 DevSpace runner만이 아니라 control-plane transition repo라는 점이 문서화된다.
-- kube-slint가 공식 verification backend로 정의된다.
-- Prometheus parser/delta 계산은 임시 shim으로 명시된다.
-- arbitrary smoke command와 secret redaction 위험이 문서화된다.
-- kube-slint의 schemaVersion/failOn/counter reset 보완 필요가 문서화된다.
+- [x] bori가 DevSpace runner만이 아니라 control-plane transition repo라는 점이 문서화된다.
+- [x] kube-slint가 공식 verification backend로 정의된다.
+- [x] Prometheus parser/delta 계산은 임시 shim으로 명시된다.
+- [x] arbitrary smoke command와 secret redaction 위험이 문서화된다.
+- [x] kube-slint의 schemaVersion/failOn/counter reset 보완 필요가 문서화된다.
 
-### Kube-slint Track K0 — Gate strictness hardening
+### Kube-slint Track K0 — Gate strictness hardening ✅ 완료 (2026-06-01)
 
-예상 기간: 2026-06-03 ~ 2026-06-10
+~~예상 기간: 2026-06-03 ~ 2026-06-10~~ 실제 완료: 2026-06-01 (kube-slint v1.1.0, `55b625c`)
 
 목표:
 
 - slint-gate가 잘못된 summary schema를 조용히 통과시키지 않게 한다.
 
-작업:
+산출물:
 
-```text
-- schemaVersion 검증
-- summary.Validate 추가
-- invalid schema test
-- unknown schema => NO_GRADE
-```
+- [x] schemaVersion 검증
+- [x] `summary.Validate` 추가
+- [x] invalid schema test
+- [x] unknown schema → NO_GRADE
 
 완료 기준:
 
-- schemaVersion 누락/unknown이 gate에서 표시된다.
-- bori가 잘못된 summary를 넘겨도 PASS로 조용히 통과하지 않는다.
+- [x] schemaVersion 누락/unknown이 gate에서 표시된다.
+- [x] bori가 잘못된 summary를 넘겨도 PASS로 조용히 통과하지 않는다.
 
-### Kube-slint Track K1 — Result status and counter reset policy
+### Kube-slint Track K1/K2 — Result status and counter reset policy ✅ 완료 (2026-06-01)
 
-예상 기간: 2026-06-11 ~ 2026-06-21
+~~예상 기간: 2026-06-11 ~ 2026-06-21~~ 실제 완료: 2026-06-01 (kube-slint v1.1.0, `55b625c`)
 
 목표:
 
 - SLIResult.Status를 gate_result에 반영한다.
 - ComputeDelta counter reset 정책을 조정 가능하게 한다.
 
-작업:
+산출물:
 
-```text
-- warn/fail/block/skip 상태 gate 반영
-- OnCounterReset: warn/no_grade/fail/skip 후보
-- JUMI churn SLI에서 no_grade 정책 적용 후보
-```
+- [x] warn/fail/block/skip 상태 gate 반영
+- [x] `OnCounterReset`: warn/no_grade/fail/skip 선택 가능
+- [x] JUMI churn SLI에서 no_grade 정책 적용
 
 완료 기준:
 
-- counter reset이 promotion gate에서 단순 WARN으로만 묻히지 않는다.
-- JUMI churn gate에서 reset 의심을 NO_GRADE/blocking으로 처리할 수 있다.
+- [x] counter reset이 promotion gate에서 단순 WARN으로만 묻히지 않는다.
+- [x] JUMI churn gate에서 reset 의심을 NO_GRADE/blocking으로 처리할 수 있다.
 
-### Phase 1 — Unified Agent Gateway CLI
+### Phase 1 — Unified Agent Gateway CLI ✅ 완료 (2026-06-01)
 
-예상 기간: 2026-06-08 ~ 2026-06-21
+~~예상 기간: 2026-06-08 ~ 2026-06-21~~ 실제 완료: 2026-06-01 (`fc93eb0`)
 
 목표:
 
 - `bori` CLI skeleton 추가
 - agent가 공통으로 사용할 명령 제공
 
-명령 후보:
-
-```bash
-bori plan --release jumi-ah-dev --env kind
-bori deploy --release jumi-ah-dev --env kind
-bori verify --release jumi-ah-dev --env kind
-bori status --run <run-id>
-```
-
 산출물:
 
-```text
-cmd/bori/main.go
-pkg/model
-pkg/planner
-pkg/artifact
-.bori/runs/<run-id>/status.json
-```
+- [x] `cmd/bori/main.go` — plan/deploy/verify/status 명령
+- [x] `pkg/model` — component/environment/release 모델
+- [x] `pkg/planner` — deploy plan 생성
+- [x] `pkg/artifact` — run artifact, status.json 기록
 
 완료 기준:
 
-- 실제 deploy가 아직 단순해도 plan/result artifact가 생성된다.
-- 실패한 실행도 status.json을 남긴다.
-- agent가 직접 kubectl/ko/devspace를 호출하지 않고 bori entrypoint를 사용할 수 있는 최소 경로가 생긴다.
+- [x] 실제 deploy가 아직 단순해도 plan/result artifact가 생성된다.
+- [x] 실패한 실행도 status.json을 남긴다.
+- [x] agent가 직접 kubectl/ko/devspace를 호출하지 않고 bori entrypoint를 사용할 수 있는 최소 경로가 생긴다.
 
-### Phase 1.5 — kube-slint Backend Alignment
+### Phase 1.5 — kube-slint Backend Alignment ✅ 완료 (2026-06-01)
 
-예상 기간: 2026-06-22 ~ 2026-07-05
+~~예상 기간: 2026-06-22 ~ 2026-07-05~~ 실제 완료: 2026-06-01 (`dfa01e3`)
 
 목표:
 
@@ -1719,23 +1743,21 @@ pkg/artifact
 
 산출물:
 
-```text
-pkg/verification/provider.go
-pkg/verification/kubeslint.go
-verification/policies/example.yaml
-verification/baselines/example.json
-```
+- [x] `pkg/verification/provider.go` — Provider interface, GateResult, FailOn, IsBlocking
+- [x] `pkg/verification/kubeslint.go` — KubeSlintProvider (`--fail-on NEVER` 패턴)
+- [x] `pkg/verification/version.go` — version check (v1.2.0+)
+- [x] `verification/policies/` — 각 app별 policy YAML
 
 완료 기준:
 
-- bori verify가 slint-gate를 provider로 호출할 수 있다.
-- `PASS/WARN/FAIL/NO_GRADE`가 bori status와 promotion decision에 반영된다.
-- measurement summary와 gate summary가 run archive에 저장된다.
-- `NO_GRADE`가 promotion gate에서 조용히 통과하지 않는다.
+- [x] bori verify가 slint-gate를 provider로 호출할 수 있다.
+- [x] `PASS/WARN/FAIL/NO_GRADE`가 bori status와 promotion decision에 반영된다.
+- [x] measurement summary와 gate summary가 run archive에 저장된다.
+- [x] `NO_GRADE`가 promotion gate에서 조용히 통과하지 않는다.
 
-### Phase 2 — Component / Environment / Adapter 모델
+### Phase 2 — Component / Environment / Adapter 모델 ✅ 완료 (2026-06-02)
 
-예상 기간: 2026-07-06 ~ 2026-07-31
+~~예상 기간: 2026-07-06 ~ 2026-07-31~~ 실제 완료: 2026-06-02 (`fb572e4` + `1b9a5f8`)
 
 목표:
 
@@ -1746,76 +1768,67 @@ verification/baselines/example.json
 
 산출물:
 
-```text
-components/jumi/component.yaml
-components/artifact-handoff/component.yaml
-components/nan/component.yaml
-components/tori/component.yaml
-environments/kind/environment.yaml
-environments/multipass/environment.yaml
-adapters/devspace
-adapters/ko
-adapters/kustomize
-adapters/shell
-```
+- [x] `components/jumi/component.yaml`
+- [x] `components/artifact-handoff/component.yaml`
+- [x] `components/nan/component.yaml`
+- [x] `components/tori/component.yaml`
+- [x] `components/node-sentinel/component.yaml`
+- [x] `environments/kind/environment.yaml`
+- [x] `environments/multipass/environment.yaml`
+- [x] `environments/infra-lab/environment.yaml`
+- [x] `adapters/devspace`, `adapters/ko`, `adapters/kustomize`, `adapters/shell`, `adapters/tilt`
 
 완료 기준:
 
-- JUMI/AH/nan/tori가 managed component로 표현된다.
-- health/metrics/dependencies/contracts가 보인다.
-- deploy script와 verification input이 섞이지 않는다.
+- [x] JUMI/AH/nan/tori가 managed component로 표현된다.
+- [x] health/metrics/dependencies/contracts가 보인다.
+- [x] deploy script와 verification input이 섞이지 않는다.
 
-### Kube-slint Track K3/K4 — Curlpod security and evidence redaction
+### Kube-slint Track K3/K4 — Curlpod security and evidence redaction ✅ 완료 (2026-06-01)
 
-예상 기간: 2026-07-01 ~ 2026-07-14
+~~예상 기간: 2026-07-01 ~ 2026-07-14~~ 실제 완료: 2026-06-01 (kube-slint v1.1.0, `70ff0f6`)
 
 목표:
 
 - curlpod fetcher가 만드는 임시 리소스와 evidence를 안전하게 관리한다.
 
-작업:
+산출물:
 
-```text
-- curlpod run-id label
-- cleanup warning/evidence
-- minimal RBAC docs
-- redaction utility
-```
+- [x] curlpod run-id label
+- [x] cleanup warning/evidence 기록
+- [x] minimal RBAC docs
+- [x] `RedactString()` redaction utility
 
 완료 기준:
 
-- verification helper resource가 식별 가능하다.
-- cleanup 실패가 evidence에 남는다.
-- secret/token/password가 evidence에 평문으로 남지 않는다.
+- [x] verification helper resource가 식별 가능하다.
+- [x] cleanup 실패가 evidence에 남는다.
+- [x] secret/token/password가 evidence에 평문으로 남지 않는다.
 
-### Phase 3 — 첫 dataplane app 흡수
+### Phase 3 — 첫 dataplane app 흡수 ✅ 완료 (2026-06-02)
 
-예상 기간: 2026-08-01 ~ 2026-08-14
+~~예상 기간: 2026-08-01 ~ 2026-08-14~~ 실제 완료: 2026-06-02 (`9d1ec7f`)
 
 목표:
 
 - JUMI 또는 artifact-handoff 중 하나를 bori 경유로 배포/검증
 - 기존 shell/ko/kustomize/devspace 흐름을 adapter로 감싸기
 
-추천 대상:
+산출물:
 
-```text
-1순위: artifact-handoff
-  이유: JUMI보다 runtime orchestration 위험이 낮고, bori absorption path 검증에 적합
-
-2순위: JUMI
-  이유: 최종 중요도는 높지만 churn gate가 필요하므로 조금 더 복잡함
-```
+- [x] artifact-handoff를 1순위로 흡수 (bori plan/deploy/verify 경로)
+- [x] model 기반 verification 연동
+- [x] adapter 아래 기존 배포 흐름 통합
 
 완료 기준:
 
-- 하나의 실제 dataplane app이 bori plan/deploy/verify 경로를 탄다.
-- 기존 script는 직접 실행되지 않고 adapter 아래에서 호출된다.
-- run artifact가 남는다.
+- [x] 하나의 실제 dataplane app이 bori plan/deploy/verify 경로를 탄다.
+- [x] 기존 script는 직접 실행되지 않고 adapter 아래에서 호출된다.
+- [x] run artifact가 남는다.
 
-### Kube-slint Track K5 — k8s_object_snapshot MVP
+### Kube-slint Track K5 — k8s_object_snapshot MVP ✅ 완료 (2026-06-02)
 
-예상 기간: 2026-08-01 ~ 2026-08-21
+~~예상 기간: 2026-08-01 ~ 2026-08-21~~ 실제 완료: 2026-06-02 (kube-slint v1.2.0, `1dfd7bb`)
 
 목표:
 
@@ -1823,47 +1836,44 @@ adapters/shell
 - raw object metadata를 evidence로 보존한다.
 - JUMI churn gate에서 object-level 관측을 사용할 수 있게 한다.
 
+산출물:
+
+- [x] `K8sObjectFetcher` — before/after object snapshot
+
 완료 기준:
 
-- before/after object snapshot이 가능하다.
-- created/remaining/orphan/stuck/ownerRefMissing count가 metric으로 나온다.
-- raw object evidence가 저장된다.
-- selector로 verification helper resource를 제외할 수 있다.
+- [x] before/after object snapshot이 가능하다.
+- [x] created/remaining/orphan/stuck/ownerRefMissing count가 metric으로 나온다.
+- [x] raw object evidence가 저장된다.
+- [x] selector로 verification helper resource를 제외할 수 있다.
 
-### Phase 3.5 — JUMI Churn Gate MVP
+### Phase 3.5 — JUMI Churn Gate MVP ✅ 완료 (2026-06-02)
 
-예상 기간: 2026-08-15 ~ 2026-09-07
-
-v0.4보다 의존성을 더 명확히 한다.
-metric 기반 churn gate는 먼저 진행할 수 있다.
-`k8s_object_snapshot`은 Track K5의 진행 상황에 따라 같은 Phase에 포함하거나 후속 enhancement로 분리한다.
+~~예상 기간: 2026-08-15 ~ 2026-09-07~~ 실제 완료: 2026-06-02 (`48c46ea`)
 
 목표:
 
 - JUMI executor/spawner/client-go object churn 관측 모델 구현
 - metric 기반 MVP 우선
-- k8s object snapshot source 설계 또는 MVP 착수
 - JUMI revision upgrade gate 초안 작성
 
 산출물:
 
-```text
-docs/jumi-churn-gate.md
-verification/policies/jumi-upgrade-churn.yaml
-verification/baselines/jumi-churn-baseline.json
-kube-slint k8s_object_snapshot 설계 또는 PR 후보
-```
+- [x] `docs/jumi-churn-gate.md`
+- [x] `verification/policies/jumi-upgrade-churn-gate.yaml`
+- [x] multi-policy verification 지원
+- [x] kube-slint K5 `K8sObjectFetcher` 연동 (Track K5 완료로 포함)
 
 완료 기준:
 
-- synthetic pipeline 실행 전후 JUMI object churn을 볼 수 있다.
-- orphan/stuck/cleanup/ownerReference 관련 최소 SLI가 정의된다.
-- counter reset 정책이 promotion gate에서 명확히 처리된다.
-- bori가 churn gate 결과를 promotion blocking 조건으로 사용할 수 있다.
+- [x] synthetic pipeline 실행 전후 JUMI object churn을 볼 수 있다.
+- [x] orphan/stuck/cleanup/ownerReference 관련 최소 SLI가 정의된다.
+- [x] counter reset 정책이 promotion gate에서 명확히 처리된다.
+- [x] bori가 churn gate 결과를 promotion blocking 조건으로 사용할 수 있다.
 
-### Phase 4 — Multi-app Release 모델
+### Phase 4 — Multi-app Release 모델 ✅ 완료 (2026-06-02)
 
-예상 기간: 2026-09-08 ~ 2026-09-30
+~~예상 기간: 2026-09-08 ~ 2026-09-30~~ 실제 완료: 2026-06-02 (`27fc9a2`)
 
 목표:
 
@@ -1873,21 +1883,19 @@ kube-slint k8s_object_snapshot 설계 또는 PR 후보
 
 산출물:
 
-```text
-releases/jumi-ah-dev/release.yaml
-compatibility/jumi-ah-nan.yaml
-pkg/release
-```
+- [x] `releases/jumi-ah-dev/release.yaml`
+- [x] `compatibility/jumi-ah-nan.yaml`
+- [x] `pkg/release` — release-level 모델 및 검증
 
 완료 기준:
 
-- 단일 app이 아니라 compatible app set을 배포/검증한다.
-- release-level gate가 가능하다.
-- 특정 component만 바뀌었을 때 영향받는 verification을 계산할 수 있다.
+- [x] 단일 app이 아니라 compatible app set을 배포/검증한다.
+- [x] release-level gate가 가능하다.
+- [x] 특정 component만 바뀌었을 때 영향받는 verification을 계산할 수 있다.
 
-### Phase 5 — Revision Snapshot / Rollout Plan
+### Phase 5 — Revision Snapshot / Rollout Plan ✅ 완료 (2026-06-02)
 
-예상 기간: 2026-10-01 ~ 2026-10-31
+~~예상 기간: 2026-10-01 ~ 2026-10-31~~ 실제 완료: 2026-06-02 (`7541bf5`)
 
 목표:
 
@@ -1897,18 +1905,16 @@ pkg/release
 
 산출물:
 
-```text
-pkg/revision
-pkg/rollout
-.bori/revisions/<revision-id>.json
-.bori/rollouts/<rollout-id>.json
-```
+- [x] `pkg/revision` — revision snapshot 모델
+- [x] `pkg/rollout` — rollout plan 모델
+- [x] `.bori/revisions/<revision-id>.json`
+- [x] `.bori/rollouts/<rollout-id>.json`
 
 완료 기준:
 
-- 어떤 revision이 어떤 image/config/policy로 검증되었는지 추적 가능하다.
-- rollback 후보 revision을 식별할 수 있다.
-- 아직 traffic routing을 구현하지 않아도 rollout plan 개념이 존재한다.
+- [x] 어떤 revision이 어떤 image/config/policy로 검증되었는지 추적 가능하다.
+- [x] rollback 후보 revision을 식별할 수 있다.
+- [x] 아직 traffic routing을 구현하지 않아도 rollout plan 개념이 존재한다.
 
 ### Phase 6 — Operator Shadow Mode ✅ 완료 (2026-06-03)
 
@@ -2015,7 +2021,7 @@ k8s.io/api v0.36.0
 
 ```text
 - traffic routing / progressive delivery
-- kube-slint Track K0-K5 (별도 트랙 유지)
+- kube-slint Track K0-K5 ✅ 완료 (kube-slint v1.1.0/v1.2.0)
 - BoriRelease CRD
 - multi-tenant 분리
 ```
@@ -2091,7 +2097,7 @@ Makefile
 - BoriRevision CRD (Phase 10 후보)
 - BoriVerificationRun CRD (Phase 10 후보)
 - traffic routing / progressive delivery
-- kube-slint Track K0-K5 (별도 트랙 유지)
+- kube-slint Track K0-K5 ✅ 완료 (kube-slint v1.1.0/v1.2.0)
 ```
 
 산출물:
@@ -2166,7 +2172,7 @@ cmd/bori/main.go
 ```text
 - BoriVerificationRun CRD (Phase 11 후보)
 - network-baseline 통합 (별도 트랙)
-- kube-slint Track K0-K5 (별도 트랙)
+- kube-slint Track K0-K5 ✅ 완료 (kube-slint v1.1.0/v1.2.0)
 ```
 
 산출물:

@@ -1,4 +1,4 @@
-.PHONY: build build-bori clean test install-crds uninstall-crds install-rbac
+.PHONY: build build-bori clean test install-crds uninstall-crds install-rbac regression
 
 # ── Build ───────────────────────────────────────────────────────────────────
 
@@ -44,6 +44,10 @@ uninstall-rbac:
 deploy: install-crds install-rbac
 	kubectl apply -f config/operator/configmap.yaml
 	kubectl apply -f config/operator/deployment.yaml
+	$(MAKE) regression
+
+regression:
+	./scripts/regression-check.sh
 
 undeploy:
 	kubectl delete -f config/operator/deployment.yaml --ignore-not-found

@@ -1,0 +1,28 @@
+name: kube-linter
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "config/**"
+      - ".kube-linter.yaml"
+      - ".github/workflows/kubelint.yaml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "config/**"
+      - ".kube-linter.yaml"
+      - ".github/workflows/kubelint.yaml"
+
+jobs:
+  lint:
+    name: Lint Kubernetes manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run kube-linter
+        uses: stackrox/kube-linter-action@v1
+        with:
+          directory: config
+          config: .kube-linter.yaml

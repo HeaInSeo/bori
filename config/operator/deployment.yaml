@@ -20,6 +20,8 @@ metadata:
     app.kubernetes.io/component: controller
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
   selector:
     matchLabels:
       app.kubernetes.io/name: bori-operator
@@ -35,7 +37,7 @@ spec:
         runAsNonRoot: true
       containers:
         - name: operator
-          image: bori-operator:latest
+          image: localhost/bori-operator:latest
           imagePullPolicy: IfNotPresent
           args:
             - --bori-root=$(BORI_ROOT)
@@ -93,6 +95,10 @@ spec:
             - name: bori-repo
               mountPath: /bori
               readOnly: true
+            - name: bori-state
+              mountPath: /var/bori-state
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: bori-repo
           # Lab: mount the bori repository from the host node.
@@ -100,3 +106,7 @@ spec:
           hostPath:
             path: /opt/go/src/github.com/HeaInSeo/bori
             type: Directory
+        - name: bori-state
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

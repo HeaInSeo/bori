@@ -9,7 +9,7 @@ data:
   # Path to the bori repo root inside the operator pod.
   # Mount the bori repo as a volume and set this to the mount path.
   bori-root: /bori
-  bori-dir: /bori/.bori
+  bori-dir: /var/bori-state
   # How often to re-evaluate each BoriDataPlane when already in-sync.
   requeue-interval: 30s
   # apps-dir: parent directory of app repos used by deploy adapters.

@@ -1,0 +1,8 @@
+apiVersion: bori.dev/v1alpha1
+kind: BoriDataPlane
+metadata:
+  name: infra-lab-smoke
+  namespace: bori-system
+spec:
+  release: jumi-ah-dev
+  environment: infra-lab

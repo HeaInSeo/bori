@@ -1,0 +1,28 @@
+{
+  "resource": "infra-lab-smoke",
+  "namespace": "bori-system",
+  "release": "jumi-ah-dev",
+  "environment": "infra-lab",
+  "conditions": [
+    {
+      "type": "Installed",
+      "status": "False",
+      "reason": "NoPromotedRevision"
+    },
+    {
+      "type": "Verified",
+      "status": "Unknown",
+      "reason": "NoVerificationRun"
+    },
+    {
+      "type": "Promoted",
+      "status": "False",
+      "reason": "NotPromoted"
+    },
+    {
+      "type": "Degraded",
+      "status": "True",
+      "reason": "DriftDetected"
+    }
+  ]
+}

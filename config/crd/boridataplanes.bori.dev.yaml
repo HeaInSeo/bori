@@ -60,7 +60,7 @@ spec:
                         type: string
                       status:
                         type: string
-                        enum: [True, False, Unknown]
+                        enum: ["True", "False", "Unknown"]
                       reason:
                         type: string
                       message:

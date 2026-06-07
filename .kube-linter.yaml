@@ -1,0 +1,22 @@
+checks:
+  addAllBuiltIn: true
+  exclude:
+    # SA is defined in config/rbac/service_account.yaml; cross-file false positive.
+    - "non-existent-service-account"
+    # Hand-authored YAML uses logical ordering, not alphabetical.
+    - "sorted-keys"
+    # Lab deployment uses ctr-imported image; production CI pins via SHA digest.
+    - "latest-tag"
+    # Operator runs as a singleton with leader-election, not 3 replicas.
+    - "minimum-three-replicas"
+    # Operator does not require custom DNS config.
+    - "dnsconfig-options"
+    # Single-instance operator does not need node affinity.
+    - "no-node-affinity"
+    # No NetworkPolicy in lab; would block dev iteration.
+    - "non-isolated-pod"
+    # Owner annotation/label not enforced in this project.
+    - "required-annotation-email"
+    - "required-label-owner"
+    # Deployment restartPolicy defaults to Always; explicit declaration not required.
+    - "restart-policy"
