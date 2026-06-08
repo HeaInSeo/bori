@@ -6,8 +6,8 @@ on:
     branches: [main]
 
 jobs:
-  unit-and-generate:
-    name: Unit tests + generate drift check
+  unit-and-build:
+    name: Unit tests + build
     runs-on: ubuntu-latest
 
     steps:
@@ -23,8 +23,3 @@ jobs:
 
       - name: Build
         run: go build ./...
-
-      - name: Check generated files (CRD + DeepCopy)
-        run: |
-          make generate
-          git diff --exit-code config/crd/ apis/bori/v1alpha1/zz_generated.deepcopy.go

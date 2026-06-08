@@ -1,4 +1,7 @@
-name: kind-smoke
+name: kind-boot-smoke
+
+# K0 boot smoke: operator 기동 + /metrics + conditions 기록 확인.
+# K1 functional smoke (BoriRevision 생성, ConfigMap fixture) 는 다음 PR에서 추가.
 
 on:
   workflow_dispatch:
@@ -9,12 +12,12 @@ on:
       - "cmd/bori-operator/**"
       - "config/**"
       - "test/e2e/**"
-      - "hack/test-kind-smoke.sh"
-      - ".github/workflows/kind-smoke.yml"
+      - "hack/test-kind-boot-smoke.sh"
+      - ".github/workflows/kind-boot-smoke.yml"
 
 jobs:
-  kind-smoke:
-    name: kind cluster smoke test
+  kind-boot-smoke:
+    name: K0 — kind cluster boot smoke
     runs-on: ubuntu-latest
 
     steps:
@@ -31,16 +34,17 @@ jobs:
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
 
-      - name: Run kind smoke test
-        run: hack/test-kind-smoke.sh
+      - name: Run K0 boot smoke
+        run: hack/test-kind-boot-smoke.sh
         env:
           KUBE_VERSION: v1.30.0
-          KUBE_SLINT_DIR: ""  # kube-slint 미연동 (추후 체크아웃 step 추가)
+          # kube-slint: 추후 별도 checkout step 추가 후 활성화
+          KUBE_SLINT_DIR: ""
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kind-smoke-artifacts-${{ github.run_id }}
+          name: kind-boot-smoke-artifacts-${{ github.run_id }}
           path: artifacts/kind/**
           if-no-files-found: warn

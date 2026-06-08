@@ -5,16 +5,28 @@ on:
     branches: [main]
     paths:
       - "apis/**"
+      - "config/crd/**"
+      - "config/rbac/**"
+      - "Makefile"
+      - "go.mod"
+      - "go.sum"
+      - "tools/tools.go"
       - ".github/workflows/generate-check.yaml"
   pull_request:
     branches: [main]
     paths:
       - "apis/**"
+      - "config/crd/**"
+      - "config/rbac/**"
+      - "Makefile"
+      - "go.mod"
+      - "go.sum"
+      - "tools/tools.go"
       - ".github/workflows/generate-check.yaml"
 
 jobs:
   check:
-    name: Verify generated files are up-to-date
+    name: Verify CRD + DeepCopy generated files are up-to-date
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

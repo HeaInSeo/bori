@@ -2,7 +2,10 @@
 
 // Package e2e contains kind smoke tests for the bori operator.
 //
-// Prerequisites (handled by hack/test-kind-smoke.sh):
+// K0 boot smoke: operator 기동, /metrics, BoriDataPlane conditions 검증.
+// K1 functional smoke (BoriRevision 생성): 다음 PR에서 추가 (hack/test-kind-functional-smoke.sh).
+//
+// Prerequisites (handled by hack/test-kind-boot-smoke.sh):
 //
 //	kind create cluster --name bori-smoke
 //	docker build -t bori-operator:dev .

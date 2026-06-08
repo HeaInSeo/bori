@@ -1,10 +1,27 @@
 #!/usr/bin/env bash
-# test-kind-smoke.sh — bori operator kind cluster smoke test
+# test-kind-boot-smoke.sh — bori operator K0 boot smoke (kind cluster)
 #
-# 책임:
-#   Layer 2 smoke: CRD 설치, operator 기동, minimal sample 적용 후
-#   BoriRelease/BoriDataPlane reconcile + /metrics 서빙 검증.
-#   kube-slint SLI 측정은 slint-gate CLI 경유 (Go 테스트에 kube-slint import 없음).
+# ═══ K0 boot smoke ════════════════════════════════════════════════════════════
+# 목적: GitHub-hosted runner kind 환경에서 operator가 기동하는지 확인.
+#       release 파일 없이 emptyDir로 실행 — operator는 ReleaseNotFound 조건을 기록.
+#
+# 검증 대상:
+#   - CRD apply
+#   - operator Deployment Ready
+#   - /metrics 응답
+#   - BoriDataPlane.status.conditions 설정 (ReleaseNotFound 등)
+#   - BoriRelease.status.activeDataPlanes 카운트
+#   - kube-slint SLI snapshot (sli-summary.json artifact)
+#
+# 검증하지 않는 것 (K1 functional smoke의 범위):
+#   - release 파일 발견 → BoriRevision 생성
+#   - deploy/verify/promote happy path
+#
+# K1 (functional smoke) 구현 계획:
+#   - ConfigMap 또는 projected volume으로 최소 release fixture 주입
+#   - BoriRevision 1개 생성 확인
+#   - hack/test-kind-functional-smoke.sh (다음 PR)
+# ══════════════════════════════════════════════════════════════════════════════
 #
 # 전제 조건:
 #   kind, docker, kubectl, go
