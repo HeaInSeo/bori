@@ -1,6 +1,8 @@
 package revision
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -41,6 +43,84 @@ func TestNewRevisionID(t *testing.T) {
 	// Should start with sanitized release name.
 	if id[:12] != "jumi-ah-dev-" {
 		t.Errorf("expected ID to start with 'jumi-ah-dev-', got %q", id)
+	}
+}
+
+func TestComputeContentHashWithImageDigest(t *testing.T) {
+	withTag := []CompRevision{
+		{Name: "jumi", ImageRef: "harbor.local/jumi:v0.4.0"},
+	}
+	withDigest := []CompRevision{
+		{Name: "jumi", ImageRef: "harbor.local/jumi@sha256:abc123", ImageDigest: "sha256:abc123"},
+	}
+
+	h1 := ComputeContentHash(withTag)
+	h2 := ComputeContentHash(withDigest)
+	if h1 == h2 {
+		t.Error("expected different hash when ImageDigest changes")
+	}
+
+	// Same digest twice must be stable.
+	h3 := ComputeContentHash(withDigest)
+	if h2 != h3 {
+		t.Errorf("hash must be stable: %q != %q", h2, h3)
+	}
+}
+
+func TestFail(t *testing.T) {
+	rev := BoriRevision{
+		RevisionID:      "test-rev",
+		PromotionStatus: "pending",
+		Components: []CompRevision{
+			{Name: "jumi", ImageRef: "harbor.local/jumi@sha256:abc123", ImageDigest: "sha256:abc123"},
+		},
+	}
+	rev.ContentHash = ComputeContentHash(rev.Components)
+
+	Fail(&rev, "kubectl set image: exit status 1")
+
+	if rev.PromotionStatus != "failed" {
+		t.Errorf("expected PromotionStatus 'failed', got %q", rev.PromotionStatus)
+	}
+	if rev.FailReason == "" {
+		t.Error("expected FailReason to be set")
+	}
+	// ContentHash must still be valid after Fail.
+	if len(rev.ContentHash) != 16 {
+		t.Errorf("expected 16-char ContentHash after Fail, got %q", rev.ContentHash)
+	}
+	// PromotedAt must not be set.
+	if rev.PromotedAt != nil {
+		t.Error("expected PromotedAt to be nil after Fail")
+	}
+}
+
+func TestNetworkVerificationNilOmittedFromJSON(t *testing.T) {
+	rev := BoriRevision{
+		RevisionID:      "test-rev",
+		PromotionStatus: "pending",
+		Components: []CompRevision{
+			{Name: "jumi", ImageRef: "harbor.local/jumi:v0.4.0"},
+		},
+	}
+	data, err := json.Marshal(rev)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "networkVerification") {
+		t.Error("expected networkVerification to be omitted when nil")
+	}
+}
+
+func TestNetworkVerificationConstants(t *testing.T) {
+	if NetworkVerificationPass != "pass" {
+		t.Errorf("unexpected value: %q", NetworkVerificationPass)
+	}
+	if NetworkVerificationFail != "fail" {
+		t.Errorf("unexpected value: %q", NetworkVerificationFail)
+	}
+	if NetworkVerificationSkip != "skip" {
+		t.Errorf("unexpected value: %q", NetworkVerificationSkip)
 	}
 }
 

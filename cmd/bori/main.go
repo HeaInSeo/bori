@@ -2,15 +2,16 @@
 //
 // Usage:
 //
-//	bori plan          --release <name> --env <name> [--bori-root <dir>]
-//	bori deploy        --release <name> --env <name> [--bori-root <dir>] [--apps-dir <dir>]
-//	bori verify        [--release <name> --env <name>] [--changed <a,b>] [--bori-root <dir>]
-//	bori status        --run <run-id> [--bori-dir <dir>]
-//	bori revision      list [--release <name>] [--bori-dir <dir>]
-//	bori rollout       plan --release <name> --env <name> [--bori-root <dir>]
-//	bori shadow        status --release <name> [--bori-root <dir>] [--bori-dir <dir>]
-//	bori reconcile     --release <name> --env <name> [--bori-root <dir>] [--dry-run]
-//	bori release apply --name <name> [--bori-root <dir>] [--namespace <ns>] [--apply]
+//	bori plan                --release <name> --env <name> [--bori-root <dir>]
+//	bori deploy              --release <name> --env <name> [--bori-root <dir>] [--apps-dir <dir>]
+//	bori verify              [--release <name> --env <name>] [--changed <a,b>] [--bori-root <dir>]
+//	bori status              --run <run-id> [--bori-dir <dir>]
+//	bori revision            list [--release <name>] [--bori-dir <dir>]
+//	bori rollout             plan --release <name> --env <name> [--bori-root <dir>]
+//	bori shadow              status --release <name> [--bori-root <dir>] [--bori-dir <dir>]
+//	bori reconcile           --release <name> --env <name> [--bori-root <dir>] [--dry-run]
+//	bori release apply       --name <name> [--bori-root <dir>] [--namespace <ns>] [--apply]
+//	bori release set-image   --release <name> --component <name> --image-digest <sha256:...> [--version <v>] [--git-sha <sha>]
 package main
 
 import (
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	devspaceadapter "github.com/HeaInSeo/bori/adapters/devspace"
+	imageswapAdp "github.com/HeaInSeo/bori/adapters/imageswap"
 	koadapter "github.com/HeaInSeo/bori/adapters/ko"
 	kustomizeadapter "github.com/HeaInSeo/bori/adapters/kustomize"
 	shelladapter "github.com/HeaInSeo/bori/adapters/shell"
@@ -42,6 +44,7 @@ import (
 	"github.com/HeaInSeo/bori/pkg/security"
 	shadowpkg "github.com/HeaInSeo/bori/pkg/shadow"
 	"github.com/HeaInSeo/bori/pkg/verification"
+	"gopkg.in/yaml.v3"
 	sigsyaml "sigs.k8s.io/yaml"
 )
 
@@ -87,8 +90,9 @@ Usage:
   bori revision list     [--release <name>] [--bori-dir <dir>]
   bori rollout plan      --release <name> --env <name> [--bori-root <dir>]
   bori shadow status     --release <name> [--bori-root <dir>] [--bori-dir <dir>] [--json]
-  bori reconcile         --release <name> --env <name> [--bori-root <dir>] [--dry-run] [-v]
-  bori release apply     --name <name> [--bori-root <dir>] [--namespace <ns>] [--apply]`)
+  bori reconcile           --release <name> --env <name> [--bori-root <dir>] [--dry-run] [-v]
+  bori release apply       --name <name> [--bori-root <dir>] [--namespace <ns>] [--apply]
+  bori release set-image   --release <name> --component <name> --image-digest <sha256:...> [--version <v>] [--git-sha <sha>]`)
 }
 
 // cmdPlan loads the release/environment model and prints the deploy plan.
@@ -311,15 +315,22 @@ func cmdDeploy(args []string) {
 		fmt.Fprintf(os.Stderr, "[bori] warning: could not write deploy-result.json: %v\n", err)
 	}
 
-	// On successful deploy, promote the revision and record baseline provenance.
-	if overall == verification.GateResultPass && revErr == nil {
-		baselineRef := fmt.Sprintf("%s/evidence", runDir)
-		revision.Promote(&rev, baselineRef)
-		rev.VerificationRunID = runID
-		if _, err := revision.Write(*boriDir, rev); err != nil {
-			fmt.Fprintf(os.Stderr, "[bori] warning: could not update promoted revision: %v\n", err)
+	// Record revision outcome.
+	if revErr == nil {
+		if overall == verification.GateResultPass {
+			baselineRef := fmt.Sprintf("%s/evidence", runDir)
+			revision.Promote(&rev, baselineRef)
+			rev.VerificationRunID = runID
+			if _, err := revision.Write(*boriDir, rev); err != nil {
+				fmt.Fprintf(os.Stderr, "[bori] warning: could not update promoted revision: %v\n", err)
+			} else {
+				fmt.Printf("[bori] revision promoted: %s\n", rev.RevisionID)
+			}
 		} else {
-			fmt.Printf("[bori] revision promoted: %s\n", rev.RevisionID)
+			revision.Fail(&rev, fmt.Sprintf("deploy overall: %s", overall))
+			if _, err := revision.Write(*boriDir, rev); err != nil {
+				fmt.Fprintf(os.Stderr, "[bori] warning: could not update failed revision: %v\n", err)
+			}
 		}
 	}
 
@@ -803,6 +814,7 @@ func runSmoke(ctx context.Context, cmd string, wait time.Duration, appName strin
 func buildAdapterRegistry(appsDir string) map[string]adapter.DeployAdapter {
 	return map[string]adapter.DeployAdapter{
 		"devspace":  devspaceadapter.New(appsDir),
+		"imageswap": imageswapAdp.New(),
 		"ko":        koadapter.New(appsDir),
 		"kustomize": kustomizeadapter.New(appsDir),
 		"shell":     shelladapter.New(appsDir),
@@ -1110,12 +1122,14 @@ func cmdReconcile(args []string) {
 // cmdRelease dispatches release sub-commands.
 func cmdRelease(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: bori release apply --name <name> [--bori-root <dir>] [--namespace <ns>] [--apply]")
+		fmt.Fprintln(os.Stderr, "usage: bori release apply --name <name> [--bori-root <dir>] [--namespace <ns>] [--apply]\n       bori release set-image --release <name> --component <name> --image-digest <sha256:...> [--version <v>] [--git-sha <sha>]")
 		os.Exit(1)
 	}
 	switch args[0] {
 	case "apply":
 		cmdReleaseApply(args[1:])
+	case "set-image":
+		cmdReleaseSetImage(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "bori release: unknown sub-command %q\n", args[0])
 		os.Exit(1)
@@ -1167,6 +1181,64 @@ func cmdReleaseApply(args []string) {
 	if err := cmd.Run(); err != nil {
 		fatalf("kubectl apply: %v", err)
 	}
+}
+
+// cmdReleaseSetImage updates a component's imageDigest (and optionally version/gitSha)
+// in releases/<name>/release.yaml in place. This records the release intent — the next
+// `bori deploy` will use the imageswap adapter to deploy the pinned digest.
+//
+// Example:
+//
+//	bori release set-image --release jumi-ah-dev --component jumi \
+//	  --image-digest sha256:abc123 --version v0.4.0 --git-sha deadbeef
+func cmdReleaseSetImage(args []string) {
+	fs := flag.NewFlagSet("release set-image", flag.ExitOnError)
+	releaseName := fs.String("release", "", "release name (required)")
+	compName := fs.String("component", "", "component name (required)")
+	imageDigest := fs.String("image-digest", "", "Harbor image digest, e.g. sha256:abc123 (required)")
+	version := fs.String("version", "", "new version string (optional)")
+	gitSha := fs.String("git-sha", "", "git commit SHA that produced the image (optional)")
+	boriRoot := fs.String("bori-root", ".", "path to bori repo root")
+	_ = fs.Parse(args)
+
+	if *releaseName == "" || *compName == "" || *imageDigest == "" {
+		fmt.Fprintln(os.Stderr, "bori release set-image: --release, --component, and --image-digest are required")
+		os.Exit(1)
+	}
+
+	relPath := filepath.Join(*boriRoot, "releases", *releaseName, "release.yaml")
+	rel, err := model.LoadRelease(relPath)
+	if err != nil {
+		fatalf("load release %q: %v", *releaseName, err)
+	}
+
+	found := false
+	for i, ref := range rel.Components {
+		if ref.Name == *compName {
+			rel.Components[i].ImageDigest = *imageDigest
+			if *version != "" {
+				rel.Components[i].Version = *version
+			}
+			if *gitSha != "" {
+				rel.Components[i].GitSha = *gitSha
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		fatalf("component %q not found in release %q", *compName, *releaseName)
+	}
+
+	data, err := yaml.Marshal(rel)
+	if err != nil {
+		fatalf("marshal release: %v", err)
+	}
+	if err := os.WriteFile(relPath, data, 0o644); err != nil {
+		fatalf("write %s: %v", relPath, err)
+	}
+
+	fmt.Printf("[bori] release %q: %s imageDigest → %s\n", *releaseName, *compName, *imageDigest)
 }
 
 func orNone(s string) string {

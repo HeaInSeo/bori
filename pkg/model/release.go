@@ -20,9 +20,13 @@ type BoriRelease struct {
 }
 
 // ComponentRef pins a component at a specific version.
+// When ImageDigest is set, bori uses the imageswap adapter to deploy the exact
+// Harbor digest instead of building from source.
 type ComponentRef struct {
-	Name    string `yaml:"name"`
-	Version string `yaml:"version"`
+	Name        string `yaml:"name"`
+	Version     string `yaml:"version"`
+	ImageDigest string `yaml:"imageDigest,omitempty"`
+	GitSha      string `yaml:"gitSha,omitempty"`
 }
 
 // CompatibilityRef points to the version compatibility matrix for this release.

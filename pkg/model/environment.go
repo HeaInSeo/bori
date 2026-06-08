@@ -11,11 +11,26 @@ import (
 // BoriEnvironment is the environment definition stored in
 // environments/<name>/environment.yaml inside the bori repo.
 type BoriEnvironment struct {
-	Name            string          `yaml:"name"`
-	Cluster         ClusterConfig   `yaml:"cluster"`
-	NamespacePolicy NamespacePolicy `yaml:"namespacePolicy"`
-	Registry        RegistryConfig  `yaml:"registry"`
-	Secrets         SecretsConfig   `yaml:"secrets"`
+	Name               string                    `yaml:"name"`
+	Cluster            ClusterConfig             `yaml:"cluster"`
+	NamespacePolicy    NamespacePolicy           `yaml:"namespacePolicy"`
+	Registry           RegistryConfig            `yaml:"registry"`
+	Secrets            SecretsConfig             `yaml:"secrets"`
+	NetworkIntegration NetworkIntegrationProfile `yaml:"networkIntegration,omitempty" json:"networkIntegration,omitempty"`
+}
+
+// NetworkIntegrationProfile declares what connectivity/policy checks to run after
+// a successful rollout. bori core does not implement checks directly — type maps
+// to a verifier adapter. Omit or set type: none to skip all checks.
+//
+// Supported types (MVP): none, kubernetes-service
+// Future: cilium, istio, linkerd
+type NetworkIntegrationProfile struct {
+	// Type selects the verifier adapter: none | kubernetes-service | cilium | istio
+	Type string `yaml:"type,omitempty" json:"type,omitempty"`
+	// Checks lists the capability checks to run (e.g. service-dns-call, network-policy-positive).
+	// When empty, the adapter uses its default check set for the given type.
+	Checks []string `yaml:"checks,omitempty" json:"checks,omitempty"`
 }
 
 // ClusterConfig describes how to reach the Kubernetes cluster.

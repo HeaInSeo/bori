@@ -29,6 +29,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	devspaceadapter "github.com/HeaInSeo/bori/adapters/devspace"
+	imageswapAdp "github.com/HeaInSeo/bori/adapters/imageswap"
 	koadapter "github.com/HeaInSeo/bori/adapters/ko"
 	kustomizeadapter "github.com/HeaInSeo/bori/adapters/kustomize"
 	shelladapter "github.com/HeaInSeo/bori/adapters/shell"
@@ -112,6 +113,7 @@ func main() {
 	runner := reconcilepkg.NewReconciler(appsDir, logf)
 	runner.AdapterRegistry = map[string]adapter.DeployAdapter{
 		"devspace":  devspaceadapter.New(appsDir),
+		"imageswap": imageswapAdp.New(),
 		"ko":        koadapter.New(appsDir),
 		"kustomize": kustomizeadapter.New(appsDir),
 		"shell":     shelladapter.New(appsDir),

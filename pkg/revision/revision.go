@@ -34,6 +34,11 @@ type BoriRevision struct {
 	// BaselineRef points to the sli-summary.json that becomes the next baseline
 	// when this revision is promoted.
 	BaselineRef string `json:"baselineRef,omitempty"`
+	// FailReason is set when PromotionStatus is "failed" to record why deploy failed.
+	FailReason string `json:"failReason,omitempty"`
+	// NetworkVerification holds the outcome of NetworkIntegrationProfile checks run
+	// after rollout. Nil when the environment profile type is "none" or not set.
+	NetworkVerification *NetworkVerificationResult `json:"networkVerification,omitempty"`
 }
 
 // CompRevision captures the state of one component within a revision.
@@ -42,6 +47,10 @@ type CompRevision struct {
 	Name     string `json:"name"`
 	Version  string `json:"version"`
 	ImageRef string `json:"imageRef"`
+	// ImageDigest is the Harbor sha256 digest used when deploying via imageswap.
+	ImageDigest string `json:"imageDigest,omitempty"`
+	// GitSha is the source commit that produced the image.
+	GitSha string `json:"gitSha,omitempty"`
 	// ComponentSpecDigest is SHA256 of components/<name>/component.yaml
 	ComponentSpecDigest string `json:"componentSpecDigest"`
 	// EnvironmentDigest is SHA256 of environments/<name>/environment.yaml
@@ -50,6 +59,29 @@ type CompRevision struct {
 	VerificationPolicyDigest string `json:"verificationPolicyDigest,omitempty"`
 	// BaselineRef points to the baseline used for regression comparison
 	BaselineRef string `json:"baselineRef,omitempty"`
+}
+
+// Network verification result values — use these constants to avoid string literals.
+const (
+	NetworkVerificationPass = "pass"
+	NetworkVerificationFail = "fail"
+	NetworkVerificationSkip = "skip"
+)
+
+// NetworkVerificationResult records the outcome of NetworkIntegrationProfile checks
+// run after a successful rollout. Populated by the netverify layer (not yet implemented);
+// nil when type is "none" or verification was skipped.
+type NetworkVerificationResult struct {
+	Type    string               `json:"type"`
+	Overall string               `json:"overall"` // use NetworkVerification* constants
+	Checks  []NetworkCheckResult `json:"checks,omitempty"`
+}
+
+// NetworkCheckResult is the result of one capability check within a NetworkIntegrationProfile.
+type NetworkCheckResult struct {
+	Check   string `json:"check"`
+	Result  string `json:"result"` // use NetworkVerification* constants
+	Message string `json:"message,omitempty"`
 }
 
 // NewRevisionID generates a deterministic revision ID from release, env, and timestamp.
@@ -72,8 +104,8 @@ func ComputeContentHash(comps []CompRevision) string {
 	})
 	h := sha256.New()
 	for _, c := range sorted {
-		fmt.Fprintf(h, "%s|%s|%s|%s|%s|%s\n",
-			c.Name, c.ImageRef,
+		fmt.Fprintf(h, "%s|%s|%s|%s|%s|%s|%s\n",
+			c.Name, c.ImageRef, c.ImageDigest,
 			c.ComponentSpecDigest,
 			c.EnvironmentDigest,
 			c.VerificationPolicyDigest,
@@ -101,6 +133,8 @@ func BuildFromPlan(plan artifact.Plan, boriRoot string) (BoriRevision, error) {
 			Name:              cp.Name,
 			Version:           cp.Version,
 			ImageRef:          cp.ImageRef,
+			ImageDigest:       cp.ImageDigest,
+			GitSha:            cp.GitSha,
 			EnvironmentDigest: envDigest,
 		}
 		cr.ComponentSpecDigest, _ = fileDigest(
@@ -138,6 +172,14 @@ func AddVerificationPolicyDigests(rev *BoriRevision, boriRoot, appsDir, profile 
 		rev.Components[i].VerificationPolicyDigest, _ = fileDigest(polPath)
 	}
 	// Recompute hash after adding policy digests.
+	rev.ContentHash = ComputeContentHash(rev.Components)
+}
+
+// Fail marks the revision as failed and records the reason.
+// A failed revision is immutable evidence — it is written to disk and never retried.
+func Fail(rev *BoriRevision, reason string) {
+	rev.PromotionStatus = "failed"
+	rev.FailReason = reason
 	rev.ContentHash = ComputeContentHash(rev.Components)
 }
 

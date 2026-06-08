@@ -22,11 +22,13 @@ type Plan struct {
 
 // ComponentPlan describes what bori will do for one component.
 type ComponentPlan struct {
-	Name      string `json:"name"`
-	Version   string `json:"version"`
-	Adapter   string `json:"adapter"`
-	Namespace string `json:"namespace"`
-	ImageRef  string `json:"imageRef"`
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	Adapter     string `json:"adapter"`
+	Namespace   string `json:"namespace"`
+	ImageRef    string `json:"imageRef"`
+	ImageDigest string `json:"imageDigest,omitempty"`
+	GitSha      string `json:"gitSha,omitempty"`
 	// Action is one of: deploy | skip | violation
 	Action  string `json:"action"`
 	Message string `json:"message,omitempty"`

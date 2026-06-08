@@ -5,6 +5,7 @@ package planner
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/HeaInSeo/bori/pkg/artifact"
@@ -100,13 +101,30 @@ func (p *Planner) Plan(runID, releaseName, envName string) (*artifact.Plan, erro
 			adapterName = "devspace"
 		}
 
+		imageRef := comp.Image.Ref
+		imageDigest := ref.ImageDigest
+		if imageDigest != "" {
+			// Build digest-qualified ref: strip tag/digest from base, then append @sha256:...
+			base := imageRef
+			if i := strings.Index(base, "@"); i >= 0 {
+				base = base[:i]
+			}
+			if i := strings.LastIndex(base, ":"); i >= 0 && !strings.Contains(base[i:], "/") {
+				base = base[:i]
+			}
+			imageRef = base + "@" + imageDigest
+			adapterName = "imageswap"
+		}
+
 		cp := artifact.ComponentPlan{
-			Name:      comp.Name,
-			Version:   ref.Version,
-			Adapter:   adapterName,
-			Namespace: ns,
-			ImageRef:  comp.Image.Ref,
-			Action:    "deploy",
+			Name:        comp.Name,
+			Version:     ref.Version,
+			Adapter:     adapterName,
+			Namespace:   ns,
+			ImageRef:    imageRef,
+			ImageDigest: imageDigest,
+			GitSha:      ref.GitSha,
+			Action:      "deploy",
 		}
 		if !allowedNS[ns] {
 			cp.Action = "violation"

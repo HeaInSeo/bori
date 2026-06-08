@@ -43,6 +43,8 @@ spec:
                   type: string
                 baselineRef:
                   type: string
+                failReason:
+                  type: string
                 components:
                   type: array
                   items:
@@ -54,6 +56,10 @@ spec:
                       version:
                         type: string
                       imageRef:
+                        type: string
+                      imageDigest:
+                        type: string
+                      gitSha:
                         type: string
                       componentSpecDigest:
                         type: string
@@ -75,6 +81,27 @@ spec:
                 observedAt:
                   type: string
                   format: date-time
+                networkVerification:
+                  description: "NetworkIntegrationProfile check results — nil when type is none"
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                    overall:
+                      description: "pass | fail | skip"
+                      type: string
+                    checks:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          check:
+                            type: string
+                          result:
+                            description: "pass | fail | skip"
+                            type: string
+                          message:
+                            type: string
       subresources:
         status: {}
       additionalPrinterColumns:

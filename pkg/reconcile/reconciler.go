@@ -214,6 +214,13 @@ func (r *Reconciler) Run(ctx context.Context, req Request) (*Result, error) {
 			deployOK = false
 			continue
 		}
+		// Apply plan overrides: imageRef from planner (may be digest-qualified).
+		if cp.Version != "" {
+			comp.Version = cp.Version
+		}
+		if cp.ImageRef != "" {
+			comp.Image.Ref = cp.ImageRef
+		}
 		env, err := model.LoadEnvironmentByName(abs, req.EnvName)
 		if err != nil {
 			r.Logf("load environment %s: %v", req.EnvName, err)
@@ -263,16 +270,23 @@ func (r *Reconciler) Run(ctx context.Context, req Request) (*Result, error) {
 		r.Logf("warning: could not write deploy-result.json: %v", err)
 	}
 
-	// Step 4: Promote if deploy succeeded (verify is handled by caller).
-	if deployOK && revErr == nil {
-		baselineRef := filepath.Join(runDir, "evidence")
-		revision.Promote(&rev, baselineRef)
-		rev.VerificationRunID = runID
-		if _, err := revision.Write(req.BoriDir, rev); err != nil {
-			r.Logf("warning: could not update promoted revision: %v", err)
+	// Step 4: Record revision outcome — promoted on success, failed on deploy error.
+	if revErr == nil {
+		if deployOK {
+			baselineRef := filepath.Join(runDir, "evidence")
+			revision.Promote(&rev, baselineRef)
+			rev.VerificationRunID = runID
+			if _, err := revision.Write(req.BoriDir, rev); err != nil {
+				r.Logf("warning: could not update promoted revision: %v", err)
+			} else {
+				result.Promoted = true
+				r.Logf("revision promoted: %s", rev.RevisionID)
+			}
 		} else {
-			result.Promoted = true
-			r.Logf("revision promoted: %s", rev.RevisionID)
+			revision.Fail(&rev, "deploy failed: one or more adapters returned an error")
+			if _, err := revision.Write(req.BoriDir, rev); err != nil {
+				r.Logf("warning: could not update failed revision: %v", err)
+			}
 		}
 	}
 
@@ -356,12 +370,14 @@ func RollbackPlan(boriRoot, boriDir, releaseName, envName, targetRevisionID stri
 			adapterName = "devspace"
 		}
 		cp := artifact.ComponentPlan{
-			Name:      cr.Name,
-			Version:   cr.Version,
-			Adapter:   adapterName,
-			Namespace: ns,
-			ImageRef:  cr.ImageRef,
-			Action:    "deploy",
+			Name:        cr.Name,
+			Version:     cr.Version,
+			Adapter:     adapterName,
+			Namespace:   ns,
+			ImageRef:    cr.ImageRef,
+			ImageDigest: cr.ImageDigest,
+			GitSha:      cr.GitSha,
+			Action:      "deploy",
 		}
 		if !allowedNS[ns] {
 			cp.Action = "violation"

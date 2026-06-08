@@ -25,3 +25,8 @@ registry:
 secrets:
   mode: reference-only
   redaction: strict
+
+# networkIntegration: placeholder — upgrade to kubernetes-service once rollout is stable.
+# After that, cilium checks (network-policy-positive, network-policy-negative) follow.
+networkIntegration:
+  type: none
