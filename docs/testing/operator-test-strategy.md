@@ -157,19 +157,23 @@ Layer 1(fake client)과 Layer 2(kind)가 각 역할을 충분히 담당한다.
 
 ## 기술 부채
 
-### TD-001 — e2e 테스트 프레임워크: 표준 testing vs Ginkgo/Gomega
+### TD-001 — e2e 테스트 프레임워크: 표준 testing → Ginkgo/Gomega 전환 필요
 
 | 항목 | 내용 |
 |------|------|
 | **현재 상태** | `test/e2e/` 전체가 표준 `testing` 패키지 사용 |
-| **발생 이유** | K0 boot smoke 단계에서는 서브테스트 4개 수준이므로 BDD 구조가 불필요 |
-| **부채 내용** | K1 functional smoke 이후 시나리오가 복잡해질 때 Ginkgo/Gomega 미도입으로 인한 구조 한계 가능성 |
+| **발생 이유** | K0 boot smoke 단계에서 빠르게 구현하면서 표준 testing으로 작성 |
+| **부채 내용** | kube-slint SLI 측정은 Ginkgo/Gomega 패턴에서 사용하는 것이 바람직하다. 현재 표준 testing 기반 구현은 임시 상태다. |
 
-**도입을 재검토할 시점:**
-- K1 functional smoke 작성 시 — 여러 시나리오가 독립 실행 필요하거나 `BeforeEach`로 클러스터 상태를 공유해야 할 때
-- 테스트 실패 시 `--focus` / `--skip` 같은 선택적 실행이 실제로 필요해질 때
+**전환 방향:**
+- `test/e2e/` 전체를 Ginkgo/Gomega 기반으로 재작성
+- kube-slint `sess.Start()` / `sess.End()` 를 `BeforeSuite` / `AfterSuite` 또는 `BeforeEach` / `AfterEach`에 배치
+- `Describe` / `It` 구조로 K0/K1 시나리오를 명확히 구분
+- `--focus` / `--skip` 으로 선택적 시나리오 실행 가능
 
-**현재 판단:**
-unit 테스트와 e2e가 같은 표준 패키지를 쓰고 있어 일관성이 있다.
-kube-slint 예제(kind-hello-operator)도 표준 `testing`을 사용한다.
-K1 PR 시점에 도입 여부를 같이 결정한다.
+**전환 시점:**
+K1 functional smoke PR에서 함께 전환한다.
+K0도 이 시점에 Ginkgo로 재작성한다 (표준 testing 코드 제거).
+
+**현재 K0 상태:**
+표준 `testing`으로 작성된 `test/e2e/kind_smoke_test.go`는 K1 전환 PR 전까지 임시로 유지한다.
