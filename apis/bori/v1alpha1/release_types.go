@@ -68,7 +68,7 @@ type BoriReleaseStatus struct {
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Components",type=integer,JSONPath=`.spec.components`
+// +kubebuilder:resource:shortName=br
 // +kubebuilder:printcolumn:name="DataPlanes",type=integer,JSONPath=`.status.activeDataPlanes`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 type BoriRelease struct {

@@ -1,97 +1,93 @@
-# BoriRelease CRD — Phase 9
-#
-# Apply:  kubectl apply -f config/crd/borireleases.bori.dev.yaml
-# Remove: kubectl delete -f config/crd/borireleases.bori.dev.yaml
-#
-# BoriRelease is the Kubernetes-native equivalent of releases/<name>/release.yaml.
-# The operator reads release definitions from BoriRelease CRs when they exist;
-# falls back to the filesystem for backward compatibility with the bori CLI.
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: borireleases.bori.dev
   annotations:
-    bori.dev/phase: "9"
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: borireleases.bori.dev
 spec:
   group: bori.dev
   names:
     kind: BoriRelease
     listKind: BoriReleaseList
     plural: borireleases
-    singular: borirelease
     shortNames:
-      - br
+    - br
+    singular: borirelease
   scope: Namespaced
   versions:
-    - name: v1alpha1
-      served: true
-      storage: true
-      schema:
-        openAPIV3Schema:
-          type: object
-          properties:
-            spec:
-              type: object
-              required: [components]
-              properties:
-                components:
-                  description: Pinned, compatible set of component versions.
-                  type: array
-                  minItems: 1
-                  items:
-                    type: object
-                    required: [name, version]
+  - additionalPrinterColumns:
+    - jsonPath: .status.activeDataPlanes
+      name: DataPlanes
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              compatibility:
+                properties:
+                  matrix:
+                    type: string
+                type: object
+              components:
+                items:
+                  properties:
+                    name:
+                      type: string
+                    version:
+                      type: string
+                  required:
+                  - name
+                  - version
+                  type: object
+                type: array
+              promotion:
+                properties:
+                  baselinePolicy:
                     properties:
-                      name:
+                      reviewRequired:
+                        type: boolean
+                      updateFrom:
                         type: string
-                      version:
-                        type: string
-                compatibility:
-                  type: object
-                  properties:
-                    matrix:
-                      description: Name of the compatibility matrix file.
+                    type: object
+                  requiredGateResult:
+                    type: string
+                type: object
+              verification:
+                properties:
+                  policies:
+                    items:
                       type: string
-                verification:
-                  type: object
-                  properties:
-                    policies:
-                      description: Verification policy names applied to this release.
-                      type: array
-                      items:
-                        type: string
-                promotion:
-                  type: object
-                  properties:
-                    requiredGateResult:
-                      description: "Minimum gate result for promotion (e.g. PASS)."
-                      type: string
-                    baselinePolicy:
-                      type: object
-                      properties:
-                        updateFrom:
-                          type: string
-                        reviewRequired:
-                          type: boolean
-            status:
-              type: object
-              properties:
-                observedGeneration:
-                  type: integer
-                  format: int64
-                activeDataPlanes:
-                  description: Number of BoriDataPlane CRs referencing this release.
-                  type: integer
-                  format: int32
-                observedAt:
-                  type: string
-                  format: date-time
-      subresources:
-        status: {}
-      additionalPrinterColumns:
-        - name: DataPlanes
-          type: integer
-          jsonPath: .status.activeDataPlanes
-        - name: Age
-          type: date
-          jsonPath: .metadata.creationTimestamp
+                    type: array
+                type: object
+            required:
+            - components
+            type: object
+          status:
+            properties:
+              activeDataPlanes:
+                format: int32
+                type: integer
+              observedAt:
+                format: date-time
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

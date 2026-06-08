@@ -88,9 +88,11 @@ type BoriDataPlaneStatus struct {
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=bdp
 // +kubebuilder:printcolumn:name="Release",type=string,JSONPath=`.spec.release`
 // +kubebuilder:printcolumn:name="Environment",type=string,JSONPath=`.spec.environment`
 // +kubebuilder:printcolumn:name="Revision",type=string,JSONPath=`.status.currentRevision`
+// +kubebuilder:printcolumn:name="ObservedGen",type=integer,JSONPath=`.status.observedGeneration`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 type BoriDataPlane struct {
 	metav1.TypeMeta   `json:",inline"`

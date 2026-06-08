@@ -2,8 +2,9 @@
 
 | 항목 | 내용 |
 |------|------|
-| **상태** | 검토 필요 (Review Needed) |
+| **상태** | 결정됨 — 선택지 A 채택 (controller-gen v0.21.0) |
 | **등록일** | 2026-06-08 |
+| **결정일** | 2026-06-08 |
 | **관련 파일** | `config/crd/`, `apis/bori/v1alpha1/`, `Makefile`, `.github/workflows/kubeconform.yaml` |
 
 ---
@@ -119,19 +120,26 @@ controller-gen으로 기본 구조를 생성하고, 특수 annotation(descriptio
 
 ---
 
-## 현재 권고
+## 결정 및 구현 내용
 
-CRD가 3개이고 schema가 단순하며 팀 규모가 작은 현재 상황에서는
-**선택지 B (수동 유지 + PR 체크리스트)**가 현실적이다.
+**선택지 A (controller-gen 도입)**을 채택한다. 구현 범위:
 
-단, 다음 조건 중 하나가 충족되면 선택지 A(controller-gen)로 전환을 검토한다:
-- CRD 수가 5개 이상으로 증가
-- schema drift로 인한 운영 장애가 발생
-- Phase 11 이상에서 spec/status 분리 마이그레이션을 진행할 때
+| 항목 | 내용 |
+|------|------|
+| 도구 버전 | `sigs.k8s.io/controller-tools v0.21.0` |
+| 의존성 고정 | `tools/tools.go` (`//go:build tools`) |
+| Makefile | `make generate`, `make generate-check` |
+| CI | `.github/workflows/generate-check.yaml` — `apis/**` 변경 시 생성 파일 drift 검증 |
+| 생성 파일 | `config/crd/bori.dev_*.yaml`, `apis/bori/v1alpha1/zz_generated.deepcopy.go` |
+
+**알려진 제약:**
+- controller-gen v0.21.0의 `object` 제너레이터는 `+kubebuilder:object:root=true` 타입만 DeepCopyInto를 생성한다.
+  BoriDataPlaneStatus, BoriReleaseSpec 등 sub-type 메서드는 `apis/bori/v1alpha1/deepcopy_subtypes.go`에 수동 관리한다.
+  sub-type 필드 변경 시 이 파일도 업데이트해야 한다.
 
 ---
 
-## 즉시 적용할 완화 조치
+## 이전 완화 조치 (이제 불필요)
 
 **PR 체크리스트 항목 추가 (Go 타입 변경 시):**
 

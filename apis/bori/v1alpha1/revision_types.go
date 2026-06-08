@@ -68,6 +68,7 @@ type BoriRevisionStatus struct {
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=brev
 // +kubebuilder:printcolumn:name="Release",type=string,JSONPath=`.spec.release`
 // +kubebuilder:printcolumn:name="Environment",type=string,JSONPath=`.spec.environment`
 // +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.promotionStatus`

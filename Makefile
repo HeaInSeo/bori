@@ -1,4 +1,26 @@
-.PHONY: build build-bori clean test install-crds uninstall-crds install-rbac regression
+.PHONY: build build-bori clean test generate generate-check install-crds uninstall-crds install-rbac regression
+
+# ── Code generation ─────────────────────────────────────────────────────────
+
+# Generate CRD YAML and root-type DeepCopy from Go types.
+# Run after any change to apis/bori/v1alpha1/*.go.
+# Note: controller-gen's object generator produces DeepCopyInto only for root
+# types; sub-type methods live in apis/bori/v1alpha1/deepcopy_subtypes.go and
+# must be updated manually when sub-type fields change.
+generate:
+	go run sigs.k8s.io/controller-tools/cmd/controller-gen \
+		crd:maxDescLen=0 \
+		paths="./apis/..." \
+		output:crd:dir=config/crd
+	go run sigs.k8s.io/controller-tools/cmd/controller-gen \
+		object:headerFile="hack/boilerplate.go.txt" \
+		paths="./apis/..."
+
+# CI check: verify generated files are up-to-date.
+# Fails if make generate produces any diff (means types changed without regenerating).
+generate-check:
+	$(MAKE) generate
+	git diff --exit-code config/crd/ apis/bori/v1alpha1/zz_generated.deepcopy.go
 
 # ── Build ───────────────────────────────────────────────────────────────────
 
