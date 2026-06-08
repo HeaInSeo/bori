@@ -204,3 +204,10 @@ bori/
 Full roadmap: [docs/control-plane-roadmap.md](docs/control-plane-roadmap.md)
 
 All Phases 0–10 and kube-slint Tracks K0–K5 are complete as of 2026-06-07.
+
+---
+
+## Known Issues / 기술 부채
+
+코드 리뷰에서 발견됐지만 현재 PR 범위에서 수정하지 않은 항목:
+[docs/known-issues.md](docs/known-issues.md)
