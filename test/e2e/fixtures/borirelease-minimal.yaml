@@ -1,0 +1,18 @@
+apiVersion: bori.dev/v1alpha1
+kind: BoriRelease
+metadata:
+  name: smoke-release
+  namespace: bori-system
+spec:
+  components:
+    - name: jumi
+      version: "0.1.0-smoke"
+      imageRef: "localhost/jumi:0.1.0-smoke"
+  compatibility:
+    matrixRef: ""
+  verification:
+    policies: []
+  promotion:
+    requiredGateResult: ""
+    baselinePolicy:
+      mode: ""

@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  unit-and-generate:
+    name: Unit tests + generate drift check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run unit tests
+        run: GOPROXY=off go test ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Check generated files (CRD + DeepCopy)
+        run: |
+          make generate
+          git diff --exit-code config/crd/ apis/bori/v1alpha1/zz_generated.deepcopy.go

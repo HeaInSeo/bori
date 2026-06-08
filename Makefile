@@ -1,12 +1,11 @@
-.PHONY: build build-bori clean test generate generate-check install-crds uninstall-crds install-rbac regression
+.PHONY: build build-bori clean test generate generate-check install-crds uninstall-crds install-rbac regression smoke vm-integration
 
 # ── Code generation ─────────────────────────────────────────────────────────
 
 # Generate CRD YAML and root-type DeepCopy from Go types.
 # Run after any change to apis/bori/v1alpha1/*.go.
-# Note: controller-gen's object generator produces DeepCopyInto only for root
-# types; sub-type methods live in apis/bori/v1alpha1/deepcopy_subtypes.go and
-# must be updated manually when sub-type fields change.
+# All DeepCopy methods (root + sub-types) are generated.
+# Run after any change to apis/bori/v1alpha1/*.go.
 generate:
 	go run sigs.k8s.io/controller-tools/cmd/controller-gen \
 		crd:maxDescLen=0 \
@@ -70,6 +69,22 @@ deploy: install-crds install-rbac
 
 regression:
 	./scripts/regression-check.sh
+
+# ── Test: Layer 2 (kind smoke) ───────────────────────────────────────────────
+
+# kind cluster smoke test (Layer 2).
+# 전제: kind, docker, kubectl, go
+# 클러스터 유지: make smoke ARGS=--keep
+smoke:
+	./hack/test-kind-smoke.sh $(ARGS)
+
+# ── Test: Layer 3 (VM integration) ──────────────────────────────────────────
+
+# VM integration test (Layer 3).
+# 전제: Tailscale + SSH to seoy@100.123.80.48
+# baseline 갱신: make vm-integration ARGS=--update-baseline
+vm-integration:
+	./hack/test-vm-integration.sh $(ARGS)
 
 undeploy:
 	kubectl delete -f config/operator/deployment.yaml --ignore-not-found

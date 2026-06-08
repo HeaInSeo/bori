@@ -1,0 +1,46 @@
+name: kind-smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "apis/**"
+      - "controllers/**"
+      - "cmd/bori-operator/**"
+      - "config/**"
+      - "test/e2e/**"
+      - "hack/test-kind-smoke.sh"
+      - ".github/workflows/kind-smoke.yml"
+
+jobs:
+  kind-smoke:
+    name: kind cluster smoke test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/v0.24.0/kind-$(uname)-amd64"
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Run kind smoke test
+        run: hack/test-kind-smoke.sh
+        env:
+          KUBE_VERSION: v1.30.0
+          KUBE_SLINT_DIR: ""  # kube-slint 미연동 (추후 체크아웃 step 추가)
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kind-smoke-artifacts-${{ github.run_id }}
+          path: artifacts/kind/**
+          if-no-files-found: warn

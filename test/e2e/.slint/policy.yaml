@@ -1,0 +1,63 @@
+# kube-slint gate policy for bori-operator.
+#
+# Phase: summary-only — gate 평가 결과를 artifact에 기록하지만 CI를 fail시키지 않는다.
+# baseline/gate → hard fail 연동은 SLI 값이 안정화된 후 별도 결정.
+#
+# fail-on: NONE  → FAIL 등급이어도 exit 0
+# (slint-gate --fail-on NONE 또는 --fail-on "" 와 동일 효과)
+gate:
+  fail_on: NONE
+
+specs:
+  # controller-runtime reconcile 총 횟수 delta
+  - id: bori_reconcile_delta
+    title: BoriDataPlane Reconcile Delta
+    unit: count
+    kind: delta_counter
+    inputs:
+      - key: controller_runtime_reconcile_total
+        labels:
+          controller: boridataplane
+    compute:
+      mode: delta
+    judge:
+      rules:
+        - op: lt
+          target: 1
+          level: warn    # reconcile이 한 번도 안 일어나면 warn (fail 아님)
+
+  # reconcile 에러 delta
+  - id: bori_reconcile_errors_delta
+    title: BoriDataPlane Reconcile Errors Delta
+    unit: count
+    kind: delta_counter
+    inputs:
+      - key: controller_runtime_reconcile_errors_total
+        labels:
+          controller: boridataplane
+    compute:
+      mode: delta
+
+  # workqueue depth (종료 시점)
+  - id: bori_workqueue_depth_end
+    title: BoriDataPlane Workqueue Depth
+    unit: count
+    kind: gauge
+    inputs:
+      - key: workqueue_depth
+        labels:
+          name: boridataplane
+    compute:
+      mode: end
+
+  # REST client 에러 delta
+  - id: bori_rest_errors_delta
+    title: REST Client Errors Delta
+    unit: count
+    kind: delta_counter
+    inputs:
+      - key: rest_client_requests_total
+        labels:
+          code: "5[0-9][0-9]"
+    compute:
+      mode: delta

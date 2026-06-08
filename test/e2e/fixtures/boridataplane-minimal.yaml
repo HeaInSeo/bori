@@ -1,0 +1,8 @@
+apiVersion: bori.dev/v1alpha1
+kind: BoriDataPlane
+metadata:
+  name: smoke-dp
+  namespace: bori-system
+spec:
+  release: smoke-release
+  environment: kind-smoke
