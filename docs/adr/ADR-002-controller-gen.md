@@ -15,9 +15,9 @@ bori는 3개의 CRD를 수동으로 관리한다.
 
 ```
 config/crd/
-  boridataplanes.bori.dev.yaml
-  borireleases.bori.dev.yaml
-  borirevisions.bori.dev.yaml
+  bori.dev_boridataplanes.yaml
+  bori.dev_borireleases.yaml
+  bori.dev_borirevisions.yaml
 ```
 
 Go 타입(`apis/bori/v1alpha1/`)에는 `+kubebuilder:*` 마커가 선언되어 있지만,
@@ -130,12 +130,18 @@ controller-gen으로 기본 구조를 생성하고, 특수 annotation(descriptio
 | 의존성 고정 | `tools/tools.go` (`//go:build tools`) |
 | Makefile | `make generate`, `make generate-check` |
 | CI | `.github/workflows/generate-check.yaml` — `apis/**` 변경 시 생성 파일 drift 검증 |
-| 생성 파일 | `config/crd/bori.dev_*.yaml`, `apis/bori/v1alpha1/zz_generated.deepcopy.go` |
+| 생성 파일 | `config/crd/bori.dev_{boridataplanes,borireleases,borirevisions}.yaml`, `apis/bori/v1alpha1/zz_generated.deepcopy.go` |
 
-**알려진 제약:**
-- controller-gen v0.21.0의 `object` 제너레이터는 `+kubebuilder:object:root=true` 타입만 DeepCopyInto를 생성한다.
-  BoriDataPlaneStatus, BoriReleaseSpec 등 sub-type 메서드는 `apis/bori/v1alpha1/deepcopy_subtypes.go`에 수동 관리한다.
-  sub-type 필드 변경 시 이 파일도 업데이트해야 한다.
+**구현 결과:**
+- controller-gen은 root type과 모든 sub-type의 DeepCopyInto를 `zz_generated.deepcopy.go` 하나로 생성한다.
+- `type Condition = metav1.Condition` 같은 외부 패키지 타입 alias가 있는 슬라이스 포함 타입도 정상 생성됨.
+- 이전에 존재하던 `deepcopy_subtypes.go`(수동 관리 파일)는 삭제되었다.
+
+**선행 조건**: `apis/bori/v1alpha1/doc.go`에 `// +kubebuilder:object:generate=true` 패키지 레벨 마커가 있어야 한다.
+이 마커가 없으면 controller-gen은 root type만 처리하고 sub-type은 건너뛴다.
+
+**참고**: controller-gen이 실행될 때 패키지 내에 이미 `DeepCopyInto`가 정의된 타입은 생성을 건너뛴다(skips existing implementations).
+따라서 수동 파일과 생성 파일을 혼합하지 말 것. 항상 수동 파일을 먼저 삭제하고 재생성해야 한다.
 
 ---
 
