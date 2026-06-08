@@ -10,6 +10,10 @@ type RevisionComponentRef struct {
 	Version string `json:"version"`
 	// ImageRef is the full image reference including digest.
 	ImageRef string `json:"imageRef,omitempty"`
+	// ImageDigest is the Harbor sha256 digest used when deploying via imageswap.
+	ImageDigest string `json:"imageDigest,omitempty"`
+	// GitSha is the source commit that produced the image.
+	GitSha string `json:"gitSha,omitempty"`
 	// ComponentSpecDigest is the SHA256 of components/<name>/component.yaml.
 	ComponentSpecDigest string `json:"componentSpecDigest,omitempty"`
 	// EnvironmentDigest is the SHA256 of environments/<name>/environment.yaml.

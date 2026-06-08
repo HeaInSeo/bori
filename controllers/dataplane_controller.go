@@ -351,6 +351,8 @@ func revisionToCR(namespace string, rev revision.BoriRevision) v1alpha1.BoriRevi
 			Name:                     c.Name,
 			Version:                  c.Version,
 			ImageRef:                 c.ImageRef,
+			ImageDigest:              c.ImageDigest,
+			GitSha:                   c.GitSha,
 			ComponentSpecDigest:      c.ComponentSpecDigest,
 			EnvironmentDigest:        c.EnvironmentDigest,
 			VerificationPolicyDigest: c.VerificationPolicyDigest,

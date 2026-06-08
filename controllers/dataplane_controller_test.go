@@ -15,6 +15,7 @@ import (
 
 	v1alpha1 "github.com/HeaInSeo/bori/apis/bori/v1alpha1"
 	reconcilepkg "github.com/HeaInSeo/bori/pkg/reconcile"
+	revisionpkg "github.com/HeaInSeo/bori/pkg/revision"
 	shadowpkg "github.com/HeaInSeo/bori/pkg/shadow"
 )
 
@@ -481,6 +482,117 @@ func TestReconcile_injectsResolvedRelease(t *testing.T) {
 	}
 	if runner.lastReq.Release.Components[0].Version != "v0.5.0" {
 		t.Errorf("version: want v0.5.0, got %s", runner.lastReq.Release.Components[0].Version)
+	}
+}
+
+// ── revisionToCR tests ──────────────────────────────────────────────────────
+
+func TestRevisionToCR_preservesDigestFields(t *testing.T) {
+	promotedAt := time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC)
+	rev := revisionpkg.BoriRevision{
+		RevisionID:      "jumi-ah-dev-20260608-120000-abc123",
+		Release:         "jumi-ah-dev",
+		Environment:     "infra-lab",
+		ContentHash:     "abcdef1234567890",
+		PromotionStatus: "promoted",
+		PromotedAt:      &promotedAt,
+		Components: []revisionpkg.CompRevision{
+			{
+				Name:                "jumi",
+				Version:             "v0.4.0",
+				ImageRef:            "harbor.local/jumi@sha256:deadbeef",
+				ImageDigest:         "sha256:deadbeef",
+				GitSha:              "abc123def456",
+				ComponentSpecDigest: "comphash",
+				EnvironmentDigest:   "envhash",
+			},
+			{
+				Name:     "artifact-handoff",
+				Version:  "v0.2.0",
+				ImageRef: "harbor.local/artifact-handoff:v0.2.0",
+				// ImageDigest and GitSha intentionally empty (tag-based deploy)
+			},
+		},
+	}
+
+	cr := revisionToCR("bori-system", rev)
+
+	if len(cr.Spec.Components) != 2 {
+		t.Fatalf("components: want 2, got %d", len(cr.Spec.Components))
+	}
+
+	// Component deployed via digest — both fields must be preserved.
+	jumi := cr.Spec.Components[0]
+	if jumi.ImageDigest != "sha256:deadbeef" {
+		t.Errorf("jumi.ImageDigest: want %q, got %q", "sha256:deadbeef", jumi.ImageDigest)
+	}
+	if jumi.GitSha != "abc123def456" {
+		t.Errorf("jumi.GitSha: want %q, got %q", "abc123def456", jumi.GitSha)
+	}
+	if jumi.ImageRef != "harbor.local/jumi@sha256:deadbeef" {
+		t.Errorf("jumi.ImageRef: want %q, got %q", "harbor.local/jumi@sha256:deadbeef", jumi.ImageRef)
+	}
+	if jumi.ComponentSpecDigest != "comphash" {
+		t.Errorf("jumi.ComponentSpecDigest: want %q, got %q", "comphash", jumi.ComponentSpecDigest)
+	}
+
+	// Component deployed via tag — digest fields must remain empty (not synthesised).
+	ah := cr.Spec.Components[1]
+	if ah.ImageDigest != "" {
+		t.Errorf("artifact-handoff.ImageDigest: want empty, got %q", ah.ImageDigest)
+	}
+	if ah.GitSha != "" {
+		t.Errorf("artifact-handoff.GitSha: want empty, got %q", ah.GitSha)
+	}
+
+	// Standard promotion metadata must also be preserved.
+	if cr.Spec.Release != "jumi-ah-dev" {
+		t.Errorf("release: want %q, got %q", "jumi-ah-dev", cr.Spec.Release)
+	}
+	if cr.Status.PromotionStatus != "promoted" {
+		t.Errorf("promotionStatus: want %q, got %q", "promoted", cr.Status.PromotionStatus)
+	}
+	if cr.Status.PromotedAt == nil {
+		t.Error("expected PromotedAt to be set")
+	}
+	if cr.Namespace != "bori-system" {
+		t.Errorf("namespace: want %q, got %q", "bori-system", cr.Namespace)
+	}
+}
+
+func TestRevisionToCR_noDigest(t *testing.T) {
+	rev := revisionpkg.BoriRevision{
+		RevisionID:      "jumi-ah-dev-20260608-130000-def456",
+		Release:         "jumi-ah-dev",
+		Environment:     "infra-lab",
+		ContentHash:     "1234567890abcdef",
+		PromotionStatus: "pending",
+		Components: []revisionpkg.CompRevision{
+			{
+				Name:     "jumi",
+				Version:  "v0.3.0",
+				ImageRef: "harbor.local/jumi:v0.3.0",
+			},
+		},
+	}
+
+	cr := revisionToCR("bori-system", rev)
+
+	if len(cr.Spec.Components) != 1 {
+		t.Fatalf("components: want 1, got %d", len(cr.Spec.Components))
+	}
+	comp := cr.Spec.Components[0]
+	if comp.ImageDigest != "" {
+		t.Errorf("ImageDigest must be empty for tag-based deploy, got %q", comp.ImageDigest)
+	}
+	if comp.GitSha != "" {
+		t.Errorf("GitSha must be empty for tag-based deploy, got %q", comp.GitSha)
+	}
+	if comp.ImageRef != "harbor.local/jumi:v0.3.0" {
+		t.Errorf("ImageRef: want %q, got %q", "harbor.local/jumi:v0.3.0", comp.ImageRef)
+	}
+	if cr.Status.PromotedAt != nil {
+		t.Error("PromotedAt must be nil for pending revision")
 	}
 }
 
