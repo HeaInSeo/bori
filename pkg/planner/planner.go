@@ -104,12 +104,15 @@ func (p *Planner) Plan(runID, releaseName, envName string) (*artifact.Plan, erro
 		imageRef := comp.Image.Ref
 		imageDigest := ref.ImageDigest
 		if imageDigest != "" {
-			// Build digest-qualified ref: strip tag/digest from base, then append @sha256:...
+			if imageRef == "" {
+				return nil, fmt.Errorf("component %q: imageDigest is set but image.ref is empty in component.yaml", ref.Name)
+			}
+			// Build digest-qualified ref: strip existing tag/digest from base, then append @sha256:...
 			base := imageRef
 			if i := strings.Index(base, "@"); i >= 0 {
 				base = base[:i]
 			}
-			if i := strings.LastIndex(base, ":"); i >= 0 && !strings.Contains(base[i:], "/") {
+			if i := strings.LastIndex(base, ":"); i >= 0 && !strings.Contains(base[i+1:], "/") {
 				base = base[:i]
 			}
 			imageRef = base + "@" + imageDigest

@@ -146,6 +146,9 @@ func TestPromote(t *testing.T) {
 	if rev.BaselineRef == "" {
 		t.Error("expected BaselineRef to be set")
 	}
-	// ContentHash should not change just from promotion metadata.
-	_ = before
+	// ContentHash must not change: Promote only sets BaselineRef on BoriRevision,
+	// not on CompRevision, so ComputeContentHash input is unchanged.
+	if rev.ContentHash != before {
+		t.Errorf("ContentHash must not change after Promote: %q → %q", before, rev.ContentHash)
+	}
 }

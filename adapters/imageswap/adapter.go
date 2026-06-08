@@ -3,6 +3,10 @@
 // bori release set-image → bori deploy (imageswap) → rollout complete.
 // Unlike the ko or devspace adapters, imageswap never builds from source — it swaps
 // the running Deployment's container image to the exact digest in req.Component.Image.Ref.
+//
+// Convention (v1): the Deployment name and the primary container name are both assumed
+// to equal comp.Name (e.g. component "jumi" → deployment/jumi, container "jumi").
+// Apps that use a different Deployment or container name are not yet supported.
 package imageswap
 
 import (
@@ -10,9 +14,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 
 	"github.com/HeaInSeo/bori/pkg/adapter"
 )
+
+// validK8sName matches Kubernetes RFC 1123 DNS label names.
+// Component names that do not match will be rejected before kubectl is invoked.
+var validK8sName = regexp.MustCompile(`^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?$`)
 
 // Adapter patches a Kubernetes Deployment image to a Harbor digest and waits for rollout.
 type Adapter struct{}
@@ -26,6 +35,10 @@ func (a *Adapter) Name() string { return "imageswap" }
 
 func (a *Adapter) Deploy(ctx context.Context, req adapter.DeployRequest) (*adapter.DeployResult, error) {
 	name := req.Component.Name
+	if !validK8sName.MatchString(name) {
+		return nil, fmt.Errorf("imageswap: component name %q is not a valid Kubernetes name", name)
+	}
+
 	ns := req.Component.Deploy.Namespace
 	if ns == "" {
 		ns = name + "-system"

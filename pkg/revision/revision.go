@@ -177,10 +177,10 @@ func AddVerificationPolicyDigests(rev *BoriRevision, boriRoot, appsDir, profile 
 
 // Fail marks the revision as failed and records the reason.
 // A failed revision is immutable evidence — it is written to disk and never retried.
+// Components are not modified so ContentHash is not recomputed.
 func Fail(rev *BoriRevision, reason string) {
 	rev.PromotionStatus = "failed"
 	rev.FailReason = reason
-	rev.ContentHash = ComputeContentHash(rev.Components)
 }
 
 // Promote marks the revision as promoted and records a baseline reference.
@@ -208,6 +208,7 @@ func Write(boriDir string, rev BoriRevision) (string, error) {
 	enc.SetEscapeHTML(false)
 	if encErr := enc.Encode(rev); encErr != nil {
 		_ = f.Close()
+		_ = os.Remove(path)
 		return "", fmt.Errorf("encode: %w", encErr)
 	}
 	return path, f.Close()

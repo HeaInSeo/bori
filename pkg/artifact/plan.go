@@ -49,6 +49,7 @@ func WritePlan(runDir string, p Plan) error {
 	enc.SetEscapeHTML(false)
 	if encErr := enc.Encode(p); encErr != nil {
 		_ = f.Close()
+		_ = os.Remove(path)
 		return fmt.Errorf("encode: %w", encErr)
 	}
 	return f.Close()

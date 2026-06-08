@@ -315,9 +315,10 @@ func cmdDeploy(args []string) {
 		fmt.Fprintf(os.Stderr, "[bori] warning: could not write deploy-result.json: %v\n", err)
 	}
 
-	// Record revision outcome.
+	// Record revision outcome — use deployOverall (success/partial/failed) not gate result,
+	// so that GateResultWarn does not incorrectly mark the revision as failed.
 	if revErr == nil {
-		if overall == verification.GateResultPass {
+		if deployOverall == "success" {
 			baselineRef := fmt.Sprintf("%s/evidence", runDir)
 			revision.Promote(&rev, baselineRef)
 			rev.VerificationRunID = runID
@@ -327,7 +328,7 @@ func cmdDeploy(args []string) {
 				fmt.Printf("[bori] revision promoted: %s\n", rev.RevisionID)
 			}
 		} else {
-			revision.Fail(&rev, fmt.Sprintf("deploy overall: %s", overall))
+			revision.Fail(&rev, fmt.Sprintf("deploy overall: %s", deployOverall))
 			if _, err := revision.Write(*boriDir, rev); err != nil {
 				fmt.Fprintf(os.Stderr, "[bori] warning: could not update failed revision: %v\n", err)
 			}
@@ -1230,12 +1231,33 @@ func cmdReleaseSetImage(args []string) {
 		fatalf("component %q not found in release %q", *compName, *releaseName)
 	}
 
+	// yaml.Marshal re-serializes from the Go struct, so existing comments and
+	// custom key ordering in the file are not preserved. This is acceptable for
+	// a CI-driven flow where release.yaml is machine-managed.
 	data, err := yaml.Marshal(rel)
 	if err != nil {
 		fatalf("marshal release: %v", err)
 	}
-	if err := os.WriteFile(relPath, data, 0o644); err != nil {
-		fatalf("write %s: %v", relPath, err)
+	// Atomic write: write to a temp file in the same directory, then rename.
+	// This prevents a partial write from leaving a corrupt release.yaml.
+	dir := filepath.Dir(relPath)
+	tmp, err := os.CreateTemp(dir, ".release-*.yaml")
+	if err != nil {
+		fatalf("create temp file: %v", err)
+	}
+	_ = os.Chmod(tmp.Name(), 0o600)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		fatalf("write temp file: %v", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		fatalf("close temp file: %v", err)
+	}
+	if err := os.Rename(tmp.Name(), relPath); err != nil {
+		os.Remove(tmp.Name())
+		fatalf("rename %s → %s: %v", tmp.Name(), relPath, err)
 	}
 
 	fmt.Printf("[bori] release %q: %s imageDigest → %s\n", *releaseName, *compName, *imageDigest)

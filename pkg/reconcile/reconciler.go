@@ -196,8 +196,16 @@ func (r *Reconciler) Run(ctx context.Context, req Request) (*Result, error) {
 	}
 
 	// Step 3: Deploy.
+	// Load environment once — it is constant across all components.
+	env, err := model.LoadEnvironmentByName(abs, req.EnvName)
+	if err != nil {
+		return nil, fmt.Errorf("load environment %q: %w", req.EnvName, err)
+	}
+
 	deployOK := true
+	deployStartedAt := time.Now().UTC()
 	var compDeploys []artifact.CompDeploy
+	var failedReasons []string
 	for _, cp := range plan.Components {
 		if cp.Action == "violation" {
 			continue
@@ -206,12 +214,14 @@ func (r *Reconciler) Run(ctx context.Context, req Request) (*Result, error) {
 		if !ok {
 			r.Logf("unknown adapter %q for %s — skipping", cp.Adapter, cp.Name)
 			deployOK = false
+			failedReasons = append(failedReasons, fmt.Sprintf("%s: unknown adapter %q", cp.Name, cp.Adapter))
 			continue
 		}
 		comp, err := model.LoadComponentByName(abs, cp.Name)
 		if err != nil {
 			r.Logf("load component %s: %v", cp.Name, err)
 			deployOK = false
+			failedReasons = append(failedReasons, fmt.Sprintf("%s: load component: %v", cp.Name, err))
 			continue
 		}
 		// Apply plan overrides: imageRef from planner (may be digest-qualified).
@@ -220,12 +230,6 @@ func (r *Reconciler) Run(ctx context.Context, req Request) (*Result, error) {
 		}
 		if cp.ImageRef != "" {
 			comp.Image.Ref = cp.ImageRef
-		}
-		env, err := model.LoadEnvironmentByName(abs, req.EnvName)
-		if err != nil {
-			r.Logf("load environment %s: %v", req.EnvName, err)
-			deployOK = false
-			continue
 		}
 		deployResult, err := a.Deploy(ctx, adapter.DeployRequest{
 			Component:   comp,
@@ -240,10 +244,13 @@ func (r *Reconciler) Run(ctx context.Context, req Request) (*Result, error) {
 				msg = deployResult.Message
 			}
 			cd.Message = msg
+			failedReasons = append(failedReasons, fmt.Sprintf("%s: %s", cp.Name, msg))
 			r.Logf("%s: deploy failed: %s", cp.Name, msg)
 		} else {
 			cd.Success = true
-			cd.Message = deployResult.Message
+			if deployResult != nil {
+				cd.Message = deployResult.Message
+			}
 			r.Logf("%s: deployed", cp.Name)
 		}
 		compDeploys = append(compDeploys, cd)
@@ -261,7 +268,7 @@ func (r *Reconciler) Run(ctx context.Context, req Request) (*Result, error) {
 		RunID:         runID,
 		Release:       req.ReleaseName,
 		Environment:   req.EnvName,
-		StartedAt:     time.Now().UTC(),
+		StartedAt:     deployStartedAt,
 		FinishedAt:    time.Now().UTC(),
 		Overall:       result.DeployStatus,
 		Components:    compDeploys,
@@ -283,7 +290,8 @@ func (r *Reconciler) Run(ctx context.Context, req Request) (*Result, error) {
 				r.Logf("revision promoted: %s", rev.RevisionID)
 			}
 		} else {
-			revision.Fail(&rev, "deploy failed: one or more adapters returned an error")
+			reason := "deploy failed: " + strings.Join(failedReasons, "; ")
+			revision.Fail(&rev, reason)
 			if _, err := revision.Write(req.BoriDir, rev); err != nil {
 				r.Logf("warning: could not update failed revision: %v", err)
 			}
@@ -364,7 +372,10 @@ func RollbackPlan(boriRoot, boriDir, releaseName, envName, targetRevisionID stri
 		if err != nil {
 			continue
 		}
-		ns := cr.Name + "-system"
+		ns := comp.Deploy.Namespace
+		if ns == "" {
+			ns = cr.Name + "-system"
+		}
 		adapterName := comp.Deploy.Adapter
 		if adapterName == "" {
 			adapterName = "devspace"
