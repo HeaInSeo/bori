@@ -211,3 +211,12 @@ All Phases 0–10 and kube-slint Tracks K0–K5 are complete as of 2026-06-07.
 
 코드 리뷰에서 발견됐지만 현재 PR 범위에서 수정하지 않은 항목:
 [docs/known-issues.md](docs/known-issues.md)
+
+## Architecture Decision Records (ADR)
+
+설계 결정 및 보류 중인 선택지:
+
+| ADR | 상태 | 내용 |
+|-----|------|------|
+| [ADR-001](docs/adr/ADR-001-borirevision-failreason.md) | Pending | BoriRevision.failReason 위치 — spec vs status |
+| [ADR-002](docs/adr/ADR-002-controller-gen.md) | Review Needed | controller-gen 도입 여부 및 CRD schema drift 방지 |

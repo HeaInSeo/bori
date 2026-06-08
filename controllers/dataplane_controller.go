@@ -295,6 +295,12 @@ func setCondition(conditions []v1alpha1.Condition, cond v1alpha1.Condition) []v1
 // upsertBoriRevision creates or updates a BoriRevision CR from the on-disk
 // revision file. This is a dual-write: disk remains the source of truth for
 // the CLI; the K8s CR makes history queryable via kubectl.
+//
+// ownerReference is intentionally NOT set. BoriRevision is an append-only
+// deployment history resource: it must survive BoriDataPlane deletion so that
+// audit trails and promotion history are preserved. Cascade deletion is not
+// desired. See docs/adr/ADR-001-borirevision-failreason.md for the broader
+// BoriRevision design context.
 func (r *DataPlaneReconciler) upsertBoriRevision(ctx context.Context, namespace, revisionID string) error {
 	rev, err := revision.Read(r.BoriDir, revisionID)
 	if err != nil {

@@ -5,44 +5,37 @@
 
 ---
 
-## KI-001 — FailReason spec/status 혼재
+## KI-001 — BoriRevision.FailReason — CR 노출 방법 미결정
 
 | 항목 | 내용 |
 |------|------|
-| **위치** | `pkg/revision/revision.go` — `BoriRevision.FailReason` |
-| **심각도** | Nit (현재 동작에는 영향 없음) |
+| **위치** | `pkg/revision/revision.go`, `apis/bori/v1alpha1/revision_types.go` |
+| **심각도** | Minor (CLI 흐름은 정상, kubectl 조회 불가) |
 | **발견 시점** | 2026-06-08 코드 리뷰 (DESIGN-02) |
+| **ADR** | [docs/adr/ADR-001-borirevision-failreason.md](adr/ADR-001-borirevision-failreason.md) |
 
 ### 문제
 
-`BoriRevision`은 현재 CRD의 spec + status를 단일 Go 구조체로 표현한다.
-`FailReason`은 런타임 상태(status 영역)에 해당하지만, `PromotionStatus`와 같은 레벨에 선언되어 있다.
+`pkg/revision.BoriRevision.FailReason`은 디스크(`.bori/revisions/*.json`)에 기록된다.
+`v1alpha1.BoriRevisionSpec`과 `v1alpha1.BoriRevisionStatus`에는 이 필드가 없으므로
+`kubectl get borirevision -o yaml`로 deploy 실패 원인을 확인할 수 없다.
 
-```go
-// 현재 — spec/status 미분리
-type BoriRevision struct {
-    ...
-    PromotionStatus string `json:"promotionStatus"`
-    FailReason      string `json:"failReason,omitempty"`  // ← status 영역
-    ...
-}
-```
+`config/crd/borirevisions.bori.dev.yaml`에 있던 `spec.failReason` 선언은
+Go 타입과 불일치(schema drift) 상태였으므로 제거됐다.
 
-controller-runtime으로 전환 시 `spec`/`status` 서브구조체로 분리해야 한다:
+### 현재 상태
 
-```go
-// 목표 구조 (controller-runtime 전환 이후)
-type BoriRevisionStatus struct {
-    PromotionStatus string `json:"promotionStatus"`
-    FailReason      string `json:"failReason,omitempty"`
-    ...
-}
-```
+- CLI: `.bori/revisions/*.json` 파일로 `failReason` 확인 가능
+- BoriRevision CR: `failReason` 없음
+- CRD YAML: `spec.failReason` 제거 완료 (schema drift 해소)
 
-### 해결 시점
+### 해결 방향
 
-Phase 11 이상에서 controller-runtime `status` 서브리소스로 전환할 때 함께 처리한다.
-그 전까지는 현재 단일 구조체 방식으로 운영한다.
+ADR-001에서 결정한다. 두 가지 선택지:
+- **선택지 A** `status.failReason` — CRD 관례 준수
+- **선택지 B** `spec.failReason` — write-once history snapshot 의미론 준수
+
+결정이 내려지면 `v1alpha1` 타입에 필드 추가 → `revisionToCR()` 매핑 추가.
 
 ---
 

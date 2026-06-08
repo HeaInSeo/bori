@@ -50,15 +50,21 @@ type BoriRevisionStatus struct {
 	ObservedAt metav1.Time `json:"observedAt"`
 }
 
-// BoriRevision is an immutable snapshot of one promoted deployment.
+// BoriRevision is a write-once deployment history resource.
 //
-// Each time the bori operator successfully deploys and promotes a release,
-// it creates a BoriRevision CR. This makes deployment history queryable
-// via kubectl without relying on local disk artifacts.
+// Design contract:
+//   - Created once per promoted revision by DataPlaneReconciler.upsertBoriRevision().
+//   - Never mutated after the initial write (spec is immutable; status is written once
+//     at creation and updated only if the operator restarts and re-promotes).
+//   - NOT owned by BoriDataPlane. ownerReference is intentionally absent so that
+//     BoriRevision CRs survive BoriDataPlane deletion — they are audit records, not
+//     derived state. See docs/adr/ADR-001-borirevision-failreason.md.
+//   - Disk artifacts (.bori/revisions/*.json) remain the source of truth for the CLI.
+//     The K8s CR is a read-only projection that makes history queryable via kubectl.
 //
-// The CR name is the revision ID (e.g. jumi-ah-dev-20260606-120000-abc123).
-// BoriRevision CRs are never updated after promotion — they are append-only.
-// Disk artifacts (.bori/revisions/) remain the source of truth for the CLI.
+// Pending decisions (see ADR-001):
+//   - failReason field: spec (immutable historical fact) vs status (conventional CRD).
+//   - networkVerification: held until PR-2 netverify is implemented.
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

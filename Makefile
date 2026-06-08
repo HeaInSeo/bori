@@ -56,6 +56,9 @@ undeploy:
 	$(MAKE) uninstall-crds
 
 deploy-dry-run:
+	# Validates YAML structure against the API server's known schema.
+	# NOTE: Does NOT compare Go types with CRD YAML — schema drift must be checked
+	# manually. See docs/adr/ADR-002-controller-gen.md for the checklist.
 	kubectl apply -f config/crd/           --dry-run=client
 	kubectl apply -f config/operator/namespace.yaml --dry-run=client
 	kubectl apply -f config/rbac/          --dry-run=client
