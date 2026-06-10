@@ -54,8 +54,20 @@ cd "${REPO_ROOT}"
 log()  { echo "[kind-smoke] $*"; }
 fail() { echo "[kind-smoke] FAIL: $*" >&2; collect_artifacts; exit 1; }
 
+# ── container runtime 감지 (docker 우선, 없으면 podman) ─────────────────────
+if command -v docker &>/dev/null; then
+  CONTAINER_RUNTIME="docker"
+elif command -v podman &>/dev/null; then
+  CONTAINER_RUNTIME="podman"
+  export KIND_EXPERIMENTAL_PROVIDER=podman
+  log "podman detected — setting KIND_EXPERIMENTAL_PROVIDER=podman"
+else
+  echo "[kind-smoke] error: docker or podman not found in PATH" >&2
+  exit 1
+fi
+
 # ── 전제 조건 확인 ────────────────────────────────────────────────────────────
-for cmd in kind docker kubectl go; do
+for cmd in kind kubectl go; do
   if ! command -v "$cmd" &>/dev/null; then
     echo "[kind-smoke] error: '$cmd' not found in PATH" >&2
     exit 1
@@ -114,8 +126,8 @@ export KUBECONFIG="${KUBECONFIG_FILE}"
 log "KUBECONFIG=${KUBECONFIG}"
 
 # ── 2. operator 이미지 빌드 + kind load ───────────────────────────────────────
-log "building bori-operator image (${IMAGE_NAME})..."
-docker build --quiet -t "${IMAGE_NAME}" "${REPO_ROOT}"
+log "building bori-operator image (${IMAGE_NAME}) via ${CONTAINER_RUNTIME}..."
+"${CONTAINER_RUNTIME}" build --quiet -t "${IMAGE_NAME}" "${REPO_ROOT}"
 log "loading image into kind cluster..."
 kind load docker-image "${IMAGE_NAME}" --name "${CLUSTER_NAME}"
 
