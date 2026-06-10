@@ -163,7 +163,7 @@ mkdir -p "${ARTIFACTS_DIR}"
 
 if command -v go &>/dev/null && [ -d "${KUBE_SLINT_DIR}" ]; then
   log "building slint-gate from ${KUBE_SLINT_DIR}..."
-  (cd "${KUBE_SLINT_DIR}" && GOTMPDIR=/home/heain/gotmp go build -o bin/slint-gate ./cmd/slint-gate 2>/dev/null) && \
+  (cd "${KUBE_SLINT_DIR}" && go build -o bin/slint-gate ./cmd/slint-gate 2>/dev/null) && \
     SLINT_AVAILABLE=true || log "slint-gate build skipped (non-fatal)"
 fi
 
@@ -185,7 +185,7 @@ fi
 
 # ── 6. Go 테스트 실행 (k8s API assertions) ────────────────────────────────────
 log "running Go smoke tests..."
-if ! GOPROXY=off GOTMPDIR=/home/heain/gotmp \
+if ! GOPROXY=off BORI_E2E_ARTIFACTS_DIR="${ARTIFACTS_DIR}" \
     go test -tags kind -v -timeout 300s \
     ./test/e2e/ 2>&1 | tee "${ARTIFACTS_DIR}/go-test.log"; then
   fail "Go smoke test failed — see ${ARTIFACTS_DIR}/go-test.log"

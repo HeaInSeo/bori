@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -44,19 +45,30 @@ func buildK8sClient() client.Client {
 	return c
 }
 
+// e2eArtifactsDir returns the directory where e2e artifacts are written.
+// BORI_E2E_ARTIFACTS_DIR overrides the default so shell scripts can route
+// sli-summary.json into the tier-specific path (artifacts/kind, artifacts/kind-func).
+func e2eArtifactsDir() string {
+	if d := os.Getenv("BORI_E2E_ARTIFACTS_DIR"); d != "" {
+		return d
+	}
+	return "artifacts"
+}
+
 func buildSlintSession() *slint.Session {
 	GinkgoHelper()
 	token, _ := slint.ReadServiceAccountTokenFromEnv("SLINT_SA_TOKEN", "")
 	if token == "" {
 		GinkgoWriter.Println("SLINT_SA_TOKEN not set — kube-slint will attempt measurement without auth")
 	}
-	Expect(os.MkdirAll("artifacts", 0o755)).To(Succeed())
+	dir := e2eArtifactsDir()
+	Expect(os.MkdirAll(dir, 0o755)).To(Succeed())
 	return slint.NewSession(slint.SessionConfig{
 		Namespace:             namespace,
 		MetricsServiceName:    metricsService,
 		ServiceAccountName:    "kube-slint",
 		Token:                 token,
-		ArtifactsDir:          "artifacts",
+		ArtifactsDir:          dir,
 		Specs:                 slint.DefaultSpecs(),
 		ServiceURLFormat:      slint.ServiceURLHTTP,
 		TLSInsecureSkipVerify: false,
@@ -85,7 +97,8 @@ func logSlintSummary(ctx context.Context, sess *slint.Session) {
 		}
 		GinkgoWriter.Printf("  %-45s status=%-12s value=%s\n", r.ID, r.Status, val)
 	}
-	if _, statErr := os.Stat("artifacts/sli-summary.json"); statErr == nil {
-		GinkgoWriter.Println("artifact written: artifacts/sli-summary.json")
+	summaryPath := filepath.Join(e2eArtifactsDir(), "sli-summary.json")
+	if _, statErr := os.Stat(summaryPath); statErr == nil {
+		GinkgoWriter.Printf("artifact written: %s\n", summaryPath)
 	}
 }

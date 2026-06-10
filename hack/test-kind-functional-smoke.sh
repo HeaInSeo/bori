@@ -156,7 +156,7 @@ export SLINT_SA_TOKEN
 # ── 6. Go 테스트 실행 (Ginkgo K1) ─────────────────────────────────────────────
 mkdir -p "${ARTIFACTS_DIR}"
 log "running K1 functional smoke tests (Ginkgo)..."
-if ! GOPROXY=off GOTMPDIR=/home/heain/gotmp \
+if ! GOPROXY=off BORI_E2E_ARTIFACTS_DIR="${ARTIFACTS_DIR}" \
     go test -tags kindfunc -v -timeout 300s \
     ./test/e2e/ 2>&1 | tee "${ARTIFACTS_DIR}/go-test.log"; then
   fail "K1 functional smoke test failed — see ${ARTIFACTS_DIR}/go-test.log"
