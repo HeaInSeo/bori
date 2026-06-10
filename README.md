@@ -3,6 +3,8 @@
 [![golangci-lint](https://github.com/HeaInSeo/bori/actions/workflows/golangci-lint.yaml/badge.svg)](https://github.com/HeaInSeo/bori/actions/workflows/golangci-lint.yaml)
 [![kube-linter](https://github.com/HeaInSeo/bori/actions/workflows/kubelint.yaml/badge.svg)](https://github.com/HeaInSeo/bori/actions/workflows/kubelint.yaml)
 [![kubeconform](https://github.com/HeaInSeo/bori/actions/workflows/kubeconform.yaml/badge.svg)](https://github.com/HeaInSeo/bori/actions/workflows/kubeconform.yaml)
+[![kind-boot-smoke](https://github.com/HeaInSeo/bori/actions/workflows/kind-boot-smoke.yml/badge.svg)](https://github.com/HeaInSeo/bori/actions/workflows/kind-boot-smoke.yml)
+[![kind-functional-smoke](https://github.com/HeaInSeo/bori/actions/workflows/kind-functional-smoke.yml/badge.svg)](https://github.com/HeaInSeo/bori/actions/workflows/kind-functional-smoke.yml)
 
 bori is a Kubernetes operator that manages the lifecycle of genomic dataplane applications — JUMI, artifact-handoff, nan, tori, and NodeSentinel.
 
@@ -50,6 +52,7 @@ BoriDataPlane CR  →  bori-operator  →  deploy / verify / promote
 
 - Go 1.26+
 - kubectl configured for the target cluster
+- docker **or** podman (for kind smoke tests — auto-detected)
 - `slint-gate` binary on PATH ([kube-slint](https://github.com/HeaInSeo/kube-slint))
 - k8sgpt on the cluster host (`/usr/bin/k8sgpt`)
 
@@ -128,13 +131,60 @@ kubectl apply -f testdata/fixtures/bdp-infra-lab-smoke.yaml
 
 ---
 
+## Testing
+
+Tests are organized in three layers:
+
+```
+Layer 3 — VM Integration        hack/test-vm-integration.sh
+          seoy@100.123.80.48    real cluster, conditions regression, SLI baseline
+─────────────────────────────────────────────────────────────────────────────────
+Layer 2-K1 — kind Functional    hack/test-kind-functional-smoke.sh
+             Smoke              ConfigMap bori-root + shell adapter → BoriRevision
+─────────────────────────────────────────────────────────────────────────────────
+Layer 2-K0 — kind Boot Smoke    hack/test-kind-boot-smoke.sh
+                                operator boot + /metrics + conditions recorded
+─────────────────────────────────────────────────────────────────────────────────
+Layer 1 — Unit Tests            make test (GOPROXY=off go test ./...)
+                                always runs, primary CI gate
+```
+
+### Run tests
+
+```bash
+make test                                   # Layer 1: unit tests (no network)
+make kind-boot-smoke                        # Layer 2-K0: operator boot in kind
+make kind-boot-smoke ARGS=--keep            # keep cluster for debugging
+make kind-func-smoke                        # Layer 2-K1: BoriRevision creation in kind
+make kind-func-smoke ARGS=--keep
+make vm-integration                         # Layer 3: real cluster (SSH required)
+make vm-integration ARGS=--update-baseline  # accept current state as new baseline
+```
+
+Kind smoke tests require docker or podman — the scripts auto-detect which is available. On systems with only rootless podman, `systemd Delegate=yes` must be set for the user unit; CI (GitHub ubuntu-latest) uses Docker.
+
+### Test framework
+
+`test/e2e/` uses **Ginkgo/Gomega** with build tags to isolate test suites:
+
+| Build tag | Suite | kube-slint |
+|-----------|-------|------------|
+| `kind` | K0 boot smoke (`kind_smoke_test.go`) | `BeforeSuite`/`AfterSuite` |
+| `kindfunc` | K1 functional smoke (`kind_functional_smoke_test.go`) | `BeforeSuite`/`AfterSuite` |
+
+kube-slint (`sess.Start()` / `sess.End()`) is wired to `BeforeSuite` / `AfterSuite` — SLI measurement spans the full test suite.
+
+---
+
 ## kube-slint integration
 
-bori does **not** import kube-slint as a Go library. It writes `sli-summary.json` (slint.summary.v4 schema) and invokes `slint-gate` as a subprocess.
+bori does **not** import kube-slint as a Go library in production code. It writes `sli-summary.json` (slint.summary.v4 schema) and invokes `slint-gate` as a subprocess.
 
 ```
 bori verify  →  sli-summary.json  →  slint-gate --fail-on NEVER  →  gate_result
 ```
+
+In `test/e2e/`, kube-slint is imported as a Go library (`//go:build kind || kindfunc`) for in-process SLI measurement during smoke tests.
 
 kube-slint is fully usable independently of bori.
 
@@ -155,11 +205,15 @@ The script (`scripts/regression-check.sh`) auto-detects whether it is running on
 
 ## CI
 
-| Workflow | Trigger | What it checks |
-|----------|---------|----------------|
-| `golangci-lint` | `*.go`, `go.mod` | govet, staticcheck, errcheck, unused, ineffassign, revive |
-| `kube-linter` | `config/**` | K8s manifest best practices |
-| `kubeconform` | `config/**` | Schema validation against K8s 1.30 |
+| Workflow | Layer | Trigger | What it checks |
+|----------|-------|---------|----------------|
+| `ci.yml` | 1 | PR / main push | `go test ./...` + `go build` |
+| `golangci-lint` | — | `*.go`, `go.mod` | govet, staticcheck, errcheck, unused, ineffassign, revive |
+| `kube-linter` | — | `config/**` | K8s manifest best practices |
+| `kubeconform` | — | `config/**` | Schema validation against K8s 1.30 |
+| `kind-boot-smoke` | 2-K0 | `workflow_dispatch` + paths | Operator boot, /metrics, conditions |
+| `kind-functional-smoke` | 2-K1 | `workflow_dispatch` + paths | BoriRevision creation via shell adapter |
+| `vm-integration` | 3 | nightly + `workflow_dispatch` + main push | Real cluster conditions regression |
 
 ---
 
@@ -188,9 +242,16 @@ bori/
 ├── environments/           # Environment definitions (infra-lab, kind, multipass, …)
 ├── components/             # Per-app component.yaml specs
 ├── verification/policies/  # slint-gate policy files
+├── test/e2e/               # Ginkgo/Gomega e2e tests (kind + kindfunc build tags)
+│   ├── manifests/          # kind-specific operator manifests + ConfigMaps
+│   └── fixtures/           # BoriRelease / BoriDataPlane smoke fixtures
 ├── testdata/
 │   ├── fixtures/           # Test BoriDataPlane CRs
 │   └── baseline/           # Condition snapshots for regression check
+├── hack/
+│   ├── test-kind-boot-smoke.sh      # K0 kind smoke runner
+│   ├── test-kind-functional-smoke.sh # K1 kind functional smoke runner
+│   └── test-vm-integration.sh       # Layer 3 VM integration runner
 ├── scripts/
 │   └── regression-check.sh # BoriDataPlane condition regression check
 ├── Dockerfile              # Multi-stage: golang:1.26 → distroless/static
@@ -203,7 +264,7 @@ bori/
 
 Full roadmap: [docs/control-plane-roadmap.md](docs/control-plane-roadmap.md)
 
-All Phases 0–10 and kube-slint Tracks K0–K5 are complete as of 2026-06-07.
+All Phases 0–10 and kube-slint Tracks K0–K5 are complete.
 
 ---
 

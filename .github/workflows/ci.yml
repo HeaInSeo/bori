@@ -18,6 +18,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Download modules
+        run: go mod download
+
       - name: Run unit tests
         run: GOPROXY=off go test ./...
 

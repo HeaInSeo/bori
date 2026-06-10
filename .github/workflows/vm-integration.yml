@@ -4,14 +4,6 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "0 18 * * *"  # KST 03:00 (nightly)
-  push:
-    branches: [main]
-    paths:
-      - "controllers/**"
-      - "apis/**"
-      - "cmd/bori-operator/**"
-      - "hack/test-vm-integration.sh"
-      - ".github/workflows/vm-integration.yml"
 
 jobs:
   vm-integration:
