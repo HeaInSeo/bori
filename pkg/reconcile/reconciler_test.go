@@ -190,6 +190,52 @@ func TestReconciler_deploysOnDrift(t *testing.T) {
 	}
 }
 
+func TestReconciler_deployDoesNotSetVerified(t *testing.T) {
+	root := t.TempDir()
+	boriDir := filepath.Join(root, ".bori")
+	setupFixtures(t, root)
+
+	mock := &mockAdapter{success: true, message: "deployed"}
+	r := newTestReconciler(mock)
+
+	res, err := r.Run(context.Background(), Request{
+		BoriRoot:    root,
+		AppsDir:     root,
+		BoriDir:     boriDir,
+		ReleaseName: "test-release",
+		EnvName:     "dev",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.DeployStatus != "success" {
+		t.Fatalf("expected successful deploy, got %q", res.DeployStatus)
+	}
+	if !res.Promoted {
+		t.Fatal("revision must be promoted after successful deploy")
+	}
+
+	// The promoted revision must NOT have VerificationRunID set.
+	// Deploy success alone must not trigger Verified=True.
+	revs, err := revision.List(boriDir)
+	if err != nil {
+		t.Fatalf("list revisions: %v", err)
+	}
+	var promoted *revision.BoriRevision
+	for i := range revs {
+		if revs[i].PromotionStatus == "promoted" {
+			promoted = &revs[i]
+			break
+		}
+	}
+	if promoted == nil {
+		t.Fatal("no promoted revision found")
+	}
+	if promoted.VerificationRunID != "" {
+		t.Errorf("VerificationRunID must be empty after deploy; got %q — deploy success is not a verification gate", promoted.VerificationRunID)
+	}
+}
+
 func TestReconciler_deployFails(t *testing.T) {
 	root := t.TempDir()
 	boriDir := filepath.Join(root, ".bori")

@@ -31,7 +31,11 @@ const (
 	ConditionInstalled = "Installed"
 	// ConditionReady: all components are reporting healthy (health gate passed).
 	ConditionReady = "Ready"
-	// ConditionVerified: the latest deployment passed all verification gates.
+	// ConditionVerified: a dedicated verification gate (kube-slint, SLI smoke,
+	// rollout check, etc.) evaluated and PASSED for the latest deployment.
+	// Deploy success alone does NOT set this condition — only an explicit
+	// verification gate records a VerificationRunID on the promoted revision,
+	// which in turn causes the shadow reconciler to set Verified=True.
 	ConditionVerified = "Verified"
 	// ConditionPromoted: the latest revision has been promoted.
 	ConditionPromoted = "Promoted"

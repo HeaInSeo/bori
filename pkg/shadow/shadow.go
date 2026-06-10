@@ -163,20 +163,23 @@ func computeConditions(
 		))
 	}
 
-	// Verified: latest promoted revision passed verification.
+	// Verified: an explicit verification gate (kube-slint, SLI smoke, etc.)
+	// ran and passed for the latest promoted revision.
+	// Deploy success alone does NOT set VerificationRunID, so Verified stays
+	// Unknown until a dedicated gate explicitly records its run ID.
 	if latest != nil && latest.VerificationRunID != "" {
 		conditions = append(conditions, cond(
 			v1alpha1.ConditionVerified,
 			v1alpha1.ConditionTrue,
 			"VerificationRunFound",
-			fmt.Sprintf("verification run %s", latest.VerificationRunID),
+			fmt.Sprintf("verification run %s passed", latest.VerificationRunID),
 		))
 	} else {
 		conditions = append(conditions, cond(
 			v1alpha1.ConditionVerified,
 			v1alpha1.ConditionUnknown,
-			"NoVerificationRun",
-			"no verification run recorded on the promoted revision",
+			"NotConfigured",
+			"no verification gate has run; deploy success alone does not set Verified=True",
 		))
 	}
 

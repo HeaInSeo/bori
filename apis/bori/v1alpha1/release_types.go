@@ -10,6 +10,12 @@ import (
 type BoriReleaseComponentRef struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
+	// ImageDigest is the OCI digest of the component image (e.g. sha256:...).
+	// When set, the deployer uses this digest instead of a mutable tag for reproducibility.
+	ImageDigest string `json:"imageDigest,omitempty"`
+	// GitSha is the source commit that produced this component version.
+	// Informational only; used for audit trails and verification policy digests.
+	GitSha string `json:"gitSha,omitempty"`
 }
 
 // BoriReleaseCompatibilityRef points to the version compatibility matrix.
@@ -105,8 +111,10 @@ func (br *BoriRelease) ToModel() model.BoriRelease {
 	}
 	for _, c := range br.Spec.Components {
 		rel.Components = append(rel.Components, model.ComponentRef{
-			Name:    c.Name,
-			Version: c.Version,
+			Name:        c.Name,
+			Version:     c.Version,
+			ImageDigest: c.ImageDigest,
+			GitSha:      c.GitSha,
 		})
 	}
 	return rel
@@ -138,8 +146,10 @@ func FromModelRelease(rel model.BoriRelease, namespace string) BoriRelease {
 	}
 	for _, c := range rel.Components {
 		br.Spec.Components = append(br.Spec.Components, BoriReleaseComponentRef{
-			Name:    c.Name,
-			Version: c.Version,
+			Name:        c.Name,
+			Version:     c.Version,
+			ImageDigest: c.ImageDigest,
+			GitSha:      c.GitSha,
 		})
 	}
 	return br

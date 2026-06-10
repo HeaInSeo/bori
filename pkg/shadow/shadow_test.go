@@ -89,6 +89,48 @@ func TestReconcile_inSync(t *testing.T) {
 	if cond == nil || cond.Status != v1alpha1.ConditionTrue {
 		t.Errorf("expected Promoted=True, got %+v", cond)
 	}
+	// VerificationRunID is "run-123" → Verified=True.
+	cond = findCondition(state.Conditions, v1alpha1.ConditionVerified)
+	if cond == nil || cond.Status != v1alpha1.ConditionTrue {
+		t.Errorf("expected Verified=True when VerificationRunID set, got %+v", cond)
+	}
+}
+
+func TestReconcile_promotedWithoutVerification(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "revisions"), 0o755)
+
+	now := time.Now().UTC()
+	promotedAt := now
+	rev := revision.BoriRevision{
+		SchemaVersion:   "bori.revision.v1",
+		RevisionID:      "jumi-ah-dev-20261001-120000-noverify",
+		Release:         "jumi-ah-dev",
+		CreatedAt:       now,
+		PromotionStatus: "promoted",
+		PromotedAt:      &promotedAt,
+		// VerificationRunID intentionally empty — deploy-only, no verification gate ran.
+		Components: []revision.CompRevision{
+			{Name: "artifact-handoff", Version: "v0.2.0"},
+			{Name: "jumi", Version: "v0.3.0"},
+		},
+	}
+	writeRev(t, dir, rev)
+
+	state, err := Reconcile(makeRel(), dir)
+	if err != nil {
+		t.Fatalf("Reconcile error: %v", err)
+	}
+	cond := findCondition(state.Conditions, v1alpha1.ConditionVerified)
+	if cond == nil {
+		t.Fatal("expected Verified condition to be present")
+	}
+	if cond.Status != v1alpha1.ConditionUnknown {
+		t.Errorf("expected Verified=Unknown when no verification gate ran, got Status=%s", cond.Status)
+	}
+	if cond.Reason != "NotConfigured" {
+		t.Errorf("expected Reason=NotConfigured, got %q", cond.Reason)
+	}
 }
 
 func TestReconcile_outOfSync(t *testing.T) {

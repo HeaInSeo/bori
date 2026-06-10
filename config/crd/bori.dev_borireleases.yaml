@@ -43,6 +43,10 @@ spec:
               components:
                 items:
                   properties:
+                    gitSha:
+                      type: string
+                    imageDigest:
+                      type: string
                     name:
                       type: string
                     version:

@@ -282,7 +282,10 @@ func (r *Reconciler) Run(ctx context.Context, req Request) (*Result, error) {
 		if deployOK {
 			baselineRef := filepath.Join(runDir, "evidence")
 			revision.Promote(&rev, baselineRef)
-			rev.VerificationRunID = runID
+			// VerificationRunID is intentionally NOT set here.
+			// Only an explicit verification gate (kube-slint, SLI smoke, rollout
+			// check, etc.) writes VerificationRunID; deploy success alone is not
+			// a verification gate and must not trigger Verified=True.
 			if _, err := revision.Write(req.BoriDir, rev); err != nil {
 				r.Logf("warning: could not update promoted revision: %v", err)
 			} else {
