@@ -1,14 +1,55 @@
-# bori Control Plane 전환 개발 기획서 v1.1
+# bori Control Plane 전환 개발 기획서 v1.2
 
-상태: Draft v1.1  
+상태: Draft v1.2  
 작성일: 2026-06-01  
-최종 업데이트: 2026-06-07  
+최종 업데이트: 2026-06-10  
 대상 저장소: `bori`  
 관련 프로젝트: `JUMI`, `artifact-handoff`, `node-artifact-runtime(nan)`, `tori`, `kube-slint`
 
 ---
 
 ## 0. 변경 이력
+
+### v1.2에서 바뀐 점 (2026-06-10)
+
+Phase 10 이후 정합성 수정, CI/Ops 재현성 개선, Release Identity 구현, K2 digest smoke 테스트를 반영했다.
+
+v1.2의 핵심 변경점은 다음이다.
+
+1. Phase 10 이후 정합성 수정 (`54496c7`, `ff0c44c`).
+   - `Verified=True` 시맨틱 수정 — deploy 성공이 `VerificationRunID`를 기록하던 버그 제거.
+     `VerificationRunID`는 kube-slint/SLI smoke 같은 명시적 검증 게이트만 기록 가능.
+   - `BoriRelease` CRD ↔ 파일시스템 모델 필드 정합성 — `imageDigest`, `gitSha` 필드 추가.
+   - `BoriDataPlane.status.observedReleaseGeneration` 추적 추가 — BoriRelease 변경 시 reconcile skip 버그 수정.
+
+2. CI/Ops 재현성 개선 (`02263ab`, `f4f2326`).
+   - kind CI: `go mod download` 단계 추가 (`GOPROXY=off` 테스트 안정화).
+   - kind CI: `GOTMPDIR` 하드코딩 제거.
+   - kind CI: `BORI_E2E_ARTIFACTS_DIR` 환경변수로 kube-slint artifact 경로 tier별 분리.
+   - Ops: VM SSH target 하드코딩 제거 — `BORI_VM_REMOTE` 환경변수 + clear error.
+   - Ops: `.dockerignore` 추가 (빌드 컨텍스트 최소화).
+   - Ops: README에 Podman/cgroup v2 경고 추가.
+
+3. Release Identity 구현 (`5c63f94`).
+   - `pkg/imageref` 신규 — `go-containerregistry/pkg/name` + `StrictValidation` 기반.
+     `DigestQualifiedRef(imageRef, imageDigest)`:
+     `harbor.lab.local:5000/bori/jumi:v0.3.1` + `sha256:aaa...`
+     → `harbor.lab.local:5000/bori/jumi@sha256:aaa...`
+   - `pkg/planner`: 수동 문자열 파싱(`:` 기반) 제거, `imageref.DigestQualifiedRef` 대체.
+   - `pkg/shadow`: imageDigest 우선 drift 비교 — `desired.imageDigest` 있으면 digest 비교,
+     없으면 version fallback. `gitSha`는 provenance 전용(drift 기준 아님).
+   - `apis/bori/v1alpha1/types.go`: `ComponentStatus.ImageDigest`, `ComponentStatus.DeployedImage` 추가.
+   - `bori release set-image` CLI 서브커맨드 — `releases/<name>/release.yaml`에 imageDigest 기록.
+
+4. K2 digest smoke 테스트 (`f432d9a`).
+   - `Request.DeployDryRun` — adapter 호출 없이 revision 즉시 프로모션 + shadow reconcile.
+     Harbor 없는 kind 환경에서 digest-qualified ref 구성 end-to-end 검증 가능.
+   - `bori-operator --deploy-dry-run` 플래그 + `DataPlaneReconciler.DeployDryRun` 전달.
+   - K2 kind 테스트 (`//go:build kinddigest`):
+     `BoriRelease.imageDigest` → `ComponentStatus.ImageDigest` + `DeployedImage` 검증.
+   - `hack/test-kind-digest-smoke.sh`, `.github/workflows/kind-digest-smoke.yml`.
+
+---
 
 ### v1.1에서 바뀐 점 (2026-06-07)
 
@@ -2232,6 +2273,127 @@ cmd/bori-operator/main.go
 - 모든 environment.yaml namespace 정규화 (artifact-system → artifact-handoff-system)
 - `environments/infra-lab/environment.yaml` 추가
   (context: kubernetes-admin@kubernetes, registry: ghcr.io/heainseo)
+
+### Phase 10 이후 — Release Identity + 정합성 수정 ✅ 완료 (2026-06-10)
+
+Phase 10 완료 후 운영 안정성과 Harbor digest 기반 배포 경로를 위한 후속 작업이 추가됐다.
+
+**정합성 수정**
+
+```text
+pkg/reconcile/reconciler.go
+  - VerificationRunID 설정 제거 — deploy 성공이 VerificationRunID를 기록하던 버그 수정.
+    VerificationRunID는 명시적 검증 게이트(kube-slint, SLI smoke)만 기록 가능.
+    shadow reconciler의 Verified=True 조건이 올바르게 동작.
+
+apis/bori/v1alpha1/release_types.go
+  - BoriReleaseComponentRef에 ImageDigest, GitSha 필드 추가.
+  - ToModel() / FromModelRelease() round-trip 지원.
+  - CRD 재생성 (make generate).
+
+controllers/dataplane_controller.go
+  - Request.Release.observedReleaseGeneration 추적 추가.
+    BoriRelease spec 변경 시 generation-aware skip이 올바르게 동작.
+```
+
+**CI/Ops 재현성**
+
+```text
+.github/workflows/kind-boot-smoke.yml
+.github/workflows/kind-functional-smoke.yml
+  - go mod download 단계 추가 — GOPROXY=off 테스트 안정화.
+  - GOTMPDIR 하드코딩 제거.
+  - BORI_E2E_ARTIFACTS_DIR 환경변수로 kube-slint artifact 경로 tier별 분리.
+
+hack/test-vm-integration.sh
+scripts/regression-check.sh
+  - VM SSH target 하드코딩 제거 — BORI_VM_REMOTE 환경변수 + 미설정 시 명확한 에러.
+
+.dockerignore 추가
+README — Podman/cgroup v2 경고 및 kind 실행 가이드 추가.
+```
+
+**Release Identity 구현 (`5c63f94`)**
+
+설계 원칙:
+- `imageDigest`는 hash만 저장 (`sha256:...`). 완전한 ref는 아님.
+- `component.yaml image.ref`가 runtime registry + repo를 제공.
+- planner가 두 값을 합쳐 digest-qualified ref 구성:
+  `harbor.lab.local:5000/bori/jumi:v0.3.1` + `sha256:aaa...`
+  → `harbor.lab.local:5000/bori/jumi@sha256:aaa...`
+- `StrictValidation`: tag 없는 bare ref 거부 (component.yaml에 명시적 tag 필수).
+- `gitSha`는 provenance 전용 — drift 비교 기준이 아님.
+
+```text
+pkg/imageref/imageref.go (신규)
+  - DigestQualifiedRef(imageRef, imageDigest) — go-containerregistry/pkg/name 사용.
+    port 포함 registry, 기존 digest/tag 교체, StrictValidation 적용.
+  - 9개 테스트 케이스.
+
+pkg/planner/planner.go
+  - 수동 문자열 파싱(strings.Index/LastIndex) 제거.
+  - imageref.DigestQualifiedRef 대체.
+  - imageDigest 설정 시 adapter 자동 imageswap으로 전환.
+
+pkg/shadow/shadow.go
+  - componentIdentityInSync(): imageDigest 우선, version fallback.
+    desired.imageDigest 있으면 digest 비교 (actual에 없으면 drift).
+  - DriftItem: DesiredImageDigest, ActualImageDigest 필드 추가.
+  - ComponentStatus.ImageDigest (desired), DeployedImage (actualRev.ImageRef) 반영.
+  - 테스트 3개 추가 (drift/missing/in-sync).
+
+apis/bori/v1alpha1/types.go
+  - ComponentStatus: ImageDigest, DeployedImage 필드 추가.
+
+cmd/bori/main.go
+  - bori release set-image --release <name> --component <name>
+      --image-digest <sha256:...> [--version <v>] [--git-sha <sha>]
+    releases/<name>/release.yaml에 imageDigest 기록 (atomic write).
+```
+
+**K2 digest smoke 테스트 (`f432d9a`)**
+
+Harbor 없이 kind 클러스터에서 digest-qualified ref 구성을 end-to-end 검증하기 위한 테스트 인프라.
+
+```text
+pkg/reconcile/reconciler.go
+  - Request.DeployDryRun bool 추가:
+    adapter.Deploy() 건너뜀 + revision 즉시 프로모션 + shadow reconcile.
+
+controllers/dataplane_controller.go
+  - DataPlaneReconciler.DeployDryRun bool 추가 → Runner.Run에 전달.
+
+cmd/bori-operator/main.go
+  - --deploy-dry-run 플래그 추가.
+
+test/e2e/fixtures/borirelease-digest.yaml     — imageDigest 포함 BoriRelease fixture.
+test/e2e/fixtures/boridataplane-digest.yaml
+test/e2e/manifests/bori-digest-config.yaml    — harbor image.ref 포함 component.yaml.
+test/e2e/manifests/bori-deployment-kind-digest.yaml  — --deploy-dry-run=true 인 Deployment.
+test/e2e/kind_digest_smoke_test.go (//go:build kinddigest):
+  - ComponentStatus.imageDigest = sha256:aaa... 검증.
+  - ComponentStatus.deployedImage = harbor.lab.local:5000/bori/jumi@sha256:aaa... 검증.
+  - BoriRevision CR에 imageDigest 기록 확인.
+hack/test-kind-digest-smoke.sh
+.github/workflows/kind-digest-smoke.yml
+```
+
+완료 기준:
+
+- [x] deploy 성공만으로 Verified=True가 되지 않음 (gate 없으면 Verified=Unknown/NotConfigured).
+- [x] BoriRelease.imageDigest → planner → digest-qualified imageRef 구성 (go-containerregistry).
+- [x] ComponentStatus.ImageDigest, DeployedImage가 K8s API에서 조회 가능.
+- [x] imageDigest가 다르면 같은 version이어도 out-of-sync로 판정.
+- [x] K2 kind 테스트 — Harbor 없이 ComponentStatus.ImageDigest end-to-end 검증.
+- [x] `bori release set-image` CLI — CI pipeline에서 release.yaml 자동 업데이트 가능.
+
+비목표:
+
+```text
+- BoriVerificationRun CRD (Phase 11 후보)
+- Harbor-backed imageswap VM 통합 테스트 (별도 Ops 트랙)
+- network-baseline 통합 (별도 트랙)
+```
 
 ---
 
