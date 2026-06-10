@@ -24,6 +24,10 @@ type DriftItem struct {
 	Component      string `json:"component"`
 	DesiredVersion string `json:"desiredVersion"`
 	ActualVersion  string `json:"actualVersion,omitempty"`
+	// DesiredImageDigest is the sha256 digest from BoriRelease (empty when not set).
+	DesiredImageDigest string `json:"desiredImageDigest,omitempty"`
+	// ActualImageDigest is the sha256 digest recorded in the promoted revision.
+	ActualImageDigest string `json:"actualImageDigest,omitempty"`
 	// SyncStatus: in-sync | out-of-sync | unknown
 	SyncStatus string `json:"syncStatus"`
 }
@@ -56,12 +60,6 @@ func Reconcile(rel model.BoriRelease, boriDir string) (*ShadowState, error) {
 		ComputedAt:    now,
 	}
 
-	// Build desired version map from the release.
-	desired := make(map[string]string, len(rel.Components))
-	for _, ref := range rel.Components {
-		desired[ref.Name] = ref.Version
-	}
-
 	// Find the most recently promoted revision.
 	revs, err := revision.List(boriDir)
 	if err != nil {
@@ -80,23 +78,28 @@ func Reconcile(rel model.BoriRelease, boriDir string) (*ShadowState, error) {
 		}
 	}
 
-	// Build actual version map from the promoted revision.
-	actual := make(map[string]string)
+	// Build actual component map from the promoted revision.
+	actualRevs := make(map[string]revision.CompRevision)
 	if latest != nil {
 		state.ActualRevision = latest.RevisionID
 		for _, cr := range latest.Components {
-			actual[cr.Name] = cr.Version
+			actualRevs[cr.Name] = cr
 		}
 	}
 
 	// Compute per-component drift and status.
+	// Drift rule:
+	//   - If desired.imageDigest is set → compare imageDigest (strongest identity).
+	//     current.imageDigest missing or different → drift.
+	//   - Otherwise → fallback to version comparison.
+	//   - gitSha is recorded for provenance only, not used as a drift criterion.
 	allInSync := true
 	allInstalled := latest != nil
 	for _, ref := range rel.Components {
-		actualVer, ok := actual[ref.Name]
+		actualRev, ok := actualRevs[ref.Name]
 		syncStatus := "unknown"
 		if ok {
-			if actualVer == ref.Version {
+			if componentIdentityInSync(ref, actualRev) {
 				syncStatus = "in-sync"
 			} else {
 				syncStatus = "out-of-sync"
@@ -107,17 +110,25 @@ func Reconcile(rel model.BoriRelease, boriDir string) (*ShadowState, error) {
 		}
 
 		state.Drift = append(state.Drift, DriftItem{
-			Component:      ref.Name,
-			DesiredVersion: ref.Version,
-			ActualVersion:  actualVer,
-			SyncStatus:     syncStatus,
+			Component:          ref.Name,
+			DesiredVersion:     ref.Version,
+			ActualVersion:      actualRev.Version,
+			DesiredImageDigest: ref.ImageDigest,
+			ActualImageDigest:  actualRev.ImageDigest,
+			SyncStatus:         syncStatus,
 		})
 
+		deployedImage := ""
+		if ok {
+			deployedImage = actualRev.ImageRef
+		}
 		compStatus := v1alpha1.ComponentStatus{
 			Name:            ref.Name,
 			DesiredVersion:  ref.Version,
-			DeployedVersion: actualVer,
+			DeployedVersion: actualRev.Version,
 			SyncStatus:      syncStatus,
+			ImageDigest:     ref.ImageDigest,
+			DeployedImage:   deployedImage,
 		}
 		state.Components = append(state.Components, compStatus)
 	}
@@ -126,6 +137,21 @@ func Reconcile(rel model.BoriRelease, boriDir string) (*ShadowState, error) {
 	state.Conditions = computeConditions(latest, allInstalled, allInSync, now)
 
 	return state, nil
+}
+
+// componentIdentityInSync returns true when the actual deployed component matches
+// the desired release identity.
+//
+// If desired.ImageDigest is set, it is the primary criterion: the deployed
+// component must have the same digest. If actual has no digest recorded, the
+// deployed state predates digest tracking and is treated as drift.
+//
+// When desired.ImageDigest is empty, version is used as the fallback criterion.
+func componentIdentityInSync(desired model.ComponentRef, actual revision.CompRevision) bool {
+	if desired.ImageDigest != "" {
+		return actual.ImageDigest == desired.ImageDigest
+	}
+	return actual.Version == desired.Version
 }
 
 // computeConditions derives the standard status conditions from shadow reconcile data.

@@ -62,8 +62,13 @@ type ComponentStatus struct {
 	DesiredVersion  string `json:"desiredVersion"`
 	DeployedVersion string `json:"deployedVersion,omitempty"`
 	// SyncStatus: in-sync | out-of-sync | unknown
-	SyncStatus string      `json:"syncStatus"`
-	Conditions []Condition `json:"conditions,omitempty"`
+	SyncStatus string `json:"syncStatus"`
+	// ImageDigest is the desired image digest from BoriRelease (sha256:...).
+	ImageDigest string `json:"imageDigest,omitempty"`
+	// DeployedImage is the digest-qualified image reference that was actually deployed
+	// (e.g. harbor.lab.local/bori/sori@sha256:...). Empty when no digest-based deploy has run.
+	DeployedImage string      `json:"deployedImage,omitempty"`
+	Conditions    []Condition `json:"conditions,omitempty"`
 }
 
 // BoriDataPlaneStatus is the observed state of a BoriDataPlane.

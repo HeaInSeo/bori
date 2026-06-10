@@ -93,9 +93,13 @@ spec:
                         - type
                         type: object
                       type: array
+                    deployedImage:
+                      type: string
                     deployedVersion:
                       type: string
                     desiredVersion:
+                      type: string
+                    imageDigest:
                       type: string
                     name:
                       type: string

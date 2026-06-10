@@ -176,6 +176,176 @@ func TestReconcile_outOfSync(t *testing.T) {
 	}
 }
 
+// digest constants for test readability.
+const (
+	digestA = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	digestB = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+)
+
+func TestReconcile_imageDigestDrift(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "revisions"), 0o755)
+
+	now := time.Now().UTC()
+	promotedAt := now
+	rev := revision.BoriRevision{
+		SchemaVersion:   "bori.revision.v1",
+		RevisionID:      "jumi-ah-dev-20261001-120000-digest001",
+		Release:         "jumi-ah-dev",
+		CreatedAt:       now,
+		PromotionStatus: "promoted",
+		PromotedAt:      &promotedAt,
+		Components: []revision.CompRevision{
+			{Name: "artifact-handoff", Version: "v0.2.0"},
+			// jumi deployed with old digest
+			{Name: "jumi", Version: "v0.3.0", ImageDigest: digestA},
+		},
+	}
+	writeRev(t, dir, rev)
+
+	// desired release now has a newer digest for jumi (same version)
+	rel := model.BoriRelease{
+		Name: "jumi-ah-dev",
+		Components: []model.ComponentRef{
+			{Name: "artifact-handoff", Version: "v0.2.0"},
+			{Name: "jumi", Version: "v0.3.0", ImageDigest: digestB},
+		},
+	}
+
+	state, err := Reconcile(rel, dir)
+	if err != nil {
+		t.Fatalf("Reconcile error: %v", err)
+	}
+
+	var jumiDrift *DriftItem
+	for i := range state.Drift {
+		if state.Drift[i].Component == "jumi" {
+			jumiDrift = &state.Drift[i]
+		}
+	}
+	if jumiDrift == nil {
+		t.Fatal("expected drift item for jumi")
+	}
+	// Same version but different digest → drift
+	if jumiDrift.SyncStatus != "out-of-sync" {
+		t.Errorf("expected out-of-sync when imageDigest changed, got %q", jumiDrift.SyncStatus)
+	}
+	if jumiDrift.DesiredImageDigest != digestB {
+		t.Errorf("expected DesiredImageDigest=%q, got %q", digestB, jumiDrift.DesiredImageDigest)
+	}
+	if jumiDrift.ActualImageDigest != digestA {
+		t.Errorf("expected ActualImageDigest=%q, got %q", digestA, jumiDrift.ActualImageDigest)
+	}
+	cond := findCondition(state.Conditions, v1alpha1.ConditionDegraded)
+	if cond == nil || cond.Status != v1alpha1.ConditionTrue {
+		t.Errorf("expected Degraded=True when imageDigest changed, got %+v", cond)
+	}
+}
+
+func TestReconcile_imageDigestMissingInActual(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "revisions"), 0o755)
+
+	now := time.Now().UTC()
+	promotedAt := now
+	rev := revision.BoriRevision{
+		SchemaVersion:   "bori.revision.v1",
+		RevisionID:      "jumi-ah-dev-20261001-120000-nodigest",
+		Release:         "jumi-ah-dev",
+		CreatedAt:       now,
+		PromotionStatus: "promoted",
+		PromotedAt:      &promotedAt,
+		Components: []revision.CompRevision{
+			{Name: "artifact-handoff", Version: "v0.2.0"},
+			// jumi deployed without digest (pre-digest-tracking state)
+			{Name: "jumi", Version: "v0.3.0"},
+		},
+	}
+	writeRev(t, dir, rev)
+
+	// desired now requires a specific digest
+	rel := model.BoriRelease{
+		Name: "jumi-ah-dev",
+		Components: []model.ComponentRef{
+			{Name: "artifact-handoff", Version: "v0.2.0"},
+			{Name: "jumi", Version: "v0.3.0", ImageDigest: digestA},
+		},
+	}
+
+	state, err := Reconcile(rel, dir)
+	if err != nil {
+		t.Fatalf("Reconcile error: %v", err)
+	}
+
+	var jumiDrift *DriftItem
+	for i := range state.Drift {
+		if state.Drift[i].Component == "jumi" {
+			jumiDrift = &state.Drift[i]
+		}
+	}
+	if jumiDrift == nil {
+		t.Fatal("expected drift item for jumi")
+	}
+	// desired has digest, actual does not → drift (stronger identity now required)
+	if jumiDrift.SyncStatus != "out-of-sync" {
+		t.Errorf("expected out-of-sync when actual has no digest but desired does, got %q", jumiDrift.SyncStatus)
+	}
+}
+
+func TestReconcile_imageDigestInSync(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "revisions"), 0o755)
+
+	now := time.Now().UTC()
+	promotedAt := now
+	rev := revision.BoriRevision{
+		SchemaVersion:   "bori.revision.v1",
+		RevisionID:      "jumi-ah-dev-20261001-120000-insync",
+		Release:         "jumi-ah-dev",
+		CreatedAt:       now,
+		PromotionStatus: "promoted",
+		PromotedAt:      &promotedAt,
+		Components: []revision.CompRevision{
+			{Name: "artifact-handoff", Version: "v0.2.0"},
+			{Name: "jumi", Version: "v0.3.0", ImageDigest: digestA,
+				ImageRef: "harbor.lab.local/bori/jumi@" + digestA},
+		},
+	}
+	writeRev(t, dir, rev)
+
+	rel := model.BoriRelease{
+		Name: "jumi-ah-dev",
+		Components: []model.ComponentRef{
+			{Name: "artifact-handoff", Version: "v0.2.0"},
+			{Name: "jumi", Version: "v0.3.0", ImageDigest: digestA},
+		},
+	}
+
+	state, err := Reconcile(rel, dir)
+	if err != nil {
+		t.Fatalf("Reconcile error: %v", err)
+	}
+
+	for _, d := range state.Drift {
+		if d.SyncStatus != "in-sync" {
+			t.Errorf("expected in-sync for %s, got %q", d.Component, d.SyncStatus)
+		}
+	}
+
+	// ComponentStatus should expose the deployed image ref
+	for _, cs := range state.Components {
+		if cs.Name == "jumi" {
+			if cs.DeployedImage != "harbor.lab.local/bori/jumi@"+digestA {
+				t.Errorf("expected DeployedImage=%q, got %q",
+					"harbor.lab.local/bori/jumi@"+digestA, cs.DeployedImage)
+			}
+			if cs.ImageDigest != digestA {
+				t.Errorf("expected ImageDigest=%q, got %q", digestA, cs.ImageDigest)
+			}
+		}
+	}
+}
+
 func findCondition(conditions []v1alpha1.Condition, condType string) *v1alpha1.Condition {
 	for i := range conditions {
 		if conditions[i].Type == condType {
