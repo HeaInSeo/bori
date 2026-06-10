@@ -78,6 +78,12 @@ type BoriDataPlaneStatus struct {
 	// The controller skips an expensive reconcile pass when this matches the
 	// current generation and no Degraded or Violation condition is set.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// ObservedReleaseGeneration is the metadata.generation of the BoriRelease CR
+	// that was processed in the last successful reconcile.
+	// Zero when the release was resolved from the filesystem (no BoriRelease CR).
+	// The controller uses this alongside ObservedGeneration to skip reconcile only
+	// when both the BoriDataPlane spec and the referenced BoriRelease are unchanged.
+	ObservedReleaseGeneration int64 `json:"observedReleaseGeneration,omitempty"`
 }
 
 // BoriDataPlane is the Kubernetes API resource for a managed dataplane app set.

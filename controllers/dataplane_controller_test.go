@@ -44,7 +44,7 @@ func setupScheme(t *testing.T) *runtime.Scheme {
 
 func newBoriRelease(namespace, name string, components ...v1alpha1.BoriReleaseComponentRef) *v1alpha1.BoriRelease {
 	return &v1alpha1.BoriRelease{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Generation: 1},
 		Spec:       v1alpha1.BoriReleaseSpec{Components: components},
 	}
 }
@@ -403,12 +403,15 @@ func TestResolveRelease_fromKubernetesAPI(t *testing.T) {
 	r := &DataPlaneReconciler{Client: fakeClient}
 	bdp := newBDP("default", "test", "jumi-ah-dev", "dev")
 
-	rel, err := r.resolveRelease(context.Background(), bdp)
+	rel, relGen, err := r.resolveRelease(context.Background(), bdp)
 	if err != nil {
 		t.Fatalf("resolveRelease: %v", err)
 	}
 	if rel == nil {
 		t.Fatal("expected non-nil release from K8s API")
+	}
+	if relGen != 1 {
+		t.Errorf("releaseGen: want 1, got %d", relGen)
 	}
 	if rel.Name != "jumi-ah-dev" {
 		t.Errorf("name: want %q, got %q", "jumi-ah-dev", rel.Name)
@@ -429,12 +432,15 @@ func TestResolveRelease_filesystemFallback(t *testing.T) {
 	r := &DataPlaneReconciler{Client: fakeClient}
 	bdp := newBDP("default", "test", "nonexistent-release", "dev")
 
-	rel, err := r.resolveRelease(context.Background(), bdp)
+	rel, relGen, err := r.resolveRelease(context.Background(), bdp)
 	if err != nil {
 		t.Fatalf("resolveRelease: %v", err)
 	}
 	if rel != nil {
 		t.Errorf("expected nil (filesystem fallback), got %+v", rel)
+	}
+	if relGen != 0 {
+		t.Errorf("releaseGen: want 0 for filesystem fallback, got %d", relGen)
 	}
 }
 
@@ -622,6 +628,163 @@ func TestReconcile_findDataPlanesForRelease(t *testing.T) {
 	}
 	if names["dp-other"] {
 		t.Error("dp-other references rel-b, must not be enqueued")
+	}
+}
+
+// ── Phase 10: observedReleaseGeneration tests ───────────────────────────────
+
+// TestReconcile_skipsWhenReleaseGenerationMatches verifies that reconcile is
+// skipped when both the BoriDataPlane generation AND the BoriRelease generation
+// are unchanged since the last successful reconcile.
+func TestReconcile_skipsWhenReleaseGenerationMatches(t *testing.T) {
+	scheme := setupScheme(t)
+	br := newBoriRelease("default", "rel") // Generation: 1
+	bdp := newBDP("default", "test", "rel", "dev")
+	bdp.Status = v1alpha1.BoriDataPlaneStatus{
+		ObservedGeneration:        1,
+		ObservedReleaseGeneration: 1, // matches BoriRelease.Generation
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(bdp).
+		WithObjects(bdp, br).
+		Build()
+
+	runner := &mockRunner{result: &reconcilepkg.Result{DeployStatus: "skipped"}}
+	r := &DataPlaneReconciler{
+		Client:          fakeClient,
+		Recorder:        record.NewFakeRecorder(10),
+		Runner:          runner,
+		RequeueInterval: 10 * time.Second,
+	}
+
+	// First reconcile: add finalizer.
+	r.Reconcile(context.Background(), ctrl.Request{ //nolint:errcheck
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "test"},
+	})
+	runner.called = false
+
+	// Second reconcile: both generations match → skip.
+	res, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "test"},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if runner.called {
+		t.Error("runner must not be called when both BDP and release generations are unchanged")
+	}
+	if res.RequeueAfter != 10*time.Second {
+		t.Errorf("requeue: want 10s, got %v", res.RequeueAfter)
+	}
+}
+
+// TestReconcile_doesNotSkipWhenReleaseChanges is the core regression test:
+// even when the BoriDataPlane spec is unchanged (same generation), a BoriRelease
+// update must not be ignored.
+func TestReconcile_doesNotSkipWhenReleaseChanges(t *testing.T) {
+	scheme := setupScheme(t)
+	// BoriRelease at generation 2 (updated).
+	br := &v1alpha1.BoriRelease{
+		ObjectMeta: metav1.ObjectMeta{Name: "rel", Namespace: "default", Generation: 2},
+		Spec:       v1alpha1.BoriReleaseSpec{Components: []v1alpha1.BoriReleaseComponentRef{{Name: "jumi", Version: "v0.4.0"}}},
+	}
+	bdp := newBDP("default", "test", "rel", "dev")
+	// Status says we already processed BDP gen=1 and release gen=1.
+	bdp.Status = v1alpha1.BoriDataPlaneStatus{
+		ObservedGeneration:        1,
+		ObservedReleaseGeneration: 1, // stale — release is now gen 2
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(bdp).
+		WithObjects(bdp, br).
+		Build()
+
+	runner := &mockRunner{
+		result: &reconcilepkg.Result{
+			DeployStatus: "ok",
+			ShadowState:  &shadowpkg.ShadowState{ComputedAt: time.Now().UTC()},
+		},
+	}
+	r := &DataPlaneReconciler{
+		Client:          fakeClient,
+		Recorder:        record.NewFakeRecorder(10),
+		Runner:          runner,
+		RequeueInterval: 10 * time.Second,
+	}
+
+	// First reconcile: add finalizer.
+	r.Reconcile(context.Background(), ctrl.Request{ //nolint:errcheck
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "test"},
+	})
+	runner.called = false
+
+	// Second reconcile: BDP generation unchanged, but BoriRelease is now gen 2 → must run.
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "test"},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if !runner.called {
+		t.Error("runner must be called when BoriRelease changed, even if BoriDataPlane spec is unchanged")
+	}
+}
+
+// TestReconcile_updatesObservedReleaseGeneration verifies that after a successful
+// reconcile, status.observedReleaseGeneration is set to the BoriRelease CR generation.
+func TestReconcile_updatesObservedReleaseGeneration(t *testing.T) {
+	scheme := setupScheme(t)
+	br := newBoriRelease("default", "my-rel",
+		v1alpha1.BoriReleaseComponentRef{Name: "jumi", Version: "v0.3.0"},
+	) // Generation: 1
+	bdp := newBDP("default", "test", "my-rel", "dev")
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(bdp).
+		WithObjects(bdp, br).
+		Build()
+
+	runner := &mockRunner{
+		result: &reconcilepkg.Result{
+			DeployStatus: "ok",
+			ShadowState:  &shadowpkg.ShadowState{ComputedAt: time.Now().UTC()},
+		},
+	}
+	r := &DataPlaneReconciler{
+		Client:          fakeClient,
+		Recorder:        record.NewFakeRecorder(10),
+		Runner:          runner,
+		RequeueInterval: 10 * time.Second,
+	}
+
+	// First reconcile: add finalizer.
+	r.Reconcile(context.Background(), ctrl.Request{ //nolint:errcheck
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "test"},
+	})
+
+	// Second reconcile: full cycle.
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "test"},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	var got v1alpha1.BoriDataPlane
+	if err := fakeClient.Get(context.Background(),
+		types.NamespacedName{Namespace: "default", Name: "test"}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status.ObservedReleaseGeneration != 1 {
+		t.Errorf("observedReleaseGeneration: want 1, got %d", got.Status.ObservedReleaseGeneration)
+	}
+	if got.Status.ObservedGeneration != 1 {
+		t.Errorf("observedGeneration: want 1, got %d", got.Status.ObservedGeneration)
 	}
 }
 

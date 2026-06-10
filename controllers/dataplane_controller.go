@@ -81,21 +81,25 @@ func (r *DataPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Generation-aware: skip expensive Runner.Run() when the CR spec hasn't
-	// changed since the last reconcile and there is no active problem condition.
-	// ObservedGeneration > 0 ensures we always run at least once.
-	if bdp.Status.ObservedGeneration > 0 &&
-		bdp.Status.ObservedGeneration == bdp.Generation &&
-		!isUnhealthy(&bdp) {
-		return ctrl.Result{RequeueAfter: interval}, nil
-	}
-
-	// Resolve release: K8s API first, filesystem fallback.
-	release, err := r.resolveRelease(ctx, &bdp)
+	// Resolve release before the skip check so we can compare its generation.
+	// K8s API first, filesystem fallback.
+	release, releaseGen, err := r.resolveRelease(ctx, &bdp)
 	if err != nil {
 		r.Recorder.Event(&bdp, corev1.EventTypeWarning, "ReleaseResolveFailed",
 			security.RedactString(fmt.Sprintf("resolve BoriRelease: %v", err)))
 		return ctrl.Result{RequeueAfter: interval}, err
+	}
+
+	// Skip expensive Runner.Run() only when nothing has changed since the last
+	// successful reconcile: the BoriDataPlane spec (ObservedGeneration),
+	// the referenced BoriRelease (ObservedReleaseGeneration), and no active
+	// Degraded or Violation condition.
+	// ObservedGeneration > 0 ensures we always run at least once.
+	if bdp.Status.ObservedGeneration > 0 &&
+		bdp.Status.ObservedGeneration == bdp.Generation &&
+		releaseUnchanged(releaseGen, &bdp) &&
+		!isUnhealthy(&bdp) {
+		return ctrl.Result{RequeueAfter: interval}, nil
 	}
 
 	res, err := r.Runner.Run(ctx, reconcilepkg.Request{
@@ -122,7 +126,7 @@ func (r *DataPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	patch := client.MergeFrom(bdp.DeepCopy())
-	bdp.Status = buildStatus(res, bdp.Generation)
+	bdp.Status = buildStatus(res, bdp.Generation, releaseGen)
 	if patchErr := r.Status().Patch(ctx, &bdp, patch); patchErr != nil {
 		logger.Error(patchErr, "failed to patch BoriDataPlane status")
 		return ctrl.Result{RequeueAfter: interval}, patchErr
@@ -197,21 +201,23 @@ func (r *DataPlaneReconciler) reconcileViolation(ctx context.Context, bdp *v1alp
 }
 
 // resolveRelease tries to fetch the BoriRelease from the Kubernetes API.
-// If the CR is not found, it returns nil — the reconciler falls back to the filesystem.
-// This allows CLI users (no BoriRelease CRs) and operator users to coexist.
-func (r *DataPlaneReconciler) resolveRelease(ctx context.Context, bdp *v1alpha1.BoriDataPlane) (*model.BoriRelease, error) {
+// Returns the model release, the BoriRelease CR metadata.generation, and any error.
+// If the CR is not found, both the release and generation are zero — the reconciler
+// falls back to the filesystem. This allows CLI users (no BoriRelease CRs) and
+// operator users to coexist.
+func (r *DataPlaneReconciler) resolveRelease(ctx context.Context, bdp *v1alpha1.BoriDataPlane) (*model.BoriRelease, int64, error) {
 	var br v1alpha1.BoriRelease
 	if err := r.Get(ctx, types.NamespacedName{
 		Namespace: bdp.Namespace,
 		Name:      bdp.Spec.Release,
 	}, &br); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, nil // not a CR — use filesystem
+			return nil, 0, nil // not a CR — use filesystem
 		}
-		return nil, fmt.Errorf("get BoriRelease %s/%s: %w", bdp.Namespace, bdp.Spec.Release, err)
+		return nil, 0, fmt.Errorf("get BoriRelease %s/%s: %w", bdp.Namespace, bdp.Spec.Release, err)
 	}
 	rel := br.ToModel()
-	return &rel, nil
+	return &rel, br.Generation, nil
 }
 
 // SetupWithManager registers the controller with a controller-runtime Manager.
@@ -261,19 +267,23 @@ func (r *DataPlaneReconciler) requeueInterval() time.Duration {
 }
 
 // buildStatus converts a reconcile result into BoriDataPlaneStatus.
-func buildStatus(res *reconcilepkg.Result, generation int64) v1alpha1.BoriDataPlaneStatus {
+// releaseGen is the BoriRelease CR metadata.generation at the time of reconcile
+// (0 for filesystem fallback).
+func buildStatus(res *reconcilepkg.Result, generation int64, releaseGen int64) v1alpha1.BoriDataPlaneStatus {
 	if res == nil || res.ShadowState == nil {
 		return v1alpha1.BoriDataPlaneStatus{
-			ObservedAt:         metav1.NewTime(time.Now().UTC()),
-			ObservedGeneration: generation,
+			ObservedAt:                metav1.NewTime(time.Now().UTC()),
+			ObservedGeneration:        generation,
+			ObservedReleaseGeneration: releaseGen,
 		}
 	}
 	return v1alpha1.BoriDataPlaneStatus{
-		CurrentRevision:    res.ShadowState.ActualRevision,
-		ObservedAt:         metav1.NewTime(res.ShadowState.ComputedAt),
-		ObservedGeneration: generation,
-		Conditions:         res.ShadowState.Conditions,
-		Components:         res.ShadowState.Components,
+		CurrentRevision:           res.ShadowState.ActualRevision,
+		ObservedAt:                metav1.NewTime(res.ShadowState.ComputedAt),
+		ObservedGeneration:        generation,
+		ObservedReleaseGeneration: releaseGen,
+		Conditions:                res.ShadowState.Conditions,
+		Components:                res.ShadowState.Components,
 	}
 }
 
@@ -365,6 +375,19 @@ func revisionToCR(namespace string, rev revision.BoriRevision) v1alpha1.BoriRevi
 		})
 	}
 	return cr
+}
+
+// releaseUnchanged reports true when the BoriRelease CR has not changed since
+// the last successful reconcile.
+// When releaseGen is 0 (filesystem fallback — no BoriRelease CR exists), this
+// returns true so the generation-based skip behaves the same as before for
+// filesystem users.
+func releaseUnchanged(releaseGen int64, bdp *v1alpha1.BoriDataPlane) bool {
+	if releaseGen == 0 {
+		// Filesystem fallback: cannot compare generation, assume unchanged.
+		return true
+	}
+	return bdp.Status.ObservedReleaseGeneration == releaseGen
 }
 
 // isUnhealthy reports whether the BoriDataPlane has an active Degraded or

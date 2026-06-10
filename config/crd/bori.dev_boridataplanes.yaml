@@ -151,6 +151,9 @@ spec:
               observedGeneration:
                 format: int64
                 type: integer
+              observedReleaseGeneration:
+                format: int64
+                type: integer
             type: object
         type: object
     served: true
