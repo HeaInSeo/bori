@@ -5,10 +5,11 @@
 [![kubeconform](https://github.com/HeaInSeo/bori/actions/workflows/kubeconform.yaml/badge.svg)](https://github.com/HeaInSeo/bori/actions/workflows/kubeconform.yaml)
 [![kind-boot-smoke](https://github.com/HeaInSeo/bori/actions/workflows/kind-boot-smoke.yml/badge.svg)](https://github.com/HeaInSeo/bori/actions/workflows/kind-boot-smoke.yml)
 [![kind-functional-smoke](https://github.com/HeaInSeo/bori/actions/workflows/kind-functional-smoke.yml/badge.svg)](https://github.com/HeaInSeo/bori/actions/workflows/kind-functional-smoke.yml)
+[![kind-digest-smoke](https://github.com/HeaInSeo/bori/actions/workflows/kind-digest-smoke.yml/badge.svg)](https://github.com/HeaInSeo/bori/actions/workflows/kind-digest-smoke.yml)
 
 bori is a Kubernetes operator that manages the lifecycle of genomic dataplane applications — JUMI, artifact-handoff, nan, tori, and NodeSentinel.
 
-It reconciles `BoriDataPlane` custom resources, tracks deployment history via `BoriRevision`, and gates promotion through [kube-slint](https://github.com/HeaInSeo/kube-slint)'s `slint-gate`.
+It reconciles `BoriDataPlane` custom resources, tracks deployment history via `BoriRevision`, gates promotion through [kube-slint](https://github.com/HeaInSeo/kube-slint)'s `slint-gate`, and enforces digest-based release identity (`imageDigest` → `harbor.lab.local:5000/bori/jumi@sha256:...`).
 
 한국어 문서: [README.ko.md](README.ko.md)
 
@@ -19,8 +20,9 @@ It reconciles `BoriDataPlane` custom resources, tracks deployment history via `B
 ```
 BoriDataPlane CR  →  bori-operator  →  deploy / verify / promote
                            │
-                    BoriRelease (release.yaml)
+                    BoriRelease (imageDigest + components)
                     BoriRevision (immutable history)
+                    BoriVerificationRun (gate evidence)  ← Phase 11
                            │
                     slint-gate (kube-slint)
                       └── sli-summary.json → PASS / FAIL / WARN
@@ -28,11 +30,12 @@ BoriDataPlane CR  →  bori-operator  →  deploy / verify / promote
 
 ### Custom Resources
 
-| CRD | Purpose |
-|-----|---------|
-| `BoriDataPlane` | Desired state: which release runs in which environment |
-| `BoriRelease` | Versioned component manifest (jumi, artifact-handoff, nan, …) |
-| `BoriRevision` | Immutable deployment snapshot; gates promotion via kube-slint |
+| CRD | Short | Purpose |
+|-----|-------|---------|
+| `BoriDataPlane` | `bdp` | Desired state: which release runs in which environment |
+| `BoriRelease` | `br` | Versioned component manifest with optional `imageDigest` per component |
+| `BoriRevision` | `brev` | Immutable deployment snapshot; gates promotion via kube-slint |
+| `BoriVerificationRun` | `bvr` | Verification gate evidence record — created by `bori verify` _(Phase 11)_ |
 
 ### Conditions on BoriDataPlane
 
@@ -103,6 +106,7 @@ name: jumi-ah-dev
 components:
   - name: jumi
     version: v0.3.0
+    imageDigest: sha256:aaa...   # optional — locks deploy to exact Harbor digest
   - name: artifact-handoff
     version: v0.2.0
   - name: nan
@@ -110,6 +114,23 @@ components:
 verification:
   policies:
     - jumi-ah-smoke
+```
+
+When `imageDigest` is set, the planner constructs a digest-qualified image ref:
+
+```
+harbor.lab.local:5000/bori/jumi:v0.3.0  +  sha256:aaa...
+  →  harbor.lab.local:5000/bori/jumi@sha256:aaa...
+```
+
+Update `imageDigest` from CI with `bori release set-image`:
+
+```bash
+bori release set-image \
+  --release jumi-ah-dev \
+  --component jumi \
+  --image-digest sha256:$(docker inspect --format='{{index .RepoDigests 0}}' ...) \
+  --version v0.3.0
 ```
 
 An environment lives in `environments/<name>/environment.yaml`:
@@ -139,6 +160,10 @@ Tests are organized in three layers:
 Layer 3 — VM Integration        hack/test-vm-integration.sh
           BORI_VM_REMOTE        real cluster, conditions regression, SLI baseline
 ─────────────────────────────────────────────────────────────────────────────────
+Layer 2-K2 — kind Digest Smoke  hack/test-kind-digest-smoke.sh
+                                --deploy-dry-run + imageDigest →
+                                ComponentStatus.ImageDigest / DeployedImage
+─────────────────────────────────────────────────────────────────────────────────
 Layer 2-K1 — kind Functional    hack/test-kind-functional-smoke.sh
              Smoke              ConfigMap bori-root + shell adapter → BoriRevision
 ─────────────────────────────────────────────────────────────────────────────────
@@ -157,6 +182,8 @@ make kind-boot-smoke                        # Layer 2-K0: operator boot in kind
 make kind-boot-smoke ARGS=--keep            # keep cluster for debugging
 make kind-func-smoke                        # Layer 2-K1: BoriRevision creation in kind
 make kind-func-smoke ARGS=--keep
+make kind-digest-smoke                      # Layer 2-K2: imageDigest ComponentStatus (no Harbor)
+make kind-digest-smoke ARGS=--keep
 BORI_VM_REMOTE=user@your-vm-ip make vm-integration        # Layer 3: real cluster
 BORI_VM_REMOTE=user@your-vm-ip make vm-integration ARGS=--update-baseline
 ```
@@ -175,10 +202,11 @@ Kind smoke tests require docker or podman — the scripts auto-detect which is a
 
 `test/e2e/` uses **Ginkgo/Gomega** with build tags to isolate test suites:
 
-| Build tag | Suite | kube-slint |
-|-----------|-------|------------|
-| `kind` | K0 boot smoke (`kind_smoke_test.go`) | `BeforeSuite`/`AfterSuite` |
-| `kindfunc` | K1 functional smoke (`kind_functional_smoke_test.go`) | `BeforeSuite`/`AfterSuite` |
+| Build tag | Suite | Notes |
+|-----------|-------|-------|
+| `kind` | K0 boot smoke (`kind_smoke_test.go`) | kube-slint `BeforeSuite`/`AfterSuite` |
+| `kindfunc` | K1 functional smoke (`kind_functional_smoke_test.go`) | kube-slint `BeforeSuite`/`AfterSuite` |
+| `kinddigest` | K2 digest smoke (`kind_digest_smoke_test.go`) | `--deploy-dry-run`; no Harbor required |
 
 kube-slint (`sess.Start()` / `sess.End()`) is wired to `BeforeSuite` / `AfterSuite` — SLI measurement spans the full test suite.
 
@@ -221,6 +249,7 @@ The script (`scripts/regression-check.sh`) auto-detects whether it is running on
 | `kubeconform` | — | `config/**` | Schema validation against K8s 1.30 |
 | `kind-boot-smoke` | 2-K0 | `workflow_dispatch` + paths | Operator boot, /metrics, conditions |
 | `kind-functional-smoke` | 2-K1 | `workflow_dispatch` + paths | BoriRevision creation via shell adapter |
+| `kind-digest-smoke` | 2-K2 | `workflow_dispatch` + paths | `imageDigest` → `ComponentStatus.ImageDigest / DeployedImage` (no Harbor) |
 | `vm-integration` | 3 | nightly + `workflow_dispatch` | Real cluster conditions regression |
 
 ---
@@ -229,16 +258,24 @@ The script (`scripts/regression-check.sh`) auto-detects whether it is running on
 
 ```
 bori/
-├── apis/bori/v1alpha1/     # CRD Go types (BoriDataPlane, BoriRelease, BoriRevision)
+├── apis/bori/v1alpha1/     # CRD Go types
+│   ├── types.go            #   BoriDataPlane + ComponentStatus (ImageDigest, DeployedImage)
+│   ├── release_types.go    #   BoriRelease (imageDigest per component)
+│   └── revision_types.go   #   BoriRevision (immutable history)
 ├── controllers/            # controller-runtime reconcilers
+│   ├── dataplane_controller.go   # main reconciler + upsertBoriRevision
+│   └── release_reconciler.go     # BoriRelease.status.activeDataPlanes
 ├── cmd/
-│   ├── bori/               # CLI: plan / deploy / verify / status / revision …
-│   ├── bori-operator/      # Kubernetes operator entrypoint
+│   ├── bori/               # CLI: plan / deploy / verify / status / release set-image …
+│   ├── bori-operator/      # Kubernetes operator (--deploy-dry-run flag)
 │   └── bori-devspace/      # DevSpace after:deploy adapter
 ├── pkg/
+│   ├── imageref/           # DigestQualifiedRef — go-containerregistry StrictValidation
+│   ├── planner/            # Deploy plan; builds digest-qualified imageRef
+│   ├── shadow/             # Drift detection; imageDigest-first comparison
 │   ├── adapter/            # Runner interface + slint-gate shell-out + sli-summary builder
-│   ├── verification/       # kube-slint policy evaluation
-│   ├── reconcile/          # core reconcile loop
+│   ├── verification/       # kube-slint policy evaluation (Provider, GateResult, FailOn)
+│   ├── reconcile/          # Core reconcile loop (DeployDryRun support)
 │   ├── revision/           # BoriRevision management
 │   └── …
 ├── adapters/               # Deploy adapters (devspace, ko, kustomize, shell)
@@ -250,16 +287,17 @@ bori/
 ├── environments/           # Environment definitions (infra-lab, kind, multipass, …)
 ├── components/             # Per-app component.yaml specs
 ├── verification/policies/  # slint-gate policy files
-├── test/e2e/               # Ginkgo/Gomega e2e tests (kind + kindfunc build tags)
+├── test/e2e/               # Ginkgo/Gomega e2e tests (kind / kindfunc / kinddigest)
 │   ├── manifests/          # kind-specific operator manifests + ConfigMaps
-│   └── fixtures/           # BoriRelease / BoriDataPlane smoke fixtures
+│   └── fixtures/           # BoriRelease / BoriDataPlane smoke fixtures (incl. imageDigest)
 ├── testdata/
 │   ├── fixtures/           # Test BoriDataPlane CRs
 │   └── baseline/           # Condition snapshots for regression check
 ├── hack/
-│   ├── test-kind-boot-smoke.sh      # K0 kind smoke runner
+│   ├── test-kind-boot-smoke.sh       # K0 kind smoke runner
 │   ├── test-kind-functional-smoke.sh # K1 kind functional smoke runner
-│   └── test-vm-integration.sh       # Layer 3 VM integration runner
+│   ├── test-kind-digest-smoke.sh     # K2 digest smoke runner (no Harbor)
+│   └── test-vm-integration.sh        # Layer 3 VM integration runner
 ├── scripts/
 │   └── regression-check.sh # BoriDataPlane condition regression check
 ├── Dockerfile              # Multi-stage: golang:1.26 → distroless/static
@@ -272,7 +310,12 @@ bori/
 
 Full roadmap: [docs/control-plane-roadmap.md](docs/control-plane-roadmap.md)
 
-All Phases 0–10 and kube-slint Tracks K0–K5 are complete.
+| Phase | Status | Summary |
+|-------|--------|---------|
+| 0–10 | ✅ Complete | CLI, operator, CRDs, Release Identity, K2 digest smoke |
+| kube-slint K0–K5 | ✅ Complete | kube-slint v1.1.0 / v1.2.0 |
+| **Phase 11** | 🔜 Planned | BoriVerificationRun CRD — `kubectl get bvr` (release gate only, [ADR-003](docs/adr/ADR-003-boriverificationrun-scope.md)) |
+| **Phase 12** | 💡 Candidate | Bori Ingestion API — Gateway API + HTTP/gRPC, kubeconfig-free external agent submission |
 
 ---
 
@@ -288,4 +331,5 @@ All Phases 0–10 and kube-slint Tracks K0–K5 are complete.
 | ADR | 상태 | 내용 |
 |-----|------|------|
 | [ADR-001](docs/adr/ADR-001-borirevision-failreason.md) | Pending | BoriRevision.failReason 위치 — spec vs status |
-| [ADR-002](docs/adr/ADR-002-controller-gen.md) | Review Needed | controller-gen 도입 여부 및 CRD schema drift 방지 |
+| [ADR-002](docs/adr/ADR-002-controller-gen.md) | 결정됨 | controller-gen 도입 — CRD schema drift 자동 방지 |
+| [ADR-003](docs/adr/ADR-003-boriverificationrun-scope.md) | 결정됨 | BoriVerificationRun 범위 제한 + Phase 12 Ingestion API 방향 |

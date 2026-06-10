@@ -25,6 +25,8 @@ import (
 	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	devspaceadapter "github.com/HeaInSeo/bori/adapters/devspace"
 	imageswapAdp "github.com/HeaInSeo/bori/adapters/imageswap"
 	koadapter "github.com/HeaInSeo/bori/adapters/ko"
@@ -389,6 +391,10 @@ func cmdVerify(args []string) {
 	boriDir := fs.String("bori-dir", ".bori", "local .bori directory for run archives")
 	slintGate := fs.String("slint-gate", "slint-gate", "path to slint-gate binary (requires v1.2.0+; K0-K5 all available from v1.2.0)")
 	verbose := fs.Bool("v", false, "verbose output")
+	// Lab fallback: if KUBECONFIG is set, create a BoriVerificationRun CR after gate completes.
+	// Long-term official path is Phase 12 Bori Ingestion API (ADR-003).
+	kubeNamespace := fs.String("kube-namespace", "bori-system",
+		"Kubernetes namespace for BoriVerificationRun CR (lab fallback — requires KUBECONFIG)")
 	_ = fs.Parse(args)
 
 	logf := func(string, ...any) {}
@@ -615,9 +621,71 @@ func cmdVerify(args []string) {
 	} else {
 		fmt.Println()
 	}
+
+	// Lab fallback: create BoriVerificationRun CR when KUBECONFIG is available.
+	// Official long-term path is Phase 12 Bori Ingestion API (ADR-003).
+	if os.Getenv("KUBECONFIG") != "" && *releaseName != "" {
+		createVerificationRunCR(runID, *releaseName, *envName, *boriDir, *kubeNamespace,
+			string(overall), startedAt, logf)
+	}
+
 	if verification.IsBlocking(overall, verification.FailOnFailOrNoGrade) || halted {
 		os.Exit(1)
 	}
+}
+
+// createVerificationRunCR creates a BoriVerificationRun CR via kubectl apply.
+// This is the lab/dev fallback path (KUBECONFIG required). Errors are non-fatal.
+// Long-term official path: Phase 12 Bori Ingestion API (ADR-003).
+func createVerificationRunCR(runID, release, env, boriDir, namespace, gateResult string, startedAt time.Time, logf func(string, ...any)) {
+	promotionDecision := "eligible"
+	if verification.IsBlocking(verification.GateResult(gateResult), verification.FailOnFailOrNoGrade) {
+		promotionDecision = "blocked"
+	}
+
+	// Find the latest promoted revision for this release+env from disk (best-effort).
+	revisionID := ""
+	if revs, err := revision.List(boriDir); err == nil {
+		for _, rev := range revs {
+			if rev.Release == release && rev.Environment == env && rev.PromotionStatus == "promoted" {
+				revisionID = rev.RevisionID
+				break
+			}
+		}
+	}
+
+	now := time.Now().UTC()
+	bvr := v1alpha1.BoriVerificationRun{}
+	bvr.APIVersion = "bori.dev/v1alpha1"
+	bvr.Kind = "BoriVerificationRun"
+	bvr.Name = runID
+	bvr.Namespace = namespace
+	bvr.Spec = v1alpha1.BoriVerificationRunSpec{
+		Provider:          "kube-slint",
+		Release:           release,
+		Environment:       env,
+		RevisionID:        revisionID,
+		GateResult:        gateResult,
+		PromotionDecision: promotionDecision,
+		StartedAt:         metav1.NewTime(startedAt),
+		FinishedAt:        metav1.NewTime(now),
+	}
+
+	data, err := sigsyaml.Marshal(&bvr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[bori] warning: marshal BoriVerificationRun: %v\n", err)
+		return
+	}
+
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(string(data))
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "[bori] warning: create BoriVerificationRun CR: %v\n", err)
+		return
+	}
+	logf("BoriVerificationRun CR created: %s/%s (lab fallback)", namespace, runID)
 }
 
 // runOneVerification executes the scrape→summary→gate flow for one target.

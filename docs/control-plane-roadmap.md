@@ -2395,6 +2395,187 @@ hack/test-kind-digest-smoke.sh
 - network-baseline 통합 (별도 트랙)
 ```
 
+### Phase 11 — BoriVerificationRun CRD
+
+예상 기간: Phase 10 직후
+
+목표:
+
+- `artifact.VerificationRun` disk JSON을 Kubernetes CR로 승격: `kubectl get bvr`로 검증 게이트 이력 조회
+- `bori verify` CLI가 gate 완료 후 BoriVerificationRun CR 생성 (KUBECONFIG lab fallback 경로)
+- `BoriVerificationRunReconciler`가 BVR 생성 이벤트를 감지해 BoriRevision.status.verificationRunId를 CR 이름으로 연결
+- promotion gate가 K8s API에서 검증 이력을 확인 가능
+
+**설계 경계 (ADR-003)**
+
+BoriVerificationRun은 **특정 BoriRevision에 대한 verification gate 결과 전용**이다.
+다음은 이 CR의 범위가 아니다.
+
+```text
+범위 밖 (이 CR에 넣지 않는다):
+  - 지속 health 상태 → BoriDataPlane.status.conditions
+  - network-baseline 측정 결과 → 별도 specific CR (use case 준비 후)
+  - runtime drift, SLI/SLO 장기 추세
+  - 외부 agent 일반 관측 결과 → BoriObservation 같은 generic CR 설계 금지
+```
+
+kubeconfig 기반 CR 생성은 **lab/dev fallback 전용**이다.
+장기 공식 입력 경로는 Phase 12 Bori Ingestion API다. → [ADR-003](adr/ADR-003-boriverificationrun-scope.md)
+
+비목표:
+
+```text
+- operator가 inline으로 bori verify를 실행 (verification은 여전히 CLI 주도)
+- BoriObservation 또는 generic observation CR 설계
+- network-baseline / health 통합 (use case 준비 후 specific CR로 별도 설계)
+- progressive rollout / traffic gating
+- Harbor-backed imageswap VM 통합 테스트 (별도 Ops 트랙)
+```
+
+산출물:
+
+```text
+apis/bori/v1alpha1/verificationrun_types.go (신규)
+  BoriVerificationRunSpec
+    provider          string       — 검증 backend (e.g. kube-slint)
+    app               string       — 검증 대상 component 이름
+    release           string       — BoriRelease 이름
+    environment       string       — 대상 environment 이름
+    revisionId        string       — 연결된 BoriRevision 이름
+    gateResult        string       — PASS | WARN | FAIL | NO_GRADE
+    promotionDecision string       — eligible | blocked
+    startedAt         metav1.Time
+    finishedAt        metav1.Time
+    measurementSummaryPath string  — sli-summary.json 상대 경로
+    gateSummaryPath        string  — slint-gate-summary.json 상대 경로
+
+  BoriVerificationRunStatus
+    observedAt metav1.Time
+
+  +kubebuilder:object:root=true
+  +kubebuilder:subresource:status
+  +kubebuilder:resource:shortName=bvr
+  +kubebuilder:printcolumn: Release, GateResult, PromotionDecision, Age
+
+  BoriVerificationRun + BoriVerificationRunList
+
+  FromArtifact(artifact.VerificationRun, revisionID string) BoriVerificationRun
+    — disk artifact → CR 변환 helper (CLI 사용)
+
+config/crd/boriverificationruns.bori.dev.yaml
+  — BoriVerificationRun CRD (group: bori.dev, scope: Namespaced, shortName: bvr)
+  — additionalPrinterColumns: Release, GateResult, PromotionDecision, Age
+
+config/rbac/role.yaml
+  — boriverificationruns get/list/watch/create/update/patch + status 권한 추가
+
+controllers/verificationrun_reconciler.go (신규)
+  BoriVerificationRunReconciler
+    Reconcile(): BVR 생성/업데이트 이벤트 처리
+      → BVR.spec.revisionId로 BoriRevision을 List에서 탐색
+      → BoriRevision.status.verificationRunId = BVR.name (없거나 달라야 patch)
+      → non-fatal — BoriRevision 없어도 warning log만 기록
+      → first-write-wins: 이미 연결된 BVR 있으면 덮어쓰지 않음
+    SetupWithManager(): For(BoriVerificationRun)
+
+controllers/verificationrun_reconciler_test.go (신규)
+  TestBoriVerificationRunReconciler_linksRevision
+  TestBoriVerificationRunReconciler_revisionNotFound
+  TestBoriVerificationRunReconciler_idempotent
+  TestBoriVerificationRunReconciler_noUpdateWhenAlreadyLinked
+
+cmd/bori-operator/main.go
+  — BoriVerificationRunReconciler 등록
+
+cmd/bori/main.go
+  cmdVerify 수정 (lab fallback 경로):
+    rev.VerificationRunID = runID 이후,
+    KUBECONFIG env 있을 때만:
+      k8s client 구성 → BoriVerificationRun CR 생성 — 실패 시 warning만 (non-fatal)
+    KUBECONFIG 없으면 disk artifact만 기록 (기존 동작 유지)
+    주석: "장기 공식 경로는 Phase 12 Bori Ingestion API를 사용한다."
+```
+
+완료 기준:
+
+- [ ] `kubectl get bvr` → gate 이력 조회 가능 (Release, GateResult, PromotionDecision, Age)
+- [ ] `kubectl get borirevisions` → `verificationRunId`에 BoriVerificationRun CR 이름 표시
+- [ ] disk artifact는 항상 보존 — KUBECONFIG 없어도 `bori verify` 동작 유지
+- [ ] BoriVerificationRun.spec은 `artifact.VerificationRun` 필드를 전부 포함
+- [ ] BoriVerificationRunReconciler → BoriRevision.status.verificationRunId 자동 연결 (first-write-wins)
+- [ ] 컨트롤러 테스트 26개 통과 (22개 이전 + 4개 Phase 11 신규)
+
+비고: ADR-003에서 BoriVerificationRun 범위, kubeconfig lab fallback 제한, Phase 12 Ingestion API 방향이 확정되었다.
+
+---
+
+### Phase 12 — Bori Ingestion API (후보)
+
+예상 기간: Phase 11 직후
+
+목표:
+
+외부 agent(bori verify CLI, CI pipeline, network-baseline agent, health agent)가 kubeconfig 없이 Bori에 결과를 제출할 수 있는 공식 입력 경로를 설계한다.
+
+```text
+현재 (Phase 11 lab fallback):
+  bori verify CLI
+    --KUBECONFIG 있을 때만→ K8s API 직접 쓰기 (BoriVerificationRun CR 생성)
+
+목표 (Phase 12):
+  외부 agent
+    → HTTP 또는 gRPC
+    → Gateway API
+    → bori-ingest service
+    → Bori internal controller → CR 생성
+    → BoriDataPlane status aggregation
+```
+
+이 구조에서 외부 agent는 kubeconfig 없이 동작한다.
+
+API 후보 엔드포인트:
+
+```text
+POST /v1/verification-runs
+POST /v1/network-observations  (network-baseline agent 준비 후)
+POST /v1/health-reports        (health agent 준비 후)
+```
+
+또는 gRPC:
+
+```proto
+rpc SubmitVerificationRun(SubmitVerificationRunRequest) returns (SubmitResponse)
+rpc SubmitNetworkObservation(...)
+rpc SubmitHealthReport(...)
+```
+
+비목표:
+
+```text
+- BoriObservation 같은 generic CR 추가 (ADR-003: 금지)
+- network-baseline / health 통합 (Phase 12에서 API 설계만, 통합은 Phase 13+)
+```
+
+산출물 (미확정 — Phase 11 완료 후 구체화):
+
+```text
+cmd/bori-ingest/         — Ingestion API 서버 엔트리포인트
+pkg/ingest/              — 결과 수신, 검증, CR 생성 로직
+config/gateway/          — Gateway API HTTPRoute 또는 GRPCRoute
+config/rbac/             — bori-ingest ServiceAccount + RBAC
+```
+
+완료 기준 (미확정):
+
+```text
+- [ ] 외부 agent가 kubeconfig 없이 bori verify 결과를 제출 가능
+- [ ] bori-ingest가 BoriVerificationRun CR을 생성하고 controller가 BoriRevision과 연결
+- [ ] kubeconfig lab fallback 경로는 deprecated 표시
+```
+
+> **상태**: 계획 중. Phase 11 완료 후 구체화한다.
+> ADR-003에서 이 방향이 확정되었다. → [ADR-003](adr/ADR-003-boriverificationrun-scope.md)
+
 ---
 
 ## 13. 첫 PR 제안

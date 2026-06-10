@@ -40,6 +40,13 @@ rules:
   - apiGroups: ["bori.dev"]
     resources: ["borirevisions/status"]
     verbs: ["get", "update", "patch"]
+  # BoriVerificationRun CRD — created by bori verify CLI; controller links to BoriRevision
+  - apiGroups: ["bori.dev"]
+    resources: ["boriverificationruns"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["bori.dev"]
+    resources: ["boriverificationruns/status"]
+    verbs: ["get", "update", "patch"]
   # Namespace read — enforces NamespacePolicy allowed list
   - apiGroups: [""]
     resources: ["namespaces"]

@@ -22,4 +22,5 @@ func init() {
 	SchemeBuilder.Register(&BoriDataPlane{}, &BoriDataPlaneList{})
 	SchemeBuilder.Register(&BoriRelease{}, &BoriReleaseList{})
 	SchemeBuilder.Register(&BoriRevision{}, &BoriRevisionList{})
+	SchemeBuilder.Register(&BoriVerificationRun{}, &BoriVerificationRunList{})
 }
