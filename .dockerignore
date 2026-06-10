@@ -1,0 +1,42 @@
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# Build outputs
+bin/
+
+# Test artifacts and runtime state
+artifacts/
+.bori/
+coverage.out
+*.log
+*.tmp
+
+# Dev tooling (not needed to compile the operator binary)
+hack/
+scripts/
+
+# Test code and fixtures
+test/
+testdata/
+
+# Documentation
+docs/
+README.md
+README.ko.md
+
+# Runtime-only config (mounted at runtime, not compiled)
+environments/
+releases/
+components/
+compatibility/
+schema/
+verification/
+example/
+config/
+
+# Misc
+.DS_Store
+devspace.yaml
+Makefile

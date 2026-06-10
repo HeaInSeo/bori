@@ -14,7 +14,9 @@
 
 set -euo pipefail
 
-REMOTE="seoy@100.123.80.48"
+# BORI_VM_REMOTE is only required when kubectl is not directly available
+# (SSH fallback path). On the cluster node itself this variable is unused.
+REMOTE="${BORI_VM_REMOTE:-}"
 NAMESPACE="bori-system"
 FIXTURE_NAME="infra-lab-smoke"
 FIXTURE="testdata/fixtures/bdp-infra-lab-smoke.yaml"
@@ -40,6 +42,12 @@ if kubectl cluster-info --request-timeout=3s &>/dev/null; then
   }
   apply_fixture() { kubectl apply -f -; }
 else
+  if [ -z "${REMOTE}" ]; then
+    echo "[regression] error: BORI_VM_REMOTE is not set (required for SSH fallback)" >&2
+    echo "  Set the SSH target before running:" >&2
+    echo "    BORI_VM_REMOTE=user@your-vm-ip ./scripts/regression-check.sh" >&2
+    exit 1
+  fi
   log "context: running locally (SSH → $REMOTE)"
   run_kubectl() { ssh "$REMOTE" kubectl "$@"; }
   run_k8sgpt()  { ssh "$REMOTE" /usr/bin/k8sgpt "$@"; }

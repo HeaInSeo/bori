@@ -88,7 +88,7 @@ kind-func-smoke:
 # ── Test: Layer 3 (VM integration) ──────────────────────────────────────────
 
 # VM integration test (Layer 3).
-# 전제: Tailscale + SSH to seoy@100.123.80.48
+# 전제: BORI_VM_REMOTE 환경변수로 SSH target 지정 (예: user@your-vm-ip)
 # baseline 갱신: make vm-integration ARGS=--update-baseline
 vm-integration:
 	./hack/test-vm-integration.sh $(ARGS)

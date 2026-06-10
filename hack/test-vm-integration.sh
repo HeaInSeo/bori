@@ -21,7 +21,17 @@
 set -euo pipefail
 
 # ── 설정 ─────────────────────────────────────────────────────────────────────
-REMOTE="seoy@100.123.80.48"
+# BORI_VM_REMOTE: SSH target for the VM (required).
+# GitHub Actions: set as a repository variable (vars.BORI_VM_REMOTE).
+# Local: export BORI_VM_REMOTE=user@your-vm-ip before running.
+REMOTE="${BORI_VM_REMOTE:-}"
+if [ -z "${REMOTE}" ]; then
+  echo "[vm-integration] error: BORI_VM_REMOTE is not set" >&2
+  echo "  Set the SSH target before running:" >&2
+  echo "    BORI_VM_REMOTE=user@your-vm-ip ./hack/test-vm-integration.sh" >&2
+  echo "  GitHub Actions: configure vars.BORI_VM_REMOTE in repository settings." >&2
+  exit 1
+fi
 NAMESPACE="bori-system"
 FIXTURE_NAME="infra-lab-smoke"
 FIXTURE="testdata/fixtures/bdp-infra-lab-smoke.yaml"

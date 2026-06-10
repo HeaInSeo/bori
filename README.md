@@ -137,7 +137,7 @@ Tests are organized in three layers:
 
 ```
 Layer 3 — VM Integration        hack/test-vm-integration.sh
-          seoy@100.123.80.48    real cluster, conditions regression, SLI baseline
+          BORI_VM_REMOTE        real cluster, conditions regression, SLI baseline
 ─────────────────────────────────────────────────────────────────────────────────
 Layer 2-K1 — kind Functional    hack/test-kind-functional-smoke.sh
              Smoke              ConfigMap bori-root + shell adapter → BoriRevision
@@ -157,11 +157,19 @@ make kind-boot-smoke                        # Layer 2-K0: operator boot in kind
 make kind-boot-smoke ARGS=--keep            # keep cluster for debugging
 make kind-func-smoke                        # Layer 2-K1: BoriRevision creation in kind
 make kind-func-smoke ARGS=--keep
-make vm-integration                         # Layer 3: real cluster (SSH required)
-make vm-integration ARGS=--update-baseline  # accept current state as new baseline
+BORI_VM_REMOTE=user@your-vm-ip make vm-integration        # Layer 3: real cluster
+BORI_VM_REMOTE=user@your-vm-ip make vm-integration ARGS=--update-baseline
 ```
 
-Kind smoke tests require docker or podman — the scripts auto-detect which is available. On systems with only rootless podman, `systemd Delegate=yes` must be set for the user unit; CI (GitHub ubuntu-latest) uses Docker.
+> **Layer 3 (VM integration)** requires `BORI_VM_REMOTE` to be set to the SSH target of your VM (e.g. `user@your-vm-ip`). In GitHub Actions the value comes from the `BORI_VM_REMOTE` repository variable (Settings → Variables). The script exits immediately with a clear error if the variable is not set.
+
+Kind smoke tests require docker or podman — the scripts auto-detect which is available.
+
+> **Rootless Podman and kind**: rootless Podman may not work for kind in all environments due to cgroup v2 delegation requirements. If kind tests fail locally, try one of:
+> - Use Docker instead of Podman
+> - Use rootful Podman (`sudo podman`) or a Docker-compatible socket
+> - Verify via GitHub CI — kind smoke tests run on Docker-backed `ubuntu-latest` runners
+> - VM integration tests run on a self-hosted runner via `workflow_dispatch` or nightly schedule
 
 ### Test framework
 
@@ -213,7 +221,7 @@ The script (`scripts/regression-check.sh`) auto-detects whether it is running on
 | `kubeconform` | — | `config/**` | Schema validation against K8s 1.30 |
 | `kind-boot-smoke` | 2-K0 | `workflow_dispatch` + paths | Operator boot, /metrics, conditions |
 | `kind-functional-smoke` | 2-K1 | `workflow_dispatch` + paths | BoriRevision creation via shell adapter |
-| `vm-integration` | 3 | nightly + `workflow_dispatch` + main push | Real cluster conditions regression |
+| `vm-integration` | 3 | nightly + `workflow_dispatch` | Real cluster conditions regression |
 
 ---
 

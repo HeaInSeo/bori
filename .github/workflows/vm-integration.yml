@@ -22,6 +22,9 @@ jobs:
       - name: Run VM integration test
         run: hack/test-vm-integration.sh
         env:
+          # BORI_VM_REMOTE: SSH target for the remote VM.
+          # Configure as a repository variable: Settings → Variables → BORI_VM_REMOTE.
+          BORI_VM_REMOTE: ${{ vars.BORI_VM_REMOTE }}
           KUBE_SLINT_DIR: ${{ github.workspace }}/../kube-slint
 
       - name: Upload artifacts
