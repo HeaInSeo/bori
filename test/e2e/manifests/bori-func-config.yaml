@@ -30,5 +30,6 @@ data:
     image:
       ref: localhost/jumi:0.1.0-smoke
     deploy:
-      adapter: shell
       namespace: jumi-system
+      bootstrap:
+        adapter: shell

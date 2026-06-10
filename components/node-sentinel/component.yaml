@@ -25,4 +25,7 @@ verificationPolicies:
 
 deploy:
   namespace: node-sentinel-system
-  adapter: devspace
+  bootstrap:
+    adapter: devspace
+  update:
+    adapter: imageswap

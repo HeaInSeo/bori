@@ -13,12 +13,6 @@ constraints:
       - component: artifact-handoff
         minVersion: v0.2.0
 
-  - component: nan
-    version: v0.1.5
-    requires:
-      - component: artifact-handoff
-        minVersion: v0.2.0
-
   - component: tori
     version: v0.1.0
     requires:

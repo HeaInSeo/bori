@@ -413,9 +413,11 @@ func RollbackPlan(boriRoot, boriDir, releaseName, envName, targetRevisionID stri
 		if ns == "" {
 			ns = cr.Name + "-system"
 		}
-		adapterName := comp.Deploy.Adapter
-		if adapterName == "" {
-			adapterName = "devspace"
+		var adapterName string
+		if cr.ImageDigest != "" {
+			adapterName = comp.Deploy.UpdateAdapter()
+		} else {
+			adapterName = comp.Deploy.BootstrapAdapter()
 		}
 		cp := artifact.ComponentPlan{
 			Name:        cr.Name,

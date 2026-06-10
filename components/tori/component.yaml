@@ -28,4 +28,7 @@ verificationPolicies:
 
 deploy:
   namespace: tori-system
-  adapter: devspace
+  bootstrap:
+    adapter: devspace
+  update:
+    adapter: imageswap

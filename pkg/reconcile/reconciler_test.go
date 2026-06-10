@@ -48,7 +48,8 @@ components:
 name: comp-a
 version: v1.0.0
 deploy:
-  adapter: mock
+  bootstrap:
+    adapter: mock
 `)
 	writeFixture(t, filepath.Join(root, "environments", "dev", "environment.yaml"), `
 name: dev

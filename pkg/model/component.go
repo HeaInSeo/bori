@@ -28,15 +28,43 @@ type BoriComponent struct {
 }
 
 // DeployConfig specifies how a component is deployed.
+// Two phases are distinguished:
+//   - Bootstrap: first install / full manifest apply (no imageDigest set).
+//   - Update: digest-based rolling update (imageDigest set in release).
 type DeployConfig struct {
-	// Adapter selects the deploy tool: devspace | ko | kustomize | shell.
-	// Defaults to "devspace" if empty.
-	Adapter string `yaml:"adapter"`
 	// Namespace is the Kubernetes namespace this component is deployed into.
 	// Overrides the planner default of "{name}-system" when set.
-	// Namespace ownership belongs to the environment (namespacePolicy.allowed);
-	// this field declares the component's target, not grants permission.
-	Namespace string `yaml:"namespace,omitempty"`
+	Namespace string           `yaml:"namespace,omitempty"`
+	Bootstrap *BootstrapDeploy `yaml:"bootstrap,omitempty"`
+	Update    *UpdateDeploy    `yaml:"update,omitempty"`
+}
+
+// BootstrapDeploy configures the first-install / full-manifest-apply path.
+// Default driver: devspace.
+type BootstrapDeploy struct {
+	Adapter string `yaml:"adapter"`
+}
+
+// UpdateDeploy configures the digest-based image-swap path.
+// Default driver: imageswap.
+type UpdateDeploy struct {
+	Adapter string `yaml:"adapter"`
+}
+
+// BootstrapAdapter returns the adapter name for the bootstrap phase.
+func (d DeployConfig) BootstrapAdapter() string {
+	if d.Bootstrap != nil && d.Bootstrap.Adapter != "" {
+		return d.Bootstrap.Adapter
+	}
+	return "devspace"
+}
+
+// UpdateAdapter returns the adapter name for the update phase.
+func (d DeployConfig) UpdateAdapter() string {
+	if d.Update != nil && d.Update.Adapter != "" {
+		return d.Update.Adapter
+	}
+	return "imageswap"
 }
 
 // ImageRef holds the full image reference including digest.

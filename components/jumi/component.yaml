@@ -29,4 +29,7 @@ verificationPolicies:
 
 deploy:
   namespace: jumi-system
-  adapter: devspace
+  bootstrap:
+    adapter: devspace
+  update:
+    adapter: imageswap

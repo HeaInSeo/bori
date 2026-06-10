@@ -96,20 +96,18 @@ func (p *Planner) Plan(runID, releaseName, envName string) (*artifact.Plan, erro
 		if ns == "" {
 			ns = defaultNamespace(comp.Name)
 		}
-		adapterName := comp.Deploy.Adapter
-		if adapterName == "" {
-			adapterName = "devspace"
-		}
-
 		imageRef := comp.Image.Ref
 		imageDigest := ref.ImageDigest
+		var adapterName string
 		if imageDigest != "" {
 			qualifiedRef, err := imageref.DigestQualifiedRef(imageRef, imageDigest)
 			if err != nil {
 				return nil, fmt.Errorf("component %q: %w", ref.Name, err)
 			}
 			imageRef = qualifiedRef
-			adapterName = "imageswap"
+			adapterName = comp.Deploy.UpdateAdapter()
+		} else {
+			adapterName = comp.Deploy.BootstrapAdapter()
 		}
 
 		cp := artifact.ComponentPlan{

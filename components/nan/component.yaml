@@ -1,30 +1,26 @@
+# nan (node-artifact-runtime) is a runtime helper embedded inside genomics
+# analysis Job containers that JUMI spawns via Spawner.
+#
+# Bori scope: NONE.
+# - Bori does NOT deploy, verify, or manage nan.
+# - nan inclusion and runtime contract verification is the responsibility of
+#   the tool image authoring/registry/validation layer:
+#   NodeKit (build), NodeVault (registry), NodeSentinel (runtime policy).
+# - nan version tracking lives in NodeVault RegisteredTool / ToolSpec records,
+#   not in BoriRelease.
+#
+# This file is kept as a contract reference only.
+# Remove if the contract reference moves to NodeVault/ToolSpec.
 name: nan
-kind: data-component
+kind: runtime-helper
 version: v0.1.5
 
 image:
   ref: ghcr.io/heainseo/nan:v0.1.5
 
-ports:
-  metrics: 8080
-  health: 8081
-
-health:
-  path: /healthz
-
-metrics:
-  path: /metrics
-
-dependencies:
-  - artifact-handoff
-
 contracts:
   - nan-materialization-v1
   - nan-fetch-v1
 
-verificationPolicies:
-  - nan-materialization-smoke
-
-deploy:
-  namespace: nan-system
-  adapter: devspace
+dependencies:
+  - artifact-handoff
