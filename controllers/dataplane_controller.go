@@ -47,6 +47,10 @@ type DataPlaneReconciler struct {
 	BoriRoot string
 	BoriDir  string
 	AppsDir  string
+	// DeployDryRun passes DeployDryRun=true to every Runner.Run call.
+	// Used by kind-based K2 tests to validate digest-qualified ref construction
+	// without a real Harbor registry.
+	DeployDryRun bool
 	// Runner executes plan→deploy→verify→promote.
 	// *pkg/reconcile.Reconciler in production; mock in tests.
 	Runner          reconcilepkg.Runner
@@ -109,6 +113,7 @@ func (r *DataPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		ReleaseName:  bdp.Spec.Release,
 		EnvName:      bdp.Spec.Environment,
 		SkipIfInSync: true,
+		DeployDryRun: r.DeployDryRun,
 		Release:      release,
 	})
 

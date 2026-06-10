@@ -1,0 +1,12 @@
+apiVersion: bori.dev/v1alpha1
+kind: BoriRelease
+metadata:
+  name: digest-release
+  namespace: bori-system
+spec:
+  components:
+    - name: jumi
+      version: "0.1.0-smoke"
+      imageDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  promotion:
+    requiredGateResult: ""

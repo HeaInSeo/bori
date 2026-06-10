@@ -1,4 +1,4 @@
-//go:build kind || kindfunc
+//go:build kind || kindfunc || kinddigest
 
 package e2e
 

@@ -48,6 +48,7 @@ func main() {
 		healthAddr      string
 		leaderElect     bool
 		requeueInterval time.Duration
+		deployDryRun    bool
 	)
 
 	flag.StringVar(&boriRoot, "bori-root", "/bori",
@@ -64,6 +65,8 @@ func main() {
 		"enable leader election (required for multi-replica deployments)")
 	flag.DurationVar(&requeueInterval, "requeue-interval", 30*time.Second,
 		"how often to re-evaluate each BoriDataPlane")
+	flag.BoolVar(&deployDryRun, "deploy-dry-run", false,
+		"skip adapter.Deploy() calls but promote revisions (for kind-based digest smoke tests)")
 
 	zapOpts := zap.Options{Development: true}
 	zapOpts.BindFlags(flag.CommandLine)
@@ -127,6 +130,7 @@ func main() {
 		BoriDir:         boriDir,
 		AppsDir:         appsDir,
 		Runner:          runner,
+		DeployDryRun:    deployDryRun,
 		RequeueInterval: requeueInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "setup DataPlaneReconciler")

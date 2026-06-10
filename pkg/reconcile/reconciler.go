@@ -51,6 +51,12 @@ type Request struct {
 	EnvName     string
 	// DryRun computes the plan without applying.
 	DryRun bool
+	// DeployDryRun skips the actual adapter.Deploy() calls but promotes the revision
+	// as if the deploy succeeded, allowing shadow reconcile to populate
+	// ComponentStatus.ImageDigest and ComponentStatus.DeployedImage.
+	// Intended for kind-based tests that validate digest-qualified ref construction
+	// without a real Harbor registry.
+	DeployDryRun bool
 	// SkipIfInSync skips deploy/verify when shadow state shows all components in-sync.
 	SkipIfInSync bool
 	// Release overrides filesystem-based LoadReleaseByName when set.
@@ -192,6 +198,34 @@ func (r *Reconciler) Run(ctx context.Context, req Request) (*Result, error) {
 		r.Logf("dry-run: skipping deploy")
 		result.DeployStatus = "skipped (dry-run)"
 		result.VerifyResult = "skipped (dry-run)"
+		return result, nil
+	}
+
+	// DeployDryRun: skip adapter calls, promote the revision immediately so that
+	// shadow reconcile can populate ComponentStatus.ImageDigest and DeployedImage.
+	// Used by kind-based K2 tests to validate digest-qualified ref construction
+	// without a real Harbor registry.
+	if req.DeployDryRun {
+		r.Logf("deploy-dry-run: skipping adapter calls, promoting revision")
+		result.DeployStatus = "skipped (deploy-dry-run)"
+		result.VerifyResult = "skipped (deploy-dry-run)"
+		if revErr == nil {
+			baselineRef := filepath.Join(runDir, "evidence")
+			revision.Promote(&rev, baselineRef)
+			if _, err := revision.Write(req.BoriDir, rev); err != nil {
+				r.Logf("warning: could not write promoted revision: %v", err)
+			} else {
+				result.Promoted = true
+				r.Logf("deploy-dry-run: revision promoted: %s", rev.RevisionID)
+			}
+		}
+		newShadow, err := shadowpkg.Reconcile(rel, req.BoriDir)
+		if err == nil {
+			result.ShadowState = newShadow
+			if err := shadowpkg.WriteState(req.BoriDir, req.ReleaseName, *newShadow); err != nil {
+				r.Logf("warning: could not write shadow-status.json: %v", err)
+			}
+		}
 		return result, nil
 	}
 

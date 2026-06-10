@@ -1,0 +1,57 @@
+name: kind-digest-smoke
+
+# K2 digest smoke: imageDigest 기반 BoriRelease → planner가 digest-qualified imageRef 생성
+# → --deploy-dry-run으로 Harbor 없이 revision 프로모션
+# → ComponentStatus.ImageDigest / DeployedImage 검증
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "apis/**"
+      - "controllers/**"
+      - "cmd/bori-operator/**"
+      - "pkg/imageref/**"
+      - "pkg/planner/**"
+      - "pkg/reconcile/**"
+      - "pkg/shadow/**"
+      - "pkg/revision/**"
+      - "config/**"
+      - "test/e2e/**"
+      - "hack/test-kind-digest-smoke.sh"
+      - ".github/workflows/kind-digest-smoke.yml"
+
+jobs:
+  kind-digest-smoke:
+    name: K2 — kind digest smoke (imageDigest ComponentStatus)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/v0.24.0/kind-$(uname)-amd64"
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Run K2 digest smoke
+        run: hack/test-kind-digest-smoke.sh
+        env:
+          KUBE_VERSION: v1.30.0
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kind-digest-smoke-artifacts-${{ github.run_id }}
+          path: artifacts/kind-digest/**
+          if-no-files-found: warn
