@@ -1,0 +1,51 @@
+name: kind-functional-smoke
+
+# K1 functional smoke: bori-root = ConfigMap, shell adapter no-op.
+# Runner.Run() 완료 → BoriRevision CR 생성 → Installed/Promoted 조건 확인.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "apis/**"
+      - "controllers/**"
+      - "cmd/bori-operator/**"
+      - "pkg/reconcile/**"
+      - "pkg/shadow/**"
+      - "pkg/revision/**"
+      - "config/**"
+      - "test/e2e/**"
+      - "hack/test-kind-functional-smoke.sh"
+      - ".github/workflows/kind-functional-smoke.yml"
+
+jobs:
+  kind-functional-smoke:
+    name: K1 — kind functional smoke (BoriRevision creation)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/v0.24.0/kind-$(uname)-amd64"
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Run K1 functional smoke
+        run: hack/test-kind-functional-smoke.sh
+        env:
+          KUBE_VERSION: v1.30.0
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kind-functional-smoke-artifacts-${{ github.run_id }}
+          path: artifacts/kind-func/**
+          if-no-files-found: warn

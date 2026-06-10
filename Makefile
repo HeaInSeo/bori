@@ -1,4 +1,4 @@
-.PHONY: build build-bori clean test generate generate-check install-crds uninstall-crds install-rbac regression kind-boot-smoke vm-integration
+.PHONY: build build-bori clean test generate generate-check install-crds uninstall-crds install-rbac regression kind-boot-smoke kind-func-smoke vm-integration
 
 # ── Code generation ─────────────────────────────────────────────────────────
 
@@ -78,6 +78,12 @@ regression:
 # K1 functional smoke (BoriRevision 생성): 다음 PR
 kind-boot-smoke:
 	./hack/test-kind-boot-smoke.sh $(ARGS)
+
+# K1 functional smoke: ConfigMap bori-root + shell adapter → BoriRevision 생성 확인 (Layer 2).
+# 전제: kind, docker, kubectl, go
+# 클러스터 유지: make kind-func-smoke ARGS=--keep
+kind-func-smoke:
+	./hack/test-kind-functional-smoke.sh $(ARGS)
 
 # ── Test: Layer 3 (VM integration) ──────────────────────────────────────────
 

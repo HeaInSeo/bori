@@ -1,0 +1,34 @@
+# bori-func-config — K1 functional smoke용 bori-root 구조 ConfigMap.
+# init container가 이 ConfigMap의 파일을 /bori-config/ 아래에 배치한다.
+#   /bori-config/environments/kind-smoke/environment.yaml
+#   /bori-config/components/jumi/component.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bori-func-config
+  namespace: bori-system
+data:
+  environment.yaml: |
+    name: kind-smoke
+    cluster:
+      kubeconfig: ""
+      context: ""
+    namespacePolicy:
+      allowed:
+        - jumi-system
+        - bori-system
+      allowClusterScopedResources: false
+    registry:
+      default: localhost
+    secrets:
+      mode: reference-only
+      redaction: strict
+  component.yaml: |
+    name: jumi
+    kind: data-component
+    version: 0.1.0-smoke
+    image:
+      ref: localhost/jumi:0.1.0-smoke
+    deploy:
+      adapter: shell
+      namespace: jumi-system

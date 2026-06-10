@@ -1,0 +1,8 @@
+apiVersion: bori.dev/v1alpha1
+kind: BoriDataPlane
+metadata:
+  name: func-dp
+  namespace: bori-system
+spec:
+  release: func-release
+  environment: kind-smoke

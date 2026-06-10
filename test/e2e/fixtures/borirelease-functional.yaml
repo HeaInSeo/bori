@@ -1,0 +1,11 @@
+apiVersion: bori.dev/v1alpha1
+kind: BoriRelease
+metadata:
+  name: func-release
+  namespace: bori-system
+spec:
+  components:
+    - name: jumi
+      version: "0.1.0-smoke"
+  promotion:
+    requiredGateResult: ""

@@ -59,22 +59,24 @@
 
 ---
 
-### Layer 2-K1 — kind Functional Smoke 🔜 다음 PR
+### Layer 2-K1 — kind Functional Smoke ✅ 현재 구현
 
 - **위치**: `test/e2e/kind_functional_smoke_test.go` (`//go:build kindfunc`)
 - **실행**: `hack/test-kind-functional-smoke.sh [--keep]`
-- **목적**: 최소 release fixture를 주입해 실제 reconcile happy path 확인
+- **목적**: bori-root를 ConfigMap으로 주입, shell adapter no-op deploy → full reconcile cycle 확인
 - **검증 대상**:
-  - ConfigMap 또는 projected volume으로 최소 release 파일 주입
-  - BoriRelease + BoriDataPlane → release 파일 발견 → reconcile 성공
-  - BoriRevision 1개 이상 생성 확인
-  - BoriRelease.status.activeDataPlanes 카운트
-  - kube-slint SLI measurement
+  - `bori-func-config` ConfigMap → init container → `/bori-config/{environments,components}/` 구성
+  - `bori-deploy-scripts` ConfigMap → init container → `/apps/jumi/deploy.sh` 구성
+  - Runner.Run() 완료 → `BoriDataPlane.status.observedGeneration >= 1`
+  - shadow reconcile → `conditions.Installed = True`
+  - `upsertBoriRevision` → BoriRevision CR 생성 확인
+  - BoriRelease.status.activeDataPlanes >= 1
+  - kube-slint SLI measurement (BeforeSuite/AfterSuite 패턴)
 
-**K1 구현 시 결정해야 할 것:**
-- release 파일 포맷 — ConfigMap key-value vs 디렉토리 구조
-- bori-repo 볼륨 대체 방식 — ConfigMap projected volume or init container
-- 테스트 fixture의 release 정의 최소 범위
+**구현 결정:**
+- bori-root 주입: ConfigMap + busybox init container (파일 시스템 구조 구성)
+- 컴포넌트 adapter: shell (no-op `exit 0` 스크립트)
+- 테스트 프레임워크: Ginkgo/Gomega (TD-001 이행)
 
 ---
 
@@ -116,6 +118,7 @@ CI(kind)와 production에서는 명시적 volume source를 사용한다.
 | `kubeconform.yaml` | manifest 검증 | `config/**` 변경 | ubuntu-latest |
 | `kubelint.yaml` | kube-linter | `config/**` 변경 | ubuntu-latest |
 | `kind-boot-smoke.yml` | Layer 2-K0 | workflow_dispatch + paths | ubuntu-latest |
+| `kind-functional-smoke.yml` | Layer 2-K1 | workflow_dispatch + paths | ubuntu-latest |
 | `vm-integration.yml` | Layer 3 | nightly + workflow_dispatch + main push | self-hosted, bori-vm |
 
 **책임 분리 원칙:**
@@ -130,8 +133,8 @@ CI(kind)와 production에서는 명시적 volume source를 사용한다.
 
 | 항목 | K0 Boot | K1 Functional | VM Integration |
 |------|---------|---------------|----------------|
-| SLI 측정 | O (Go 테스트 내) | O | O |
-| sli-summary.json | O (artifacts/kind/) | O | O (공식 baseline) |
+| SLI 측정 | O (BeforeSuite/AfterSuite) | O (BeforeSuite/AfterSuite) | O |
+| sli-summary.json | O (artifacts/kind/) | O (artifacts/kind-func/) | O (공식 baseline) |
 | gate 평가 | summary-only | summary-only | summary-only |
 | hard fail on FAIL | X | X (현재) | X (현재) |
 | baseline 비교 | X | X | 추후 단계 |
@@ -171,9 +174,6 @@ Layer 1(fake client)과 Layer 2(kind)가 각 역할을 충분히 담당한다.
 - `Describe` / `It` 구조로 K0/K1 시나리오를 명확히 구분
 - `--focus` / `--skip` 으로 선택적 시나리오 실행 가능
 
-**전환 시점:**
-K1 functional smoke PR에서 함께 전환한다.
-K0도 이 시점에 Ginkgo로 재작성한다 (표준 testing 코드 제거).
-
-**현재 K0 상태:**
-표준 `testing`으로 작성된 `test/e2e/kind_smoke_test.go`는 K1 전환 PR 전까지 임시로 유지한다.
+**전환 완료 (이 PR):**
+K0 (`kind_smoke_test.go`)와 K1 (`kind_functional_smoke_test.go`) 모두 Ginkgo/Gomega로 작성됐다.
+`BeforeSuite`/`AfterSuite`에서 `sess.Start()`/`sess.End()` 호출 — TD-001 해소.
