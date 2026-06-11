@@ -31,6 +31,7 @@ import (
 	imageswapAdp "github.com/HeaInSeo/bori/adapters/imageswap"
 	koadapter "github.com/HeaInSeo/bori/adapters/ko"
 	kustomizeadapter "github.com/HeaInSeo/bori/adapters/kustomize"
+	manifestadapter "github.com/HeaInSeo/bori/adapters/manifest"
 	shelladapter "github.com/HeaInSeo/bori/adapters/shell"
 	v1alpha1 "github.com/HeaInSeo/bori/apis/bori/v1alpha1"
 	"github.com/HeaInSeo/bori/pkg/adapter"
@@ -266,6 +267,7 @@ func cmdDeploy(args []string) {
 			Environment: env,
 			DryRun:      *dryRun,
 			OutDir:      filepath.Join(runDir, "deploy", cp.Name),
+			BoriRoot:    abs,
 		})
 		cs := artifact.CompStatus{Name: cp.Name}
 		cd := artifact.CompDeploy{Name: cp.Name, Version: cp.Version, Adapter: cp.Adapter}
@@ -886,6 +888,7 @@ func buildAdapterRegistry(appsDir string) map[string]adapter.DeployAdapter {
 		"imageswap": imageswapAdp.New(),
 		"ko":        koadapter.New(appsDir),
 		"kustomize": kustomizeadapter.New(appsDir),
+		"manifest":  manifestadapter.New(),
 		"shell":     shelladapter.New(appsDir),
 	}
 }

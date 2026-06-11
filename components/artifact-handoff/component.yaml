@@ -28,6 +28,7 @@ verificationPolicies:
 deploy:
   namespace: artifact-handoff-system
   bootstrap:
-    adapter: devspace
+    adapter: kustomize
+    path: components/artifact-handoff/deploy/k8s
   update:
     adapter: imageswap

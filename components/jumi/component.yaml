@@ -30,6 +30,7 @@ verificationPolicies:
 deploy:
   namespace: jumi-system
   bootstrap:
-    adapter: devspace
+    adapter: kustomize
+    path: components/jumi/deploy/k8s
   update:
     adapter: imageswap

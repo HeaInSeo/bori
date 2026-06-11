@@ -40,9 +40,14 @@ type DeployConfig struct {
 }
 
 // BootstrapDeploy configures the first-install / full-manifest-apply path.
-// Default driver: devspace.
+// Default driver: kustomize.
 type BootstrapDeploy struct {
 	Adapter string `yaml:"adapter"`
+	// Path is the manifest directory relative to bori-root.
+	// kustomize: kubectl apply -k <bori-root>/<path>
+	// manifest:  kubectl apply -f <bori-root>/<path>
+	// Empty: adapter uses its built-in default (apps-dir lookup).
+	Path string `yaml:"path,omitempty"`
 }
 
 // UpdateDeploy configures the digest-based image-swap path.
@@ -56,7 +61,7 @@ func (d DeployConfig) BootstrapAdapter() string {
 	if d.Bootstrap != nil && d.Bootstrap.Adapter != "" {
 		return d.Bootstrap.Adapter
 	}
-	return "devspace"
+	return "kustomize"
 }
 
 // UpdateAdapter returns the adapter name for the update phase.

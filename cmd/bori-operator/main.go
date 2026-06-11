@@ -32,6 +32,7 @@ import (
 	imageswapAdp "github.com/HeaInSeo/bori/adapters/imageswap"
 	koadapter "github.com/HeaInSeo/bori/adapters/ko"
 	kustomizeadapter "github.com/HeaInSeo/bori/adapters/kustomize"
+	manifestadapter "github.com/HeaInSeo/bori/adapters/manifest"
 	shelladapter "github.com/HeaInSeo/bori/adapters/shell"
 	v1alpha1 "github.com/HeaInSeo/bori/apis/bori/v1alpha1"
 	"github.com/HeaInSeo/bori/controllers"
@@ -119,6 +120,7 @@ func main() {
 		"imageswap": imageswapAdp.New(),
 		"ko":        koadapter.New(appsDir),
 		"kustomize": kustomizeadapter.New(appsDir),
+		"manifest":  manifestadapter.New(),
 		"shell":     shelladapter.New(appsDir),
 	}
 

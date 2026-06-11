@@ -30,7 +30,13 @@ func New(appsDir string) adapter.DeployAdapter {
 func (a *Adapter) Name() string { return "kustomize" }
 
 func (a *Adapter) Deploy(ctx context.Context, req adapter.DeployRequest) (*adapter.DeployResult, error) {
-	overlayDir := filepath.Join(a.AppsDir, req.Component.Name, a.OverlaySubdir)
+	var overlayDir string
+	bootstrap := req.Component.Deploy.Bootstrap
+	if bootstrap != nil && bootstrap.Path != "" && req.BoriRoot != "" {
+		overlayDir = filepath.Join(req.BoriRoot, bootstrap.Path)
+	} else {
+		overlayDir = filepath.Join(a.AppsDir, req.Component.Name, a.OverlaySubdir)
+	}
 	if _, err := os.Stat(overlayDir); err != nil {
 		return nil, fmt.Errorf("kustomize overlay not found: %s", overlayDir)
 	}

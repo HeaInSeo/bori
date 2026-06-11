@@ -25,6 +25,7 @@ func New(appsDir string) adapter.DeployAdapter {
 func (a *Adapter) Name() string { return "devspace" }
 
 func (a *Adapter) Deploy(ctx context.Context, req adapter.DeployRequest) (*adapter.DeployResult, error) {
+	fmt.Fprintln(os.Stderr, "[bori] DEPRECATED: devspace adapter is deprecated; migrate to kustomize or manifest bootstrap adapter")
 	appDir := filepath.Join(a.AppsDir, req.Component.Name)
 	if _, err := os.Stat(appDir); err != nil {
 		return nil, fmt.Errorf("app dir not found: %s", appDir)

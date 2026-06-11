@@ -26,6 +26,7 @@ verificationPolicies:
 deploy:
   namespace: node-sentinel-system
   bootstrap:
-    adapter: devspace
+    adapter: kustomize
+    path: components/node-sentinel/deploy/k8s
   update:
     adapter: imageswap

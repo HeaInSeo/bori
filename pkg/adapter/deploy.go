@@ -24,6 +24,9 @@ type DeployRequest struct {
 	DryRun bool
 	// OutDir is the run archive evidence directory for this component.
 	OutDir string
+	// BoriRoot is the absolute path to the bori repo root.
+	// Adapters that resolve deploy.bootstrap.path (kustomize, manifest) require this.
+	BoriRoot string
 }
 
 // DeployResult is the structured output of a DeployAdapter.Deploy call.

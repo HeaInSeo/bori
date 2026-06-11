@@ -269,6 +269,7 @@ func (r *Reconciler) Run(ctx context.Context, req Request) (*Result, error) {
 			Component:   comp,
 			Environment: env,
 			OutDir:      filepath.Join(runDir, "deploy", cp.Name),
+			BoriRoot:    abs,
 		})
 		cd := artifact.CompDeploy{Name: cp.Name, Version: cp.Version, Adapter: cp.Adapter}
 		if err != nil || (deployResult != nil && !deployResult.Success) {

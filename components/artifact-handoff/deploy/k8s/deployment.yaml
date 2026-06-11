@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: artifact-handoff
+  namespace: artifact-handoff-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: artifact-handoff
+  template:
+    metadata:
+      labels:
+        app: artifact-handoff
+    spec:
+      containers:
+        - name: artifact-handoff
+          image: ghcr.io/heainseo/artifact-handoff:v0.2.0
+          ports:
+            - name: metrics
+              containerPort: 8080
+            - name: health
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
