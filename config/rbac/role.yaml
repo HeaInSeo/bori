@@ -47,10 +47,17 @@ rules:
   - apiGroups: ["bori.dev"]
     resources: ["boriverificationruns/status"]
     verbs: ["get", "update", "patch"]
-  # Namespace read — enforces NamespacePolicy allowed list
+  # Namespace — read for NamespacePolicy; create/patch for kubeapply bootstrap
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # Core workload resources managed by kubeapply bootstrap adapter
+  - apiGroups: [""]
+    resources: ["services", "serviceaccounts", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "daemonsets", "statefulsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
   # Leader election
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
