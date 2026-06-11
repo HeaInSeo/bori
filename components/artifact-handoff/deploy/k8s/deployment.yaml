@@ -13,6 +13,8 @@ spec:
       labels:
         app: artifact-handoff
     spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
       containers:
         - name: artifact-handoff
           image: ghcr.io/heainseo/artifact-handoff:v0.2.0
