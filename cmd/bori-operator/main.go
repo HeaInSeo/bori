@@ -31,8 +31,7 @@ import (
 	devspaceadapter "github.com/HeaInSeo/bori/adapters/devspace"
 	imageswapAdp "github.com/HeaInSeo/bori/adapters/imageswap"
 	koadapter "github.com/HeaInSeo/bori/adapters/ko"
-	kustomizeadapter "github.com/HeaInSeo/bori/adapters/kustomize"
-	manifestadapter "github.com/HeaInSeo/bori/adapters/manifest"
+	kubeapplyadapter "github.com/HeaInSeo/bori/adapters/kubeapply"
 	shelladapter "github.com/HeaInSeo/bori/adapters/shell"
 	v1alpha1 "github.com/HeaInSeo/bori/apis/bori/v1alpha1"
 	"github.com/HeaInSeo/bori/controllers"
@@ -115,12 +114,15 @@ func main() {
 		ctrl.Log.WithName("reconciler").Info(fmt.Sprintf(f, a...))
 	}
 	runner := reconcilepkg.NewReconciler(appsDir, logf)
+	// kustomize and manifest are backed by in-process SSA in the operator
+	// (distroless image has no kubectl). The CLI uses the kubectl-backed adapters.
+	kubeApply := kubeapplyadapter.New(mgr.GetClient())
 	runner.AdapterRegistry = map[string]adapter.DeployAdapter{
 		"devspace":  devspaceadapter.New(appsDir),
 		"imageswap": imageswapAdp.New(),
 		"ko":        koadapter.New(appsDir),
-		"kustomize": kustomizeadapter.New(appsDir),
-		"manifest":  manifestadapter.New(),
+		"kustomize": kubeApply,
+		"manifest":  kubeApply,
 		"shell":     shelladapter.New(appsDir),
 	}
 
