@@ -1,9 +1,9 @@
 name: artifact-handoff
 kind: control-component
-version: v0.2.0
+version: v0.2.1
 
 image:
-  ref: ghcr.io/heainseo/artifact-handoff:v0.2.0
+  ref: ghcr.io/heainseo/artifact-handoff:v0.2.1
 
 ports:
   metrics: 8080

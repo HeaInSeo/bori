@@ -2,9 +2,9 @@ name: jumi-ah-dev
 
 components:
   - name: jumi
-    version: v0.3.0
-  - name: artifact-handoff
     version: v0.2.0
+  - name: artifact-handoff
+    version: v0.2.1
 
 compatibility:
   matrix: compatibility/jumi-ah-nan.yaml

@@ -17,7 +17,7 @@ spec:
         - name: ghcr-pull-secret
       containers:
         - name: jumi
-          image: ghcr.io/heainseo/jumi:v0.3.0
+          image: ghcr.io/heainseo/jumi:v0.2.0
           ports:
             - name: metrics
               containerPort: 8080
