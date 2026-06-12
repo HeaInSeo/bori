@@ -13,3 +13,6 @@ spec:
     - name: health
       port: 8081
       targetPort: 8081
+    - name: grpc
+      port: 9090
+      targetPort: 9090

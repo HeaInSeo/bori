@@ -23,6 +23,8 @@ spec:
               containerPort: 8080
             - name: health
               containerPort: 8081
+            - name: grpc
+              containerPort: 9090
           livenessProbe:
             httpGet:
               path: /healthz

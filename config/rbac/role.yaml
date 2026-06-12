@@ -58,6 +58,10 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "daemonsets", "statefulsets"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # RBAC resources managed by kubeapply bootstrap adapter (e.g. jumi job RBAC)
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
   # Leader election
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
