@@ -19,21 +19,19 @@ spec:
         - name: artifact-handoff
           image: ghcr.io/heainseo/artifact-handoff:v0.2.1
           ports:
-            - name: metrics
+            - name: http
               containerPort: 8080
-            - name: health
-              containerPort: 8081
             - name: grpc
               containerPort: 9090
           livenessProbe:
             httpGet:
               path: /healthz
-              port: health
+              port: http
             initialDelaySeconds: 10
             periodSeconds: 15
           readinessProbe:
             httpGet:
               path: /healthz
-              port: health
+              port: http
             initialDelaySeconds: 5
             periodSeconds: 10
