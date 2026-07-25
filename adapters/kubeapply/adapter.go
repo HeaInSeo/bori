@@ -115,12 +115,9 @@ func (a *Adapter) applyFile(ctx context.Context, filePath string) (int, error) {
 			continue // skip empty/comment-only documents
 		}
 
-		force := true
-		if err := a.Client.Patch(ctx, obj, sigs_client.Apply, &sigs_client.PatchOptions{
-			FieldManager: "bori-operator",
-			Force:        &force,
-		}); err != nil {
-			return applied, fmt.Errorf("SSA patch %s/%s: %w", obj.GetKind(), obj.GetName(), err)
+		applyConfig := sigs_client.ApplyConfigurationFromUnstructured(obj)
+		if err := a.Client.Apply(ctx, applyConfig, sigs_client.FieldOwner("bori-operator"), sigs_client.ForceOwnership); err != nil {
+			return applied, fmt.Errorf("SSA apply %s/%s: %w", obj.GetKind(), obj.GetName(), err)
 		}
 		applied++
 	}

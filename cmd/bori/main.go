@@ -1093,9 +1093,10 @@ func cmdShadowStatus(args []string) {
 	fmt.Println("  Drift:")
 	for _, d := range state.Drift {
 		icon := "="
-		if d.SyncStatus == "out-of-sync" {
+		switch d.SyncStatus {
+		case "out-of-sync":
 			icon = "≠"
-		} else if d.SyncStatus == "unknown" {
+		case "unknown":
 			icon = "?"
 		}
 		fmt.Printf("    %s  %-24s  desired: %-10s  actual: %s\n",
