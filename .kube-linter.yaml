@@ -20,3 +20,8 @@ checks:
     - "required-label-owner"
     # Deployment restartPolicy defaults to Always; explicit declaration not required.
     - "restart-policy"
+    # bori-operator's core function is deploying data-plane workloads via the
+    # kubeapply bootstrap adapter (config/rbac/role.yaml) — create/update/patch
+    # on deployments/daemonsets/statefulsets is the intended capability, not an
+    # over-grant.
+    - "access-to-create-pods"
