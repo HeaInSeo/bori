@@ -1,0 +1,72 @@
+# NetworkPolicy for the artifact-handoff-system namespace.
+#
+# The ingress rule here is the artifact-handoff half of JUMI's own
+# deploy/k8s/network-policy.yaml (github.com/HeaInSeo/JUMI), which bori was
+# missing entirely. JUMI's source policy assumes jumi and artifact-handoff
+# share one namespace (jumi-ah-dev, its local dev-loop model); bori deploys
+# them to separate namespaces (jumi-system / artifact-handoff-system), so the
+# peer selector below uses namespaceSelector + podSelector instead of a
+# same-namespace podSelector, and labels use bori's `app: <name>` convention
+# instead of JUMI's `app.kubernetes.io/name`.
+#
+# Topology:
+#   jumi       → artifact-handoff  :8080 (HTTP)  :9090 (gRPC)
+#   everything → kube-dns          :53
+
+---
+# Deny all ingress and egress by default in the namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: artifact-handoff-system
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# artifact-handoff: allow ingress from jumi only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jumi-to-artifact-handoff-ingress
+  namespace: artifact-handoff-system
+spec:
+  podSelector:
+    matchLabels:
+      app: artifact-handoff
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 8080
+          protocol: TCP
+        - port: 9090
+          protocol: TCP
+      from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: jumi-system
+          podSelector:
+            matchLabels:
+              app: jumi
+
+---
+# All pods: allow egress to kube-dns (UDP and TCP).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: artifact-handoff-system
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

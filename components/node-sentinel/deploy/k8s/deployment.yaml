@@ -1,35 +1,73 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: node-sentinel
-  namespace: node-sentinel-system
+  name: nodesentinel
+  namespace: nodesentinel-system
+  labels:
+    app.kubernetes.io/name: nodesentinel
+    app.kubernetes.io/component: validation-agent
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: node-sentinel
+      app.kubernetes.io/name: nodesentinel
   template:
     metadata:
       labels:
-        app: node-sentinel
+        app.kubernetes.io/name: nodesentinel
+        app.kubernetes.io/component: validation-agent
     spec:
+      serviceAccountName: nodesentinel
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
-        - name: node-sentinel
+        - name: nodesentinel
           image: ghcr.io/heainseo/node-sentinel:v0.1.0
+          imagePullPolicy: IfNotPresent
           ports:
-            - name: metrics
+            - name: grpc
+              containerPort: 50052
+              protocol: TCP
+            - name: http
               containerPort: 8080
-            - name: health
-              containerPort: 8081
+              protocol: TCP
+          env:
+            - name: NODESENTINEL_GRPC_PORT
+              value: "50052"
+            - name: NODESENTINEL_HTTP_PORT
+              value: "8080"
+            - name: NODESENTINEL_DB_PATH
+              value: /var/lib/nodesentinel/nodesentinel.db
+            - name: NODEVAULT_API_ADDR
+              value: http://nodevault-controlplane.nodevault-system.svc:8082
+            - name: SMOKE_NAMESPACE
+              value: nodevault-smoke
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/nodesentinel
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
           livenessProbe:
             httpGet:
               path: /healthz
-              port: health
-            initialDelaySeconds: 10
-            periodSeconds: 15
-          readinessProbe:
-            httpGet:
-              path: /healthz
-              port: health
-            initialDelaySeconds: 5
-            periodSeconds: 10
+              port: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: data
+          emptyDir: {}

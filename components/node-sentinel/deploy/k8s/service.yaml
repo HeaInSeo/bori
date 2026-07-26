@@ -1,15 +1,19 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: node-sentinel
-  namespace: node-sentinel-system
+  name: nodesentinel
+  namespace: nodesentinel-system
+  labels:
+    app.kubernetes.io/name: nodesentinel
 spec:
   selector:
-    app: node-sentinel
+    app.kubernetes.io/name: nodesentinel
   ports:
-    - name: metrics
+    - name: grpc
+      port: 50052
+      targetPort: grpc
+      protocol: TCP
+    - name: http
       port: 8080
-      targetPort: 8080
-    - name: health
-      port: 8081
-      targetPort: 8081
+      targetPort: http
+      protocol: TCP

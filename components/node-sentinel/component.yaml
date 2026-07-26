@@ -24,7 +24,7 @@ verificationPolicies:
   - node-sentinel-smoke
 
 deploy:
-  namespace: node-sentinel-system
+  namespace: nodesentinel-system
   bootstrap:
     adapter: kustomize
     path: components/node-sentinel/deploy/k8s

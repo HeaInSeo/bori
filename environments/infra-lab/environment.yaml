@@ -14,7 +14,8 @@ namespacePolicy:
   allowed:
     - jumi-system
     - artifact-handoff-system
-    - node-sentinel-system
+    - nodesentinel-system
+    - nodevault-smoke
     - tori-system
   allowClusterScopedResources: false
 
