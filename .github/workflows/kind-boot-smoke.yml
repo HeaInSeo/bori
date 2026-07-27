@@ -15,6 +15,9 @@ on:
       - "hack/test-kind-boot-smoke.sh"
       - ".github/workflows/kind-boot-smoke.yml"
 
+permissions:
+  contents: read
+
 jobs:
   kind-boot-smoke:
     name: K0 — kind cluster boot smoke

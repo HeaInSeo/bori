@@ -12,6 +12,9 @@ on:
       - "config/**"
       - ".github/workflows/kubeconform.yaml"
 
+permissions:
+  contents: read
+
 env:
   KUBECONFORM_VERSION: v0.8.0
 

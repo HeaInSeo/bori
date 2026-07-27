@@ -14,6 +14,9 @@ on:
       - ".kube-linter.yaml"
       - ".github/workflows/kubelint.yaml"
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Lint Kubernetes manifests

@@ -21,6 +21,9 @@ on:
       - "hack/test-kind-digest-smoke.sh"
       - ".github/workflows/kind-digest-smoke.yml"
 
+permissions:
+  contents: read
+
 jobs:
   kind-digest-smoke:
     name: K2 — kind digest smoke (imageDigest ComponentStatus)

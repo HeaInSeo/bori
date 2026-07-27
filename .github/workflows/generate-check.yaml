@@ -24,6 +24,9 @@ on:
       - "tools/tools.go"
       - ".github/workflows/generate-check.yaml"
 
+permissions:
+  contents: read
+
 jobs:
   check:
     name: Verify CRD + DeepCopy generated files are up-to-date
