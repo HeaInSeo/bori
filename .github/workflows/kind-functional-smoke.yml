@@ -18,6 +18,9 @@ on:
       - "hack/test-kind-functional-smoke.sh"
       - ".github/workflows/kind-functional-smoke.yml"
 
+permissions:
+  contents: read
+
 jobs:
   kind-functional-smoke:
     name: K1 — kind functional smoke (BoriRevision creation)

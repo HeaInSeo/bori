@@ -18,6 +18,12 @@ on:
       - ".golangci.yml"
       - ".github/workflows/golangci-lint.yaml"
 
+permissions:
+  contents: read
+
+env:
+  GOLANGCI_LINT_VERSION: v2.11.3
+
 jobs:
   lint:
     name: Lint Go code
@@ -33,5 +39,5 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
           install-mode: goinstall
