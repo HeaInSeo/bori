@@ -37,7 +37,7 @@ build-devspace-adapter:
 # ── Test ────────────────────────────────────────────────────────────────────
 
 test:
-	GOPROXY=off go test ./...
+	GOPROXY=off go test -shuffle=on -count=1 ./...
 
 # ── Clean ───────────────────────────────────────────────────────────────────
 
