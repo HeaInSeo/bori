@@ -29,6 +29,23 @@ jobs:
       - name: Validate GitHub Actions workflows
         run: go run "github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_VERSION}"
 
+  module-drift:
+    name: Module Drift
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify go.mod and go.sum are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
   unit-and-build:
     name: Unit tests + build
     runs-on: ubuntu-latest
