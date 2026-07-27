@@ -5,7 +5,27 @@ on:
   push:
     branches: [main]
 
+env:
+  GOVULNCHECK_VERSION: v1.1.4
+  ACTIONLINT_VERSION: v1.7.7
+
 jobs:
+  actionlint:
+    name: Actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Validate GitHub Actions workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_VERSION}
+
   unit-and-build:
     name: Unit tests + build
     runs-on: ubuntu-latest
@@ -26,3 +46,20 @@ jobs:
 
       - name: Build
         run: go build ./...
+
+  vuln-scan:
+    name: Vulnerability Scan (govulncheck)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
+          govulncheck ./...
