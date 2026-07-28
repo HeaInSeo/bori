@@ -45,6 +45,7 @@ jobs:
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
+          test -z "$(git status --porcelain -- go.mod go.sum)"
 
   unit-and-build:
     name: Unit tests + build
