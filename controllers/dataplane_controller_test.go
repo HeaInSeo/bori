@@ -6,12 +6,16 @@ import (
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	v1alpha1 "github.com/HeaInSeo/bori/apis/bori/v1alpha1"
 	reconcilepkg "github.com/HeaInSeo/bori/pkg/reconcile"
@@ -845,4 +849,115 @@ func TestReconcile_namespaceViolation(t *testing.T) {
 	}
 	checkCond(v1alpha1.ConditionViolation, v1alpha1.ConditionTrue)
 	checkCond(v1alpha1.ConditionDegraded, v1alpha1.ConditionTrue)
+}
+
+// TestReconcile_statusPatchConflictErrorRequeuesRatherThanCrashing verifies
+// that a Conflict-typed error returned from the status patch (whatever its
+// source) is surfaced as a normal requeue-with-error rather than a crash or
+// a silently dropped update, and that a subsequent reconcile - once the
+// error clears - patches the status successfully.
+//
+// This does NOT exercise a genuine server-side optimistic-concurrency
+// rejection: reconcileDelete/Reconcile build their patches with plain
+// client.MergeFrom (controllers/dataplane_controller.go:133,180,337), not
+// client.MergeFromWithOptimisticLock{}, so the patch body carries no
+// resourceVersion precondition and a real apiserver would not reject it on
+// a conflicting concurrent write - it would just apply last-write-wins. The
+// interceptor here fabricates an apierrors.NewConflict on the first call
+// regardless of any actual concurrent write, so what this test actually
+// proves is narrower: Reconcile's generic error-handling path (log + return
+// err, letting controller-runtime requeue) behaves correctly for a
+// Conflict-shaped error specifically, not that BoriDataPlane status writes
+// are protected against lost updates from concurrent writers. Whether they
+// should be (i.e. whether to adopt MergeFromWithOptimisticLock) is tracked
+// separately in https://github.com/HeaInSeo/bori/issues/21.
+func TestReconcile_statusPatchConflictErrorRequeuesRatherThanCrashing(t *testing.T) {
+	scheme := setupScheme(t)
+	bdp := newBDP("default", "test-release", "test-release", "dev")
+
+	runner := &mockRunner{
+		result: &reconcilepkg.Result{
+			RunID:        "run-001",
+			Release:      "test-release",
+			DeployStatus: "skipped",
+		},
+	}
+
+	conflictErr := apierrors.NewConflict(
+		schema.GroupResource{Group: "bori.dev", Resource: "boridataplanes"},
+		"test-release",
+		fmt.Errorf("resourceVersion mismatch"),
+	)
+	var statusPatchCalls int
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(bdp).
+		WithObjects(bdp).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourcePatch: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+				statusPatchCalls++
+				if statusPatchCalls == 1 {
+					return conflictErr
+				}
+				return c.SubResource(subResourceName).Patch(ctx, obj, patch, opts...)
+			},
+		}).
+		Build()
+
+	r := &DataPlaneReconciler{
+		Client:          fakeClient,
+		Recorder:        record.NewFakeRecorder(10),
+		Runner:          runner,
+		RequeueInterval: 10 * time.Second,
+	}
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "test-release"}}
+
+	// First reconcile adds the finalizer and requeues (no status patch yet).
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("first Reconcile (add finalizer): %v", err)
+	}
+
+	// Second reconcile: the status patch hits our forced conflict. We do NOT
+	// assert on the returned ctrl.Result.RequeueAfter here: controller-runtime
+	// ignores Result entirely when err is non-nil and requeues via its own
+	// rate-limited backoff instead (see sigs.k8s.io/controller-runtime's
+	// Controller.Reconcile handling), so any value Reconcile happens to
+	// return in Result on the error path doesn't reflect real scheduling
+	// behavior. What matters, and is asserted below, is that Reconcile
+	// returns the error (rather than swallowing it) so controller-runtime's
+	// requeue mechanism actually engages.
+	_, err := r.Reconcile(context.Background(), req)
+	if err == nil {
+		t.Fatal("second Reconcile: want conflict error, got nil")
+	}
+	if !apierrors.IsConflict(err) {
+		t.Fatalf("second Reconcile error = %v, want a Conflict error", err)
+	}
+	if !runner.called {
+		t.Fatal("runner should have run before the status patch conflict")
+	}
+
+	// Third reconcile: the error has cleared, status patch should now
+	// succeed - here err is nil, so Result.RequeueAfter is the real,
+	// meaningful scheduling value.
+	res, err := r.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("third Reconcile (post-conflict retry): %v", err)
+	}
+	if res.RequeueAfter != 10*time.Second {
+		t.Errorf("requeue after successful retry: want 10s, got %v", res.RequeueAfter)
+	}
+
+	var got v1alpha1.BoriDataPlane
+	if err := fakeClient.Get(context.Background(),
+		types.NamespacedName{Namespace: "default", Name: "test-release"}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status.ObservedGeneration != 1 {
+		t.Errorf("observedGeneration after recovered patch: want 1, got %d", got.Status.ObservedGeneration)
+	}
+	if statusPatchCalls != 2 {
+		t.Errorf("status patch attempts: want 2 (1 conflict + 1 success), got %d", statusPatchCalls)
+	}
 }
