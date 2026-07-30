@@ -1,0 +1,15 @@
+# Default owner for every path.
+* @HeaInSeo
+
+# Security and supply-chain policy.
+/Dockerfile @HeaInSeo
+/go.mod @HeaInSeo
+/go.sum @HeaInSeo
+
+# CRD API types and generated deepcopy/manifests.
+/apis/ @HeaInSeo
+/config/crd/ @HeaInSeo
+
+# Deployment and automation guardrails.
+/config/ @HeaInSeo
+/.github/ @HeaInSeo
