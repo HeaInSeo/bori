@@ -6,12 +6,16 @@ import (
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	v1alpha1 "github.com/HeaInSeo/bori/apis/bori/v1alpha1"
 	reconcilepkg "github.com/HeaInSeo/bori/pkg/reconcile"
@@ -845,4 +849,94 @@ func TestReconcile_namespaceViolation(t *testing.T) {
 	}
 	checkCond(v1alpha1.ConditionViolation, v1alpha1.ConditionTrue)
 	checkCond(v1alpha1.ConditionDegraded, v1alpha1.ConditionTrue)
+}
+
+// TestReconcile_statusPatchConflictRequeues verifies that an optimistic-
+// concurrency conflict on the status patch (e.g. another writer updated the
+// BoriDataPlane between our Get and our Patch) is surfaced as a normal
+// requeue-with-error rather than a crash or a silently dropped update, and
+// that a subsequent reconcile - once the conflict clears - patches the
+// status successfully.
+func TestReconcile_statusPatchConflictRequeues(t *testing.T) {
+	scheme := setupScheme(t)
+	bdp := newBDP("default", "test-release", "test-release", "dev")
+
+	runner := &mockRunner{
+		result: &reconcilepkg.Result{
+			RunID:        "run-001",
+			Release:      "test-release",
+			DeployStatus: "skipped",
+		},
+	}
+
+	conflictErr := apierrors.NewConflict(
+		schema.GroupResource{Group: "bori.dev", Resource: "boridataplanes"},
+		"test-release",
+		fmt.Errorf("resourceVersion mismatch"),
+	)
+	var statusPatchCalls int
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(bdp).
+		WithObjects(bdp).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourcePatch: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+				statusPatchCalls++
+				if statusPatchCalls == 1 {
+					return conflictErr
+				}
+				return c.SubResource(subResourceName).Patch(ctx, obj, patch, opts...)
+			},
+		}).
+		Build()
+
+	r := &DataPlaneReconciler{
+		Client:          fakeClient,
+		Recorder:        record.NewFakeRecorder(10),
+		Runner:          runner,
+		RequeueInterval: 10 * time.Second,
+	}
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "test-release"}}
+
+	// First reconcile adds the finalizer and requeues (no status patch yet).
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("first Reconcile (add finalizer): %v", err)
+	}
+
+	// Second reconcile: the status patch hits our forced conflict.
+	res, err := r.Reconcile(context.Background(), req)
+	if err == nil {
+		t.Fatal("second Reconcile: want conflict error, got nil")
+	}
+	if !apierrors.IsConflict(err) {
+		t.Fatalf("second Reconcile error = %v, want a Conflict error", err)
+	}
+	if res.RequeueAfter != 10*time.Second {
+		t.Errorf("requeue after conflict: want 10s, got %v", res.RequeueAfter)
+	}
+	if !runner.called {
+		t.Fatal("runner should have run before the status patch conflict")
+	}
+
+	// Third reconcile: conflict has cleared, status patch should now succeed.
+	res, err = r.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("third Reconcile (post-conflict retry): %v", err)
+	}
+	if res.RequeueAfter != 10*time.Second {
+		t.Errorf("requeue after successful retry: want 10s, got %v", res.RequeueAfter)
+	}
+
+	var got v1alpha1.BoriDataPlane
+	if err := fakeClient.Get(context.Background(),
+		types.NamespacedName{Namespace: "default", Name: "test-release"}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status.ObservedGeneration != 1 {
+		t.Errorf("observedGeneration after recovered patch: want 1, got %d", got.Status.ObservedGeneration)
+	}
+	if statusPatchCalls != 2 {
+		t.Errorf("status patch attempts: want 2 (1 conflict + 1 success), got %d", statusPatchCalls)
+	}
 }
