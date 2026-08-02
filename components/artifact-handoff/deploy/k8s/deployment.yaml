@@ -2,6 +2,8 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: artifact-handoff
+  # namespace differs from the upstream base manifest (which is namespace-less)
+  # on purpose: bori deploys artifact-handoff into its own dedicated namespace.
   namespace: artifact-handoff-system
 spec:
   replicas: 1
@@ -13,16 +15,31 @@ spec:
       labels:
         app: artifact-handoff
     spec:
+      # imagePullSecrets is a bori-specific difference from the upstream base
+      # manifest (which pulls a locally-built dev image). bori pulls the released
+      # image from a private GHCR registry, so a pull secret is required here.
       imagePullSecrets:
         - name: ghcr-pull-secret
       containers:
         - name: artifact-handoff
+          # image differs from the upstream base manifest on purpose: bori pins the
+          # released GHCR image tag instead of the upstream local dev image.
           image: ghcr.io/heainseo/artifact-handoff:v0.2.1
           ports:
             - name: http
               containerPort: 8080
             - name: grpc
               containerPort: 9090
+          env:
+            # AH_STORE_DSN selects the persistence backend.
+            # "memory"             — in-memory only, state lost on restart (default)
+            # "sqlite:/data/ah.db" — SQLite file, survives restarts when /data is persistent
+            #
+            # With the emptyDir volume below, state survives container restarts within
+            # a single Pod lifetime but is lost when the Pod is rescheduled.
+            # For production use a PersistentVolumeClaim and point this at a stable path.
+            - name: AH_STORE_DSN
+              value: "sqlite:/data/ah.db"
           livenessProbe:
             httpGet:
               path: /healthz
@@ -35,3 +52,12 @@ spec:
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
+          volumeMounts:
+            - name: ah-data
+              mountPath: /data
+      volumes:
+        - name: ah-data
+          # emptyDir: state is preserved across container restarts within the same Pod,
+          # but lost when the Pod is rescheduled.
+          # Replace with a PersistentVolumeClaim for durable production deployments.
+          emptyDir: {}
