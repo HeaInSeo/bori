@@ -1,4 +1,4 @@
-.PHONY: build build-bori clean test generate generate-check install-crds uninstall-crds install-rbac regression kind-boot-smoke kind-func-smoke vm-integration
+.PHONY: build build-bori clean test generate generate-check install-crds uninstall-crds install-rbac regression kind-boot-smoke kind-func-smoke vm-integration require-host-repo-path
 
 # ── Code generation ─────────────────────────────────────────────────────────
 
@@ -62,9 +62,17 @@ uninstall-rbac:
 
 # ── Phase 8: Operator deploy ─────────────────────────────────────────────────
 
-deploy: install-crds install-rbac
+# Guard: the operator manifest's bori-repo hostPath is rendered from
+# BORI_HOST_REPO_PATH via envsubst (config/operator/deployment.yaml). This target
+# is a prerequisite of every target that renders/applies that manifest, so a
+# missing value fails loudly BEFORE any kubectl call instead of applying an
+# empty/wrong host path.
+require-host-repo-path:
+	@: "$${BORI_HOST_REPO_PATH:?set BORI_HOST_REPO_PATH to the host bori checkout path}"
+
+deploy: require-host-repo-path install-crds install-rbac
 	kubectl apply -f config/operator/configmap.yaml
-	kubectl apply -f config/operator/deployment.yaml
+	envsubst '$$BORI_HOST_REPO_PATH' < config/operator/deployment.yaml | kubectl apply -f -
 	$(MAKE) regression
 
 regression:
@@ -93,13 +101,13 @@ kind-func-smoke:
 vm-integration:
 	./hack/test-vm-integration.sh $(ARGS)
 
-undeploy:
-	kubectl delete -f config/operator/deployment.yaml --ignore-not-found
+undeploy: require-host-repo-path
+	envsubst '$$BORI_HOST_REPO_PATH' < config/operator/deployment.yaml | kubectl delete -f - --ignore-not-found
 	kubectl delete -f config/operator/configmap.yaml --ignore-not-found
 	$(MAKE) uninstall-rbac
 	$(MAKE) uninstall-crds
 
-deploy-dry-run:
+deploy-dry-run: require-host-repo-path
 	# Validates YAML structure against the API server's known schema.
 	# NOTE: Does NOT compare Go types with CRD YAML — schema drift must be checked
 	# manually. See docs/adr/ADR-002-controller-gen.md for the checklist.
@@ -107,4 +115,7 @@ deploy-dry-run:
 	kubectl apply -f config/operator/namespace.yaml --dry-run=client
 	kubectl apply -f config/rbac/          --dry-run=client
 	kubectl apply -f config/operator/configmap.yaml --dry-run=client
-	kubectl apply -f config/operator/deployment.yaml --dry-run=client
+	# The operator manifest is rendered from BORI_HOST_REPO_PATH via envsubst, so a
+	# literal placeholder can no longer slip through. --dry-run=server (not client)
+	# is required so the API server actually validates the rendered hostPath.
+	envsubst '$$BORI_HOST_REPO_PATH' < config/operator/deployment.yaml | kubectl apply -f - --dry-run=server
