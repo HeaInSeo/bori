@@ -1,3 +1,6 @@
 /devspace
 bin/
 artifacts/
+
+# spec-kit per-feature state (not committed)
+.specify/feature.json
