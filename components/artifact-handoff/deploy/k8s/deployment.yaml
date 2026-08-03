@@ -1,3 +1,11 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: artifact-handoff
+  # namespace matches the Deployment below: bori deploys artifact-handoff into
+  # its own dedicated namespace (see the Deployment's namespace comment).
+  namespace: artifact-handoff-system
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,6 +28,7 @@ spec:
       # image from a private GHCR registry, so a pull secret is required here.
       imagePullSecrets:
         - name: ghcr-pull-secret
+      serviceAccountName: artifact-handoff
       containers:
         - name: artifact-handoff
           # image differs from the upstream base manifest on purpose: bori pins the
@@ -31,6 +40,10 @@ spec:
             - name: grpc
               containerPort: 9090
           env:
+            - name: AH_ADDR
+              value: ":8080"
+            - name: AH_GRPC_ADDR
+              value: ":9090"
             # AH_STORE_DSN selects the persistence backend.
             # "memory"             — in-memory only, state lost on restart (default)
             # "sqlite:/data/ah.db" — SQLite file, survives restarts when /data is persistent
@@ -40,6 +53,13 @@ spec:
             # For production use a PersistentVolumeClaim and point this at a stable path.
             - name: AH_STORE_DSN
               value: "sqlite:/data/ah.db"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
           livenessProbe:
             httpGet:
               path: /healthz
