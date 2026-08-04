@@ -102,3 +102,13 @@ func logSlintSummary(ctx context.Context, sess *slint.Session) {
 		GinkgoWriter.Printf("artifact written: %s\n", summaryPath)
 	}
 }
+
+// findCondition returns the condition with the given type, or nil if not found.
+func findCondition(conds []v1alpha1.Condition, condType string) *v1alpha1.Condition {
+	for i := range conds {
+		if conds[i].Type == condType {
+			return &conds[i]
+		}
+	}
+	return nil
+}
