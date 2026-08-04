@@ -17,7 +17,8 @@
 # K0와의 차이:
 #   - ConfigMap으로 environment + component 파일 주입
 #   - busybox init container로 /bori-config/, /apps/ 구성
-#   - shell adapter가 jumi/deploy.sh (exit 0) 실행 → deploy 성공
+#   - --deploy-dry-run=true: adapter.Deploy() 건너뛰고 revision 프로모션 → deploy 성공
+#     (distroless 런타임에 sh가 없어 shell adapter를 실제 exec할 수 없음. K2와 동일 경로.)
 # ══════════════════════════════════════════════════════════════════════════════
 #
 # 전제 조건:
