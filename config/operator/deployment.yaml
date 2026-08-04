@@ -101,10 +101,19 @@ spec:
               mountPath: /tmp
       volumes:
         - name: bori-repo
-          # Lab: mount the bori repository from the host node.
+          # Lab: mount the bori repository checkout from the host node, read-only,
+          # at /bori (the operator reads it via --bori-root/BORI_ROOT).
           # Production: replace with a PVC or Git sync sidecar.
+          #
+          # The host path is NOT hardcoded to any specific machine: set it via the
+          # BORI_HOST_REPO_PATH environment variable and render this manifest with
+          # `envsubst` before applying, e.g.
+          #   BORI_HOST_REPO_PATH=/abs/path/to/bori envsubst < deployment.yaml | kubectl apply -f -
+          # If BORI_HOST_REPO_PATH is unset it expands to an empty path, which the
+          # API server rejects (hostPath.path is a required value) — so a missing
+          # value fails loudly instead of silently mounting the wrong directory.
           hostPath:
-            path: /opt/go/src/github.com/HeaInSeo/bori
+            path: ${BORI_HOST_REPO_PATH}
             type: Directory
         - name: bori-state
           emptyDir: {}
