@@ -5,8 +5,11 @@
 #     /bori-config/ 와 /apps/ 에 파일 구조로 배치
 #   - --bori-root=/bori-config  (ConfigMap 기반, environment + component 파일 포함)
 #   - --bori-dir=/var/bori-state (writable emptyDir, revision/shadow 기록)
-#   - --apps-dir=/apps           (shell adapter가 /apps/jumi/deploy.sh 실행)
+#   - --apps-dir=/apps           (adapter apps 경로; deploy-dry-run에서는 미사용)
 #   - --requeue-interval=5s      (테스트 응답 속도 향상)
+#   - --deploy-dry-run=true      (K2와 동일: adapter.Deploy() 건너뛰고 revision 프로모션.
+#                                 distroless 런타임에 sh가 없어 shell adapter를 실제
+#                                 exec할 수 없으므로 no-op deploy를 dry-run 경로로 검증.)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -68,6 +71,7 @@ spec:
             - --leader-elect=false
             - --metrics-bind-address=:8080
             - --health-probe-bind-address=:8081
+            - --deploy-dry-run=true
           ports:
             - name: metrics
               containerPort: 8080

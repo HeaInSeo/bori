@@ -1,6 +1,8 @@
 //go:build kindfunc
 
-// K1 functional smoke: bori-root = ConfigMap (environment + component), shell adapter no-op.
+// K1 functional smoke: bori-root = ConfigMap (environment + component),
+// deploy-dry-run no-op deploy (distroless runtime has no shell — see
+// bori-deployment-kind-func.yaml --deploy-dry-run=true).
 // 검증 대상:
 //   - Runner.Run() 완료 → BoriDataPlane.status.observedGeneration >= 1
 //   - shadow reconcile → Installed = True, Promoted = True

@@ -47,6 +47,20 @@ func (a *Adapter) Deploy(ctx context.Context, req adapter.DeployRequest) (*adapt
 		}, nil
 	}
 
+	// Shell capability gate: the shell adapter requires an `sh` interpreter on
+	// PATH. Runtimes without a shell (e.g. distroless) do not have this
+	// capability. Fail fast with an explicit, actionable "unsupported" error
+	// instead of letting exec return a cryptic "sh: not found" that a reconcile
+	// loop would retry indefinitely with no clear cause.
+	if _, err := exec.LookPath("sh"); err != nil {
+		return &adapter.DeployResult{
+			Success: false,
+			Message: "shell adapter requires the shell capability (an `sh` interpreter on PATH), " +
+				"but this runtime has none (e.g. distroless). Select a shell-capable profile or " +
+				"use a typed adapter (manifest/kustomize).",
+		}, fmt.Errorf("shell adapter unsupported: no shell capability (sh not found on PATH): %w", err)
+	}
+
 	// Shell adapter is developer mode only — log a clear warning.
 	fmt.Fprintf(os.Stderr, "[bori] WARNING: shell adapter is developer mode only — unsafe for shared envs\n")
 
