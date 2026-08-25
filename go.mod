@@ -1,6 +1,6 @@
 module github.com/HeaInSeo/bori
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/HeaInSeo/kube-slint v1.7.1
