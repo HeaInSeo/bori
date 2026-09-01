@@ -12,7 +12,7 @@
     {
       "type": "Verified",
       "status": "Unknown",
-      "reason": "NoVerificationRun"
+      "reason": "NotConfigured"
     },
     {
       "type": "Promoted",
