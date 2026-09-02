@@ -159,7 +159,7 @@ SLINT_AVAILABLE=false
 if [ -d "${KUBE_SLINT_DIR}" ] && command -v go &>/dev/null; then
   if [ ! -f "${KUBE_SLINT_DIR}/bin/slint-gate" ]; then
     log "building slint-gate..."
-    (cd "${KUBE_SLINT_DIR}" && GOTMPDIR=/home/heain/gotmp go build -o bin/slint-gate ./cmd/slint-gate 2>&1) && \
+    (cd "${KUBE_SLINT_DIR}" && go build -o bin/slint-gate ./cmd/slint-gate 2>&1) && \
       SLINT_AVAILABLE=true || log "slint-gate build failed (non-fatal)"
   else
     SLINT_AVAILABLE=true
@@ -169,17 +169,19 @@ fi
 if [ "${SLINT_AVAILABLE}" = "true" ]; then
   # sli-summary.json이 있으면 gate 평가, 없으면 skip
   if [ -f "${SLI_SUMMARY_PATH}" ]; then
-    log "running slint-gate (summary-only, fail-on=NONE)..."
+    log "running slint-gate (summary-only, exit-on=NEVER)..."
     "${KUBE_SLINT_DIR}/bin/slint-gate" \
       --measurement-summary "${SLI_SUMMARY_PATH}" \
       --policy "test/e2e/.slint/policy.yaml" \
-      --fail-on NONE \
-      > "${ARTIFACTS_DIR}/slint-gate-summary.json" 2>/dev/null && \
+      --exit-on NEVER \
+      > "${ARTIFACTS_DIR}/slint-gate-summary.json" && \
       log "slint-gate-summary.json saved" || \
-      log "slint-gate evaluation skipped (non-fatal)"
+      log "slint-gate evaluation failed (non-fatal)"
   else
     log "kube-slint: sli-summary.json not yet available"
-    log "  → kube-slint Go 세션 연동은 추후 단계"
+    log "  → producing it requires 'bori verify' (KubeSlintProvider path) against"
+    log "    a locally-kubeconfig'd cluster; this SSH-remote script does not yet"
+    log "    wire that path — see docs/kube-slint-integration.md"
   fi
 else
   log "kube-slint: slint-gate binary not available (non-fatal)"

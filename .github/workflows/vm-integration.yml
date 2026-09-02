@@ -17,6 +17,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # kube-slint provides the slint-gate CLI used by the kube-slint gate step.
+      # actions/checkout rejects paths outside the workspace, so it is cloned to
+      # an in-workspace path and KUBE_SLINT_DIR (below) points at it.
+      # Pinned to the same release bori's go.mod selects (v1.7.1) so the gate
+      # builds the supported CLI, not a moving default branch.
+      - uses: actions/checkout@v7
+        with:
+          repository: HeaInSeo/kube-slint
+          ref: v1.7.1
+          path: kube-slint
+
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -28,7 +39,7 @@ jobs:
           # BORI_VM_REMOTE: SSH target for the remote VM.
           # Configure as a repository variable: Settings → Variables → BORI_VM_REMOTE.
           BORI_VM_REMOTE: ${{ vars.BORI_VM_REMOTE }}
-          KUBE_SLINT_DIR: ${{ github.workspace }}/../kube-slint
+          KUBE_SLINT_DIR: ${{ github.workspace }}/kube-slint
 
       - name: Upload artifacts
         if: always()
