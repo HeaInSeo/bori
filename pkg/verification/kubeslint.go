@@ -14,7 +14,7 @@ import (
 
 // KubeSlintProvider implements Provider using the slint-gate CLI.
 //
-// It calls slint-gate with --fail-on NEVER so that:
+// It calls slint-gate with --exit-on NEVER so that:
 //   - run artifacts (BoriVerificationRun) are always written regardless of gate result
 //   - bori applies FailOn policy independently, per-profile
 //
@@ -49,12 +49,12 @@ func (p *KubeSlintProvider) Run(ctx context.Context, req Request) (*Result, erro
 	gatePath := filepath.Join(req.OutDir, req.App+"-gate-summary.json")
 	startedAt := time.Now().UTC()
 
-	// Call slint-gate with --fail-on NEVER: bori owns the promotion decision.
+	// Call slint-gate with --exit-on NEVER: bori owns the promotion decision.
 	cmd := exec.CommandContext(ctx, p.SlintGateBin,
 		"--measurement-summary", req.MeasurementSummaryPath,
 		"--policy", req.PolicyPath,
 		"--output", gatePath,
-		"--fail-on", "NEVER",
+		"--exit-on", "NEVER",
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

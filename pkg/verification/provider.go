@@ -9,7 +9,7 @@ type FailOn string
 
 const (
 	// FailOnNever means bori reads the JSON result and decides — slint-gate is
-	// called with --fail-on NEVER. This is the recommended mode because it
+	// called with --exit-on NEVER. This is the recommended mode because it
 	// guarantees run artifacts are written regardless of gate outcome.
 	FailOnNever FailOn = "NEVER"
 
