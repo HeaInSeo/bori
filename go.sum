@@ -1,7 +1,7 @@
 cel.dev/expr v0.25.1 h1:1KrZg61W6TWSxuNZ37Xy49ps13NUovb66QLprthtwi4=
 cel.dev/expr v0.25.1/go.mod h1:hrXvqGP6G6gyx8UAHSHJ5RGk//1Oj5nXQ2NI02Nrsg4=
-github.com/HeaInSeo/kube-slint v1.7.1 h1:bajC7mXSgzPXWyKBx1l+PSRPp89hwwQOkYwO+KkCiCY=
-github.com/HeaInSeo/kube-slint v1.7.1/go.mod h1:JOuCMKQzXBde5e/NDx5xfO3IqLmykYkz7Io2tpY3YjA=
+github.com/HeaInSeo/kube-slint v1.7.2-0.20260928232229-703c494ccb84 h1:BKY+IvRrsbfGc9t6SJe0PynvUWWhIXOXWdP9o53J+fw=
+github.com/HeaInSeo/kube-slint v1.7.2-0.20260928232229-703c494ccb84/go.mod h1:JOuCMKQzXBde5e/NDx5xfO3IqLmykYkz7Io2tpY3YjA=
 github.com/Masterminds/semver/v3 v3.4.0 h1:Zog+i5UMtVoCU8oKka5P7i9q9HgrJeGzI9SA1Xbatp0=
 github.com/Masterminds/semver/v3 v3.4.0/go.mod h1:4V+yj/TJE1HU9XfppCwVMZq3I84lprf4nC11bSS5beM=
 github.com/antlr4-go/antlr/v4 v4.13.1 h1:SqQKkuVZ+zWkMMNkjy5FZe5mr5WURWnlpmOuzYWrPrQ=
