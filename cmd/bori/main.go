@@ -473,14 +473,15 @@ func cmdVerify(args []string) {
 		Phase:         "Failed",
 		Result:        string(verification.GateResultNoGrade),
 	}
-	defer func() {
+	writeStatus := func() {
 		status.FinishedAt = time.Now().UTC()
 		if err := artifact.Write(runDir, status); err != nil {
 			fmt.Fprintf(os.Stderr, "[bori] warning: could not write status.json: %v\n", err)
 		} else {
 			logf("run archive: %s/status.json", runDir)
 		}
-	}()
+	}
+	defer writeStatus()
 
 	var targets []verifyTarget
 
@@ -699,6 +700,8 @@ func cmdVerify(args []string) {
 	}
 
 	if verification.IsBlocking(overall, exitFailOn) || halted {
+		// os.Exit skips deferred calls; persist the failed run first.
+		writeStatus()
 		os.Exit(1)
 	}
 }
@@ -920,6 +923,7 @@ func scrapeSummary(
 		msg := security.RedactString(err.Error())
 		fmt.Fprintf(os.Stderr, "[bori] %s: smoke: %v\n", t.Name, msg)
 		cs.Message = msg
+		cs.GateResult = string(verification.GateResultFail)
 		return "", verification.GateResultFail, false
 	}
 

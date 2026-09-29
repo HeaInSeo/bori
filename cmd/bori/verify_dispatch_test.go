@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/HeaInSeo/bori/pkg/artifact"
 	"github.com/HeaInSeo/bori/pkg/collect"
 	"github.com/HeaInSeo/bori/pkg/verification"
 )
@@ -34,6 +36,12 @@ func TestVerifyChild(t *testing.T) {
 // slint-gate that grades every summary PASS.
 func runVerifyChild(t *testing.T, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
+	return runVerifyChildIn(t, filepath.Join(t.TempDir(), ".bori"), args...)
+}
+
+// runVerifyChildIn is runVerifyChild with the run archive written under boriDir.
+func runVerifyChildIn(t *testing.T, boriDir string, args ...string) (stdout, stderr string, exitCode int) {
+	t.Helper()
 	dir := t.TempDir()
 	gate := filepath.Join(dir, "slint-gate")
 	script := "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --output ] && out=$2; shift; done\n" +
@@ -41,7 +49,7 @@ func runVerifyChild(t *testing.T, args ...string) (stdout, stderr string, exitCo
 	if err := os.WriteFile(gate, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	args = append(args, "--slint-gate", gate, "--bori-dir", filepath.Join(dir, ".bori"), "--smoke-wait", "0s")
+	args = append(args, "--slint-gate", gate, "--bori-dir", boriDir, "--smoke-wait", "0s")
 
 	cmd := exec.Command(os.Args[0], "-test.run=^TestVerifyChild$")
 	cmd.Env = append(os.Environ(),
@@ -198,9 +206,96 @@ func TestRunOneVerification_ScrapeSmokeFailureIsFail(t *testing.T) {
 		return map[string]float64{}, nil
 	})
 	prov := &recordingProvider{}
-	_, gr, blocked := runOneVerification(context.Background(), legacyTarget("jumi", writePolicy(t)), "run-1",
+	cs, gr, blocked := runOneVerification(context.Background(), legacyTarget("jumi", writePolicy(t)), "run-1",
 		t.TempDir(), "devspace", "exit 3", 0, testOpts, prov, logNone)
 	if gr != verification.GateResultFail || blocked || len(prov.calls) != 0 {
 		t.Fatalf("result = %s, blocked = %v, gate calls = %d", gr, blocked, len(prov.calls))
+	}
+	if cs.GateResult != string(verification.GateResultFail) {
+		t.Fatalf("component gateResult = %s, want FAIL", cs.GateResult)
+	}
+}
+
+// readRunArchive returns the single run directory written under boriDir.
+func readRunArchive(t *testing.T, boriDir string) string {
+	t.Helper()
+	runs, err := filepath.Glob(filepath.Join(boriDir, "runs", "*"))
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("run dirs = %v, err = %v", runs, err)
+	}
+	return runs[0]
+}
+
+// A release/legacy smoke failure must persist component FAIL, not NO_GRADE,
+// alongside the top-level FAIL.
+func TestVerify_LegacySmokeFailurePersistsComponentFail(t *testing.T) {
+	appsDir := t.TempDir()
+	writeApp(t, appsDir, "jumi")
+	boriDir := filepath.Join(t.TempDir(), ".bori")
+
+	stdout, stderr, code := runVerifyChildIn(t, boriDir, "--apps-dir", appsDir, "--smoke-cmd", "exit 3")
+	if code == 0 {
+		t.Fatalf("smoke failure exited 0\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	st, err := artifact.Read(readRunArchive(t, boriDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Result != string(verification.GateResultFail) || len(st.Components) != 1 ||
+		st.Components[0].GateResult != string(verification.GateResultFail) {
+		t.Fatalf("status.json result = %s, components = %+v", st.Result, st.Components)
+	}
+}
+
+func TestVerify_ReleaseSmokeFailurePersistsComponentFail(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	boriDir := filepath.Join(t.TempDir(), ".bori")
+	stdout, stderr, code := runVerifyChildIn(t, boriDir,
+		"--release", "jumi-ah-dev", "--env", "jumi-ah-dev", "--bori-root", root, "--apps-dir", t.TempDir(),
+		"--smoke-cmd", "exit 3")
+	if code == 0 {
+		t.Fatalf("smoke failure exited 0\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	runDir := readRunArchive(t, boriDir)
+
+	st, err := artifact.Read(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Result != string(verification.GateResultFail) || len(st.Components) == 0 {
+		t.Fatalf("status.json result = %s, components = %+v", st.Result, st.Components)
+	}
+	for _, c := range st.Components {
+		if c.GateResult != string(verification.GateResultFail) {
+			t.Errorf("status.json component %s gateResult = %s, want FAIL", c.Name, c.GateResult)
+		}
+	}
+
+	data, err := os.ReadFile(filepath.Join(runDir, "release-result.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rr artifact.ReleaseResult
+	if err := json.Unmarshal(data, &rr); err != nil {
+		t.Fatal(err)
+	}
+	if rr.GateResult != string(verification.GateResultFail) {
+		t.Fatalf("release-result.json gateResult = %s", rr.GateResult)
+	}
+	affected := 0
+	for _, c := range rr.Components {
+		if !c.Affected {
+			continue
+		}
+		affected++
+		if c.GateResult != string(verification.GateResultFail) {
+			t.Errorf("release-result.json component %s gateResult = %s, want FAIL", c.Name, c.GateResult)
+		}
+	}
+	if affected == 0 {
+		t.Fatalf("release-result.json has no verified components: %+v", rr.Components)
 	}
 }
