@@ -336,7 +336,7 @@ func (p *recordingProvider) Run(_ context.Context, req verification.Request) (*v
 }
 
 func testTarget(name, policyPath string) verifyTarget {
-	return verifyTarget{Name: name, Policies: []resolvedPolicy{{
+	return verifyTarget{Name: name, Producer: true, Policies: []resolvedPolicy{{
 		Name: "slint", PolicyPath: policyPath, FailOn: verification.FailOnFailOrNoGrade, Blocking: true,
 	}}}
 }
@@ -359,7 +359,7 @@ func TestRunOneVerification_UnknownTargetIsNoGradeWithoutGate(t *testing.T) {
 	useSession(t, s)
 	prov := &recordingProvider{}
 	cs, gr, blocked := runOneVerification(context.Background(), testTarget("jumi", writePolicy(t)), "run-1",
-		t.TempDir(), "", 0, testOpts, prov, logNone)
+		t.TempDir(), "devspace", "", 0, testOpts, prov, logNone)
 	if gr != verification.GateResultNoGrade || cs.GateResult != string(verification.GateResultNoGrade) || !blocked {
 		t.Fatalf("result = %s / %s, blocked = %v", gr, cs.GateResult, blocked)
 	}
@@ -375,7 +375,7 @@ func TestRunOneVerification_IncompleteMeasurementIsNoGradeWithoutGate(t *testing
 	})
 	prov := &recordingProvider{}
 	_, gr, blocked := runOneVerification(context.Background(), testTarget("bori-operator", writePolicy(t)), "run-1",
-		t.TempDir(), "", 0, testOpts, prov, logNone)
+		t.TempDir(), "devspace", "", 0, testOpts, prov, logNone)
 	if gr != verification.GateResultNoGrade || !blocked {
 		t.Fatalf("result = %s, blocked = %v; want NO_GRADE, blocked", gr, blocked)
 	}
@@ -388,7 +388,7 @@ func TestRunOneVerification_SmokeFailureIsFail(t *testing.T) {
 	useSession(t, &fakeSession{})
 	prov := &recordingProvider{}
 	_, gr, blocked := runOneVerification(context.Background(), testTarget("bori-operator", writePolicy(t)), "run-1",
-		t.TempDir(), "exit 3", 0, testOpts, prov, logNone)
+		t.TempDir(), "devspace", "exit 3", 0, testOpts, prov, logNone)
 	if gr != verification.GateResultFail || !blocked || len(prov.calls) != 0 {
 		t.Fatalf("result = %s, blocked = %v, gate calls = %d", gr, blocked, len(prov.calls))
 	}
@@ -399,7 +399,7 @@ func TestRunOneVerification_GateReadsProducerSummary(t *testing.T) {
 	prov := &recordingProvider{}
 	runDir := t.TempDir()
 	_, gr, _ := runOneVerification(context.Background(), testTarget("bori-operator", writePolicy(t)), "run-1",
-		runDir, "", 0, testOpts, prov, logNone)
+		runDir, "devspace", "", 0, testOpts, prov, logNone)
 	if gr != verification.GateResultPass {
 		t.Fatalf("result = %s", gr)
 	}
@@ -429,7 +429,7 @@ func TestRunOneVerification_FailOnNeverGateDoesNotHalt(t *testing.T) {
 	prov := &noGradeProvider{}
 	tgt := testTarget("bori-operator", writePolicy(t))
 	tgt.Policies[0].FailOn = verification.FailOnNever
-	_, gr, blocked := runOneVerification(context.Background(), tgt, "run-1", t.TempDir(), "", 0, testOpts, prov, logNone)
+	_, gr, blocked := runOneVerification(context.Background(), tgt, "run-1", t.TempDir(), "devspace", "", 0, testOpts, prov, logNone)
 	if prov.calls != 1 || gr != verification.GateResultNoGrade || blocked {
 		t.Fatalf("gate calls = %d, result = %s, blocked = %v", prov.calls, gr, blocked)
 	}

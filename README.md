@@ -214,13 +214,15 @@ kube-slint (`sess.Start()` / `sess.End()`) is wired to `BeforeSuite` / `AfterSui
 
 ## kube-slint integration
 
-`bori verify` measures through the kube-slint producer (`slint.Session`, curl-pod fetcher). kube-slint owns fetching, selector resolution, computation and the `slo.v4` summary schema. bori supplies the target, smoke step and TrustContract coordinates, then invokes `slint-gate` as a subprocess.
+`bori verify --target <name>` measures through the kube-slint producer (`slint.Session`, curl-pod fetcher). kube-slint owns fetching, selector resolution, computation and the `slo.v4` summary schema. bori supplies the target, smoke step and TrustContract coordinates, then invokes `slint-gate` as a subprocess.
 
 ```
-bori verify  →  Session.Start → smoke → Session.End  →  sli-summary.json (slo.v4)  →  slint-gate --exit-on NEVER  →  gate_result
+bori verify --target  →  Session.Start → smoke → Session.End  →  sli-summary.json (slo.v4)  →  slint-gate --exit-on NEVER  →  gate_result
 ```
 
-Measurement intents come from compile-time target profiles in `cmd/bori/sliprofile.go`. The only profile is `bori-operator` (`bori verify --target bori-operator`). A target without a profile, or an incomplete measurement, is `NO_GRADE`; no gate runs and there is no soft success.
+Target-mode measurement intents come from compile-time target profiles in `cmd/bori/sliprofile.go`. The only profile is `bori-operator` (`bori verify --target bori-operator`). An explicit target without a profile, or an incomplete measurement, is `NO_GRADE`; no gate runs and there is no soft success.
+
+`bori verify --release` and legacy app discovery keep the scrape path: bori scrapes each component's metrics endpoint before and after smoke, writes `sli-summary.json` itself, and gates it with `slint-gate`. They do not use the compile-time profiles.
 
 In `test/e2e/`, kube-slint is imported as a Go library (`//go:build kind || kindfunc`) for in-process SLI measurement during smoke tests.
 

@@ -155,10 +155,16 @@ BORI_RC=$?
 set -e
 
 # The run archive is copied back whatever the outcome. A summary left by an
-# earlier run must never be reported as this run's evidence.
+# earlier run must never be reported as this run's evidence. The archive may be
+# missing (bori failed before writing it, or the copy failed); the search must
+# not abort the script then, so the BORI_RC check and diagnostics below run.
 rm -rf "${ARTIFACTS_DIR}/bori" "${SLI_SUMMARY_PATH}"
 scp -q -r "${REMOTE}:${REMOTE_DIR}/.bori" "${ARTIFACTS_DIR}/bori" || true
-SUMMARY_SRC=$(find "${ARTIFACTS_DIR}/bori" -path '*/evidence/bori-operator/sli-summary.json' 2>/dev/null | head -1)
+SUMMARY_SRC=""
+if [ -d "${ARTIFACTS_DIR}/bori" ]; then
+  SUMMARY_SRC=$(find "${ARTIFACTS_DIR}/bori" -path '*/evidence/bori-operator/sli-summary.json' 2>/dev/null \
+    | head -1) || true
+fi
 if [ -n "${SUMMARY_SRC}" ]; then
   cp "${SUMMARY_SRC}" "${SLI_SUMMARY_PATH}"
 fi
