@@ -3,7 +3,7 @@ module github.com/HeaInSeo/bori
 go 1.26.6
 
 require (
-	github.com/HeaInSeo/kube-slint v1.7.1
+	github.com/HeaInSeo/kube-slint v1.7.2-0.20260928232229-703c494ccb84
 	github.com/google/go-containerregistry v0.22.1
 	github.com/onsi/ginkgo/v2 v2.32.2
 	github.com/onsi/gomega v1.43.0

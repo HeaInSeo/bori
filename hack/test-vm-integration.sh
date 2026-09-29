@@ -4,7 +4,13 @@
 # 책임:
 #   Layer 3: 원격 VM K8s 클러스터에서 전 주기 통합 검증.
 #   scripts/regression-check.sh를 확장하여 추가 시나리오와
-#   kube-slint SLI 측정(sli-summary.json)을 수행한다.
+#   kube-slint SLI 측정(sli-summary.json, slo.v4)을 수행한다.
+#
+# SLI 측정:
+#   `bori verify --target bori-operator`를 VM에서 실행한다. kube-slint producer가
+#   fixture smoke(hack/vm-smoke.sh) 전후를 측정해 slo.v4 sli-summary.json을 쓰고,
+#   bori가 같은 run에서 slint-gate를 실행한다. summary가 없거나 불완전하면
+#   테스트는 실패한다(soft success 없음).
 #
 # 원격 대상: seoy@100.123.80.48 (Tailscale, SSH)
 #
@@ -15,8 +21,7 @@
 # 실패 시 자동 수집 (artifacts/vm/):
 #   conditions-snapshot.json, operator-logs.txt, events.txt,
 #   boridataplanes.yaml, borirevisions.yaml,
-#   metrics-pre.txt, metrics-post.txt, sli-summary.json,
-#   slint-gate-summary.json
+#   sli-summary.json, bori/ (bori verify run archive incl. gate summary)
 
 set -euo pipefail
 
@@ -42,6 +47,12 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ARTIFACTS_DIR="${REPO_ROOT}/artifacts/vm"
 KUBE_SLINT_DIR="${KUBE_SLINT_DIR:-${REPO_ROOT}/../kube-slint}"
 SLI_SUMMARY_PATH="${ARTIFACTS_DIR}/sli-summary.json"
+VM_BIN_DIR="${REPO_ROOT}/bin/vm"
+SLINT_POLICY="test/e2e/.slint/policy.yaml"
+# TrustContract window identity: the logical window is "recreate the fixture and
+# wait for the new object's reconcile" (hack/vm-smoke.sh). Change it when that
+# step changes.
+WINDOW_ID="vm-integration/${FIXTURE_NAME}/recreate-reconcile/v2"
 
 cd "${REPO_ROOT}"
 
@@ -58,18 +69,6 @@ capture_conditions() {
      | jq '{resource: .metadata.name, namespace: .metadata.namespace,
             release: .spec.release, environment: .spec.environment,
             conditions: [.status.conditions[] | {type: .type, status: .status, reason: .reason}]}'"
-}
-
-capture_metrics() {
-  # operator pod에서 wget으로 /metrics 수집
-  local POD
-  POD=$(run_kubectl get pod -n "${NAMESPACE}" \
-    -l app.kubernetes.io/name=bori-operator \
-    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-  if [ -n "${POD}" ]; then
-    run_kubectl exec -n "${NAMESPACE}" "${POD}" \
-      -- wget -qO- http://localhost:8080/metrics 2>/dev/null || true
-  fi
 }
 
 # ── SSH 연결 확인 ─────────────────────────────────────────────────────────────
@@ -107,39 +106,86 @@ collect_artifacts() {
 
 mkdir -p "${ARTIFACTS_DIR}"
 
-# ── 1. fixture 적용 ───────────────────────────────────────────────────────────
-log "applying fixture ${FIXTURE_NAME}..."
-ssh "${REMOTE}" "kubectl apply -f -" < "${FIXTURE}"
+# ── 1. kube-slint 측정 전제: metrics Service + scraper ServiceAccount ──────
+log "applying kube-slint measurement prerequisites..."
+ssh "${REMOTE}" "kubectl apply -f -" < test/e2e/manifests/bori-metrics-service.yaml
+ssh "${REMOTE}" "kubectl apply -f -" < test/e2e/manifests/slint-sa.yaml
 
-# ── 2. pre-workload metrics snapshot ─────────────────────────────────────────
-log "capturing pre-workload metrics..."
-capture_metrics > "${ARTIFACTS_DIR}/metrics-pre.txt" || true
-log "pre-workload metrics saved"
+# ── 2. VM용 bori + slint-gate 빌드 ───────────────────────────────────────────
+[ -d "${KUBE_SLINT_DIR}" ] || fail "kube-slint checkout not found: ${KUBE_SLINT_DIR}"
+command -v go &>/dev/null || fail "go toolchain not found"
+case "$(run_remote uname -m)" in
+  x86_64)  VM_GOARCH=amd64 ;;
+  aarch64) VM_GOARCH=arm64 ;;
+  *)       fail "unsupported VM architecture" ;;
+esac
+mkdir -p "${VM_BIN_DIR}"
+log "building bori and slint-gate (linux/${VM_GOARCH})..."
+CGO_ENABLED=0 GOOS=linux GOARCH="${VM_GOARCH}" go build -o "${VM_BIN_DIR}/bori" ./cmd/bori \
+  || fail "bori build failed"
+(cd "${KUBE_SLINT_DIR}" && CGO_ENABLED=0 GOOS=linux GOARCH="${VM_GOARCH}" \
+  go build -o "${VM_BIN_DIR}/slint-gate" ./cmd/slint-gate) || fail "slint-gate build failed"
 
-# ── 3. reconcile 대기 (최대 90초) ─────────────────────────────────────────────
-log "waiting for operator to reconcile..."
-for i in $(seq 1 18); do
-  GEN=$(run_kubectl get boridataplane "${FIXTURE_NAME}" -n "${NAMESPACE}" \
-    -o jsonpath='{.status.observedGeneration}' 2>/dev/null || echo 0)
-  [ "${GEN:-0}" -ge 1 ] && break
-  sleep 5
-done
-[ "${GEN:-0}" -ge 1 ] || fail "operator did not reconcile within 90s"
-log "reconciled: observedGeneration=${GEN}"
+# ── 3. VM에 run 디렉터리 준비 ────────────────────────────────────────────────
+REMOTE_DIR=$(run_remote mktemp -d /tmp/bori-vm-integration-XXXXXX)
+trap 'ssh "${REMOTE}" rm -rf "${REMOTE_DIR}" || true' EXIT
+scp -q "${VM_BIN_DIR}/bori" "${VM_BIN_DIR}/slint-gate" hack/vm-smoke.sh \
+  "${REMOTE}:${REMOTE_DIR}/"
+scp -q "${FIXTURE}" "${REMOTE}:${REMOTE_DIR}/fixture.yaml"
+scp -q "${SLINT_POLICY}" "${REMOTE}:${REMOTE_DIR}/policy.yaml"
 
-# ── 4. conditions 스냅샷 ──────────────────────────────────────────────────────
+# ── 4. kube-slint producer 측정 (Start → fixture smoke → End → gate) ────────
+# SubjectID: the exact operator image under test, read from the running pod.
+IMAGE_ID=$(run_kubectl get pod -n "${NAMESPACE}" \
+  -l app.kubernetes.io/name=bori-operator \
+  -o jsonpath='{.items[0].status.containerStatuses[0].imageID}' 2>/dev/null || true)
+[ -n "${IMAGE_ID}" ] || fail "cannot read bori-operator imageID"
+SUBJECT_ID="bori-operator@${IMAGE_ID}"
+log "measuring bori-operator (subject=${SUBJECT_ID}, window=${WINDOW_ID})..."
+# --fail-on NEVER keeps the gate summary-only (see ${SLINT_POLICY}); a failed or
+# incomplete measurement still fails bori verify.
+set +e
+ssh "${REMOTE}" "cd '${REMOTE_DIR}' && \
+  SLINT_SA_TOKEN=\$(kubectl -n '${NAMESPACE}' create token kube-slint --duration=1h) \
+  ./bori verify --target bori-operator --policy policy.yaml \
+    --subject-id '${SUBJECT_ID}' --window-id '${WINDOW_ID}' \
+    --smoke-cmd \"bash ./vm-smoke.sh '${NAMESPACE}' '${FIXTURE_NAME}' fixture.yaml\" \
+    --fail-on NEVER --slint-gate ./slint-gate --bori-dir ./.bori -v"
+BORI_RC=$?
+set -e
+
+# The run archive is copied back whatever the outcome. A summary left by an
+# earlier run must never be reported as this run's evidence. The archive may be
+# missing (bori failed before writing it, or the copy failed); the search must
+# not abort the script then, so the BORI_RC check and diagnostics below run.
+rm -rf "${ARTIFACTS_DIR}/bori" "${SLI_SUMMARY_PATH}"
+scp -q -r "${REMOTE}:${REMOTE_DIR}/.bori" "${ARTIFACTS_DIR}/bori" || true
+SUMMARY_SRC=""
+if [ -d "${ARTIFACTS_DIR}/bori" ]; then
+  SUMMARY_SRC=$(find "${ARTIFACTS_DIR}/bori" -path '*/evidence/bori-operator/sli-summary.json' 2>/dev/null \
+    | head -1) || true
+fi
+if [ -n "${SUMMARY_SRC}" ]; then
+  cp "${SUMMARY_SRC}" "${SLI_SUMMARY_PATH}"
+fi
+
+[ "${BORI_RC}" -eq 0 ] || fail "bori verify --target bori-operator failed (rc=${BORI_RC})"
+[ -f "${SLI_SUMMARY_PATH}" ] || fail "kube-slint sli-summary.json was not produced"
+log "sli-summary.json saved: ${SLI_SUMMARY_PATH}"
+
+# ── 5. conditions 스냅샷 ──────────────────────────────────────────────────────
 log "capturing conditions snapshot..."
 SNAPSHOT=$(capture_conditions) || fail "failed to capture conditions"
 echo "${SNAPSHOT}" > "${ARTIFACTS_DIR}/conditions-snapshot.json"
 
-# ── 5. BoriRevision 존재 확인 ────────────────────────────────────────────────
+# ── 6. BoriRevision 존재 확인 ────────────────────────────────────────────────
 log "checking BoriRevision..."
 REV_COUNT=$(run_kubectl get borirevisions -n "${NAMESPACE}" \
   --no-headers 2>/dev/null | wc -l || echo 0)
 log "BoriRevision count: ${REV_COUNT}"
 # count가 0이어도 fail 아님 — release 정의에 따라 달라짐
 
-# ── 6. BoriRelease.status.activeDataPlanes 확인 ───────────────────────────────
+# ── 7. BoriRelease.status.activeDataPlanes 확인 ───────────────────────────────
 log "checking BoriRelease.status.activeDataPlanes..."
 RELEASE=$(run_kubectl get boridataplane "${FIXTURE_NAME}" -n "${NAMESPACE}" \
   -o jsonpath='{.spec.release}' 2>/dev/null || true)
@@ -149,46 +195,7 @@ if [ -n "${RELEASE}" ]; then
   log "  BoriRelease(${RELEASE}).status.activeDataPlanes=${ACTIVE}"
 fi
 
-# ── 7. post-workload metrics snapshot ─────────────────────────────────────────
-log "capturing post-workload metrics..."
-capture_metrics > "${ARTIFACTS_DIR}/metrics-post.txt" || true
-log "post-workload metrics saved"
-
-# ── 8. kube-slint gate (summary-only) ────────────────────────────────────────
-SLINT_AVAILABLE=false
-if [ -d "${KUBE_SLINT_DIR}" ] && command -v go &>/dev/null; then
-  if [ ! -f "${KUBE_SLINT_DIR}/bin/slint-gate" ]; then
-    log "building slint-gate..."
-    (cd "${KUBE_SLINT_DIR}" && go build -o bin/slint-gate ./cmd/slint-gate 2>&1) && \
-      SLINT_AVAILABLE=true || log "slint-gate build failed (non-fatal)"
-  else
-    SLINT_AVAILABLE=true
-  fi
-fi
-
-if [ "${SLINT_AVAILABLE}" = "true" ]; then
-  # sli-summary.json이 있으면 gate 평가, 없으면 skip
-  if [ -f "${SLI_SUMMARY_PATH}" ]; then
-    log "running slint-gate (summary-only, exit-on=NEVER)..."
-    "${KUBE_SLINT_DIR}/bin/slint-gate" \
-      --measurement-summary "${SLI_SUMMARY_PATH}" \
-      --policy "test/e2e/.slint/policy.yaml" \
-      --exit-on NEVER \
-      > "${ARTIFACTS_DIR}/slint-gate-summary.json" && \
-      log "slint-gate-summary.json saved" || \
-      log "slint-gate evaluation failed (non-fatal)"
-  else
-    log "kube-slint: sli-summary.json not yet available"
-    log "  → producing it requires 'bori verify' (KubeSlintProvider path) against"
-    log "    a locally-kubeconfig'd cluster; this SSH-remote script does not yet"
-    log "    wire that path — see docs/kube-slint-integration.md"
-  fi
-else
-  log "kube-slint: slint-gate binary not available (non-fatal)"
-  log "  → kube-slint 활성화: KUBE_SLINT_DIR=${KUBE_SLINT_DIR} 확인"
-fi
-
-# ── 9. baseline 갱신 모드 ─────────────────────────────────────────────────────
+# ── 8. baseline 갱신 모드 ─────────────────────────────────────────────────────
 if [ "${UPDATE_BASELINE}" = "--update-baseline" ]; then
   echo "${SNAPSHOT}" > "${BASELINE}"
   log "conditions baseline updated: ${BASELINE}"
@@ -196,7 +203,7 @@ if [ "${UPDATE_BASELINE}" = "--update-baseline" ]; then
   exit 0
 fi
 
-# ── 10. 회귀 비교 ─────────────────────────────────────────────────────────────
+# ── 9. 회귀 비교 ─────────────────────────────────────────────────────────────
 if [ ! -f "${BASELINE}" ]; then
   log "no conditions baseline found — saving as initial baseline"
   echo "${SNAPSHOT}" > "${BASELINE}"
@@ -221,7 +228,7 @@ if [ "${BASELINE_CONDITIONS}" = "${CURRENT_CONDITIONS}" ]; then
   echo "  VM integration test PASSED"
   echo ""
   echo "  artifacts   : ${ARTIFACTS_DIR}/"
-  [ -f "${SLI_SUMMARY_PATH}" ] && echo "  sli-summary : ${SLI_SUMMARY_PATH}"
+  echo "  sli-summary : ${SLI_SUMMARY_PATH}"
   echo "════════════════════════════════════════════"
   exit 0
 fi

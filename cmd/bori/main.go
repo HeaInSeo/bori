@@ -5,6 +5,7 @@
 //	bori plan                --release <name> --env <name> [--bori-root <dir>]
 //	bori deploy              --release <name> --env <name> [--bori-root <dir>] [--apps-dir <dir>]
 //	bori verify              [--release <name> --env <name>] [--changed <a,b>] [--bori-root <dir>]
+//	bori verify              --target <name> --policy <path> --subject-id <id> --window-id <id> [--smoke-cmd <cmd>]
 //	bori status              --run <run-id> [--bori-dir <dir>]
 //	bori revision            list [--release <name>] [--bori-dir <dir>]
 //	bori rollout             plan --release <name> --env <name> [--bori-root <dir>]
@@ -47,6 +48,7 @@ import (
 	"github.com/HeaInSeo/bori/pkg/security"
 	shadowpkg "github.com/HeaInSeo/bori/pkg/shadow"
 	"github.com/HeaInSeo/bori/pkg/verification"
+	"github.com/HeaInSeo/kube-slint/pkg/slint"
 	"gopkg.in/yaml.v3"
 	sigsyaml "sigs.k8s.io/yaml"
 )
@@ -89,6 +91,7 @@ Usage:
   bori plan              --release <name> --env <name> [--bori-root <dir>]
   bori deploy            --release <name> --env <name> [--bori-root <dir>] [--apps-dir <dir>]
   bori verify            [--release <name> --env <name>] [--changed <a,b>] [--bori-root <dir>]
+  bori verify            --target <name> --policy <path> --subject-id <id> --window-id <id> [--smoke-cmd <cmd>]
   bori status            --run <run-id> [--bori-dir <dir>]
   bori revision list     [--release <name>] [--bori-dir <dir>]
   bori rollout plan      --release <name> --env <name> [--bori-root <dir>]
@@ -362,11 +365,17 @@ type resolvedPolicy struct {
 	Blocking bool
 }
 
-// verifyTarget carries everything the verification loop needs for one component.
-// Each component may have multiple policies; the measurement (sli-summary.json)
-// is built once and evaluated against all policies.
+// verifyTarget carries everything the verification loop needs for one target.
+// Each target may have multiple policies; the measurement (sli-summary.json) is
+// produced once and evaluated against all of them.
+//
+// Producer targets (--target mode) are measured by the kube-slint producer from
+// their compile-time profile (see sliprofile.go). Release and legacy discovery
+// targets are scraped at the component's own metrics endpoint and summarized by
+// Bori (Namespace/ServiceName/Port/MetricsPath).
 type verifyTarget struct {
 	Name        string
+	Producer    bool
 	Namespace   string
 	ServiceName string
 	Port        int
@@ -374,8 +383,18 @@ type verifyTarget struct {
 	Policies    []resolvedPolicy
 }
 
-// cmdVerify runs verification for a release (--release/--env) or
-// via app-directory discovery (legacy --apps-dir mode).
+// measureOptions are the run-wide producer inputs for runOneVerification.
+type measureOptions struct {
+	SubjectID      string
+	WindowID       string
+	ServiceAccount string
+	Token          string
+	CurlImage      string
+}
+
+// cmdVerify runs verification for one compile-time profiled target (--target),
+// a release (--release/--env), or via app-directory discovery (legacy
+// --apps-dir mode).
 func cmdVerify(args []string) {
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
 	// Model-based mode (Phase 3+)
@@ -397,7 +416,43 @@ func cmdVerify(args []string) {
 	// Long-term official path is Phase 12 Bori Ingestion API (ADR-003).
 	kubeNamespace := fs.String("kube-namespace", "bori-system",
 		"Kubernetes namespace for BoriVerificationRun CR (lab fallback — requires KUBECONFIG)")
+	// Target mode: verify one compile-time profiled target (e.g. bori-operator).
+	targetName := fs.String("target", "", "verify one compile-time profiled target (e.g. bori-operator); excludes --release/--apps-dir")
+	targetPolicy := fs.String("policy", "", "slint-gate policy path (required with --target)")
+	targetFailOn := fs.String("fail-on", string(verification.FailOnFailOrNoGrade),
+		"gate result that fails a --target run: NEVER|FAIL|FAIL_OR_NOGRADE|WARN (a failed measurement always fails)")
+	// kube-slint producer inputs. subject-id/window-id are the caller-authoritative
+	// TrustContract coordinates of the slo.v4 measurement.
+	subjectID := fs.String("subject-id", "", "TrustContract subject identity of this measurement (required)")
+	windowID := fs.String("window-id", "", "TrustContract logical measurement window identity (required)")
+	slintSA := fs.String("slint-sa", "kube-slint", "ServiceAccount the kube-slint curl pod runs as")
+	curlImage := fs.String("curl-image", "", "override the kube-slint curl pod image")
 	_ = fs.Parse(args)
+
+	if *targetName != "" && (*releaseName != "" || *appsDir != "") {
+		fatalf("verify: --target cannot be combined with --release or --apps-dir")
+	}
+	if *targetName != "" && *targetPolicy == "" {
+		fatalf("verify: --policy is required with --target")
+	}
+	exitFailOn := verification.FailOnFailOrNoGrade
+	if *targetName != "" {
+		switch f := verification.FailOn(*targetFailOn); f {
+		case verification.FailOnNever, verification.FailOnFail, verification.FailOnFailOrNoGrade, verification.FailOnWarn:
+			exitFailOn = f
+		default:
+			fatalf("verify: unknown --fail-on %q", *targetFailOn)
+		}
+	}
+	// The token is read from the environment so it never appears in argv.
+	token, _ := slint.ReadServiceAccountTokenFromEnv("SLINT_SA_TOKEN", "")
+	mopts := measureOptions{
+		SubjectID:      *subjectID,
+		WindowID:       *windowID,
+		ServiceAccount: *slintSA,
+		Token:          token,
+		CurlImage:      *curlImage,
+	}
 
 	logf := func(string, ...any) {}
 	if *verbose {
@@ -418,21 +473,34 @@ func cmdVerify(args []string) {
 		Phase:         "Failed",
 		Result:        string(verification.GateResultNoGrade),
 	}
-	defer func() {
+	writeStatus := func() {
 		status.FinishedAt = time.Now().UTC()
 		if err := artifact.Write(runDir, status); err != nil {
 			fmt.Fprintf(os.Stderr, "[bori] warning: could not write status.json: %v\n", err)
 		} else {
 			logf("run archive: %s/status.json", runDir)
 		}
-	}()
+	}
+	defer writeStatus()
 
 	var targets []verifyTarget
 
 	var releaseComps map[string]model.BoriComponent // populated in model-based mode
 	var orderedPlanComps []artifact.ComponentPlan   // plan components in dep order
 
-	if *releaseName != "" {
+	if *targetName != "" {
+		// --- Target mode: one compile-time profiled target ---
+		targets = append(targets, verifyTarget{
+			Name:     *targetName,
+			Producer: true,
+			Policies: []resolvedPolicy{{
+				Name:       "slint",
+				PolicyPath: *targetPolicy,
+				FailOn:     exitFailOn,
+				Blocking:   true,
+			}},
+		})
+	} else if *releaseName != "" {
 		// --- Phase 3+4: model-based verification ---
 		if *envName == "" {
 			fatalf("verify: --env is required with --release")
@@ -564,11 +632,11 @@ func cmdVerify(args []string) {
 
 	halted := false
 	for _, t := range targets {
-		cs, gr, blocked := runOneVerification(ctx, t, runID, runDir, *profile, *smokeCmd, *smokeWait, provider, logf)
+		cs, gr, blocked := runOneVerification(ctx, t, runID, runDir, *profile, *smokeCmd, *smokeWait, mopts, provider, logf)
 		compStatuses = append(compStatuses, cs)
 		overall = verification.Max(overall, gr)
 		if blocked {
-			fmt.Fprintf(os.Stderr, "[bori] blocking gate failed for %s — halting verification\n", t.Name)
+			fmt.Fprintf(os.Stderr, "[bori] blocking policy failed for %s — halting verification\n", t.Name)
 			halted = true
 			break
 		}
@@ -619,7 +687,7 @@ func cmdVerify(args []string) {
 
 	fmt.Printf("[bori] overall: %s  run-id: %s", overall, runID)
 	if halted {
-		fmt.Println("  (halted: blocking gate)")
+		fmt.Println("  (halted: blocking policy)")
 	} else {
 		fmt.Println()
 	}
@@ -631,7 +699,9 @@ func cmdVerify(args []string) {
 			string(overall), startedAt, logf)
 	}
 
-	if verification.IsBlocking(overall, verification.FailOnFailOrNoGrade) || halted {
+	if verification.IsBlocking(overall, exitFailOn) || halted {
+		// os.Exit skips deferred calls; persist the failed run first.
+		writeStatus()
 		os.Exit(1)
 	}
 }
@@ -690,74 +760,87 @@ func createVerificationRunCR(runID, release, env, boriDir, namespace, gateResult
 	logf("BoriVerificationRun CR created: %s/%s (lab fallback)", namespace, runID)
 }
 
-// runOneVerification executes the scrape→summary→gate flow for one target.
-// The sli-summary.json is built once and evaluated against ALL policies in t.Policies.
+// scrapeMetrics is the release/legacy metrics scraper; tests replace it.
+var scrapeMetrics = collect.ScrapeMetrics
+
+// runOneVerification executes the measure→gate flow for one target.
+// The sli-summary.json is built once and evaluated against ALL policies in
+// t.Policies.
+//
+// Producer targets (--target mode) are measured by the kube-slint producer
+// from the target's compile-time profile around smoke, which writes one slo.v4
+// summary. A target without a profile, or a measurement that is not complete
+// and trust-correct, is NO_GRADE and no gate runs.
+//
+// Release and legacy discovery targets use the scrape→summary flow: the
+// component's metrics endpoint is scraped before and after smoke and Bori
+// builds the summary. They never use the compile-time profiles.
 // Returns (CompStatus, worstGateResult, blockedByHardGate).
 func runOneVerification(
 	ctx context.Context,
 	t verifyTarget,
 	runID, runDir, profile, smokeCmd string,
 	smokeWait time.Duration,
+	mopts measureOptions,
 	provider verification.Provider,
 	logf func(string, ...any),
 ) (artifact.CompStatus, verification.GateResult, bool) {
 	cs := artifact.CompStatus{Name: t.Name, GateResult: string(verification.GateResultNoGrade)}
 	evidenceDir := filepath.Join(runDir, "evidence", t.Name)
 
-	// Step 1: collect metrics before smoke
-	logf("pre-smoke scrape: %s", t.Name)
-	before, err := collect.ScrapeMetrics(ctx, collect.Target{
-		Namespace:   t.Namespace,
-		ServiceName: t.ServiceName,
-		Port:        t.Port,
-		MetricsPath: t.MetricsPath,
-	})
-	if err != nil {
-		msg := security.RedactString(err.Error())
-		fmt.Fprintf(os.Stderr, "[bori] %s: pre-smoke scrape: %v\n", t.Name, msg)
-		cs.Message = msg
-		return cs, verification.GateResultNoGrade, false
-	}
-	preAt := time.Now().UTC()
+	var summaryPath string
+	if t.Producer {
+		// A blocking policy that cannot be evaluated because the measurement
+		// failed halts verification, whatever its FailOn.
+		blocking := false
+		for _, pol := range t.Policies {
+			blocking = blocking || pol.Blocking
+		}
 
-	if err := runSmoke(ctx, smokeCmd, smokeWait, t.Name, logf); err != nil {
-		msg := security.RedactString(err.Error())
-		fmt.Fprintf(os.Stderr, "[bori] %s: smoke: %v\n", t.Name, msg)
-		cs.Message = msg
-		return cs, verification.GateResultFail, false
+		// Step 1: select the compile-time measurement profile.
+		prof, err := lookupProfile(t.Name)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[bori] %s: %v\n", t.Name, err)
+			cs.Message = err.Error()
+			return cs, verification.GateResultNoGrade, blocking
+		}
+
+		// Step 2: kube-slint producer Start → smoke → End.
+		var smokeErr error
+		logf("kube-slint measurement: %s (%s)", t.Name, prof.SourceConfigID)
+		summaryPath, err = measureAround(ctx, measureRequest{
+			Profile:        prof,
+			RunID:          runID,
+			SubjectID:      mopts.SubjectID,
+			WindowID:       mopts.WindowID,
+			EvidenceDir:    evidenceDir,
+			ServiceAccount: mopts.ServiceAccount,
+			Token:          mopts.Token,
+			CurlImage:      mopts.CurlImage,
+		}, func(ctx context.Context) error {
+			smokeErr = runSmoke(ctx, smokeCmd, smokeWait, t.Name, logf)
+			return smokeErr
+		})
+		if err != nil {
+			msg := security.RedactString(err.Error())
+			fmt.Fprintf(os.Stderr, "[bori] %s: measurement: %v\n", t.Name, msg)
+			cs.Message = msg
+			if smokeErr != nil {
+				cs.GateResult = string(verification.GateResultFail)
+				return cs, verification.GateResultFail, blocking
+			}
+			return cs, verification.GateResultNoGrade, blocking
+		}
+	} else {
+		var ok bool
+		var gr verification.GateResult
+		summaryPath, gr, ok = scrapeSummary(ctx, t, &cs, evidenceDir, profile, smokeCmd, smokeWait, logf)
+		if !ok {
+			return cs, gr, false
+		}
 	}
 
-	// Step 2: collect metrics after smoke
-	logf("post-smoke scrape: %s", t.Name)
-	after, err := collect.ScrapeMetrics(ctx, collect.Target{
-		Namespace:   t.Namespace,
-		ServiceName: t.ServiceName,
-		Port:        t.Port,
-		MetricsPath: t.MetricsPath,
-	})
-	if err != nil {
-		msg := security.RedactString(err.Error())
-		fmt.Fprintf(os.Stderr, "[bori] %s: post-smoke scrape: %v\n", t.Name, msg)
-		cs.Message = msg
-		return cs, verification.GateResultNoGrade, false
-	}
-	postAt := time.Now().UTC()
-
-	// Step 3: build ONE sli-summary.json shared by all policies
-	summaryReq := adapter.RunRequest{
-		Profile: profile,
-		App:     t.Name,
-		Before:  adapter.AppSnapshot{App: t.Name, At: preAt, Values: before},
-		After:   adapter.AppSnapshot{App: t.Name, At: postAt, Values: after},
-	}
-	summaryPath, err := adapter.BuildMeasurementSummary(summaryReq, evidenceDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[bori] %s: build summary: %v\n", t.Name, err)
-		cs.Message = err.Error()
-		return cs, verification.GateResultNoGrade, false
-	}
-
-	// Step 4: evaluate each policy against the same summary
+	// Step 3: evaluate each policy against the same summary
 	overall := verification.GateResultPass
 	for _, pol := range t.Policies {
 		if _, statErr := os.Stat(pol.PolicyPath); os.IsNotExist(statErr) {
@@ -805,6 +888,69 @@ func runOneVerification(
 
 	cs.GateResult = string(overall)
 	return cs, overall, false
+}
+
+// scrapeSummary runs the release/legacy scrape→smoke→scrape flow for t and
+// builds its sli-summary.json. When it cannot, it records the reason in cs and
+// returns ok=false with the target's result.
+func scrapeSummary(
+	ctx context.Context,
+	t verifyTarget,
+	cs *artifact.CompStatus,
+	evidenceDir, profile, smokeCmd string,
+	smokeWait time.Duration,
+	logf func(string, ...any),
+) (summaryPath string, gr verification.GateResult, ok bool) {
+	target := collect.Target{
+		Namespace:   t.Namespace,
+		ServiceName: t.ServiceName,
+		Port:        t.Port,
+		MetricsPath: t.MetricsPath,
+	}
+
+	// Step 1: collect metrics before smoke
+	logf("pre-smoke scrape: %s", t.Name)
+	before, err := scrapeMetrics(ctx, target)
+	if err != nil {
+		msg := security.RedactString(err.Error())
+		fmt.Fprintf(os.Stderr, "[bori] %s: pre-smoke scrape: %v\n", t.Name, msg)
+		cs.Message = msg
+		return "", verification.GateResultNoGrade, false
+	}
+	preAt := time.Now().UTC()
+
+	if err := runSmoke(ctx, smokeCmd, smokeWait, t.Name, logf); err != nil {
+		msg := security.RedactString(err.Error())
+		fmt.Fprintf(os.Stderr, "[bori] %s: smoke: %v\n", t.Name, msg)
+		cs.Message = msg
+		cs.GateResult = string(verification.GateResultFail)
+		return "", verification.GateResultFail, false
+	}
+
+	// Step 2: collect metrics after smoke
+	logf("post-smoke scrape: %s", t.Name)
+	after, err := scrapeMetrics(ctx, target)
+	if err != nil {
+		msg := security.RedactString(err.Error())
+		fmt.Fprintf(os.Stderr, "[bori] %s: post-smoke scrape: %v\n", t.Name, msg)
+		cs.Message = msg
+		return "", verification.GateResultNoGrade, false
+	}
+	postAt := time.Now().UTC()
+
+	// Build ONE sli-summary.json shared by all policies
+	summaryPath, err = adapter.BuildMeasurementSummary(adapter.RunRequest{
+		Profile: profile,
+		App:     t.Name,
+		Before:  adapter.AppSnapshot{App: t.Name, At: preAt, Values: before},
+		After:   adapter.AppSnapshot{App: t.Name, At: postAt, Values: after},
+	}, evidenceDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[bori] %s: build summary: %v\n", t.Name, err)
+		cs.Message = err.Error()
+		return "", verification.GateResultNoGrade, false
+	}
+	return summaryPath, verification.GateResultPass, true
 }
 
 // resolvePolicies returns all resolved verification policies for a component.
