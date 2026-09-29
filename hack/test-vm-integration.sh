@@ -49,9 +49,10 @@ KUBE_SLINT_DIR="${KUBE_SLINT_DIR:-${REPO_ROOT}/../kube-slint}"
 SLI_SUMMARY_PATH="${ARTIFACTS_DIR}/sli-summary.json"
 VM_BIN_DIR="${REPO_ROOT}/bin/vm"
 SLINT_POLICY="test/e2e/.slint/policy.yaml"
-# TrustContract window identity: the logical window is "apply the fixture and
-# wait for its reconcile" (hack/vm-smoke.sh). Change it when that step changes.
-WINDOW_ID="vm-integration/${FIXTURE_NAME}/apply-reconcile/v1"
+# TrustContract window identity: the logical window is "recreate the fixture and
+# wait for the new object's reconcile" (hack/vm-smoke.sh). Change it when that
+# step changes.
+WINDOW_ID="vm-integration/${FIXTURE_NAME}/recreate-reconcile/v2"
 
 cd "${REPO_ROOT}"
 

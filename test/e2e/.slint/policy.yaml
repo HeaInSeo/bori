@@ -1,63 +1,39 @@
-# kube-slint gate policy for bori-operator.
+# kube-slint gate policy for the bori-operator VM target.
 #
-# Phase: summary-only — gate 평가 결과를 artifact에 기록하지만 CI를 fail시키지 않는다.
-# baseline/gate → hard fail 연동은 SLI 값이 안정화된 후 별도 결정.
+# Every ID below must match an intent of the compile-time bori-operator profile
+# (cmd/bori/sliprofile.go). cmd/bori/policy_test.go evaluates this file with the
+# kube-slint gate against a summary produced by that profile.
 #
-# fail-on: NONE  → FAIL 등급이어도 exit 0
-# (slint-gate --fail-on NONE 또는 --fail-on "" 와 동일 효과)
-gate:
-  fail_on: NONE
+# Phase: summary-only. The VM run invokes the gate with `--fail-on NEVER`, so a
+# gate grade is recorded in the run archive but never fails CI. Hard-fail
+# thresholds and Protected Qualification need a separate central decision.
+#
+# - reconcile-delta >= 1 carries over the legacy rule "warn if no reconcile
+#   happened". threshold_miss is not promoted, so a miss grades WARN, never FAIL.
+# - The other three intents are listed as informational: measured and covered,
+#   but not graded.
+# - coverage_gap is promoted: a measured SLI that this policy does not name
+#   (for example a renamed intent) grades FAIL instead of passing unnoticed.
+schema_version: "slint.policy.v2"
 
-specs:
-  # controller-runtime reconcile 총 횟수 delta
-  - id: bori_reconcile_delta
-    title: BoriDataPlane Reconcile Delta
-    unit: count
-    kind: delta_counter
-    inputs:
-      - key: controller_runtime_reconcile_total
-        labels:
-          controller: boridataplane
-    compute:
-      mode: delta
-    judge:
-      rules:
-        - op: lt
-          target: 1
-          level: warn    # reconcile이 한 번도 안 일어나면 warn (fail 아님)
+thresholds:
+  - name: "reconcile-delta-min"
+    metric: "reconcile-delta"
+    operator: ">="
+    value: 1
 
-  # reconcile 에러 delta
-  - id: bori_reconcile_errors_delta
-    title: BoriDataPlane Reconcile Errors Delta
-    unit: count
-    kind: delta_counter
-    inputs:
-      - key: controller_runtime_reconcile_errors_total
-        labels:
-          controller: boridataplane
-    compute:
-      mode: delta
+regression:
+  enabled: false
 
-  # workqueue depth (종료 시점)
-  - id: bori_workqueue_depth_end
-    title: BoriDataPlane Workqueue Depth
-    unit: count
-    kind: gauge
-    inputs:
-      - key: workqueue_depth
-        labels:
-          name: boridataplane
-    compute:
-      mode: end
+reliability:
+  required: false
 
-  # REST client 에러 delta
-  - id: bori_rest_errors_delta
-    title: REST Client Errors Delta
-    unit: count
-    kind: delta_counter
-    inputs:
-      - key: rest_client_requests_total
-        labels:
-          code: "5[0-9][0-9]"
-    compute:
-      mode: delta
+coverage:
+  required: true
+  informational:
+    - "reconcile-errors-delta"
+    - "workqueue-depth-end"
+    - "rest-errors-delta"
+
+promote_to_fail:
+  - "coverage_gap"
