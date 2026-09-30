@@ -361,6 +361,22 @@ func TestS17b_DependencyRecreatedWithDifferentContractIsNotSilentlyRebound(t *te
 	}
 }
 
+func TestS19_DependencyContractRevisedWithSameCapabilityIsNotSilentlyRebound(t *testing.T) {
+	s := pipelineSnapshot(true)
+	revised := resolverContract()
+	revised.Identity.SpecDigest = "sha256:res2" // same qualified capability type
+	s.Contracts[0] = revised
+	s.Targets[0].ContractRef = revised.Identity
+	// Fresh evidence under the revised contract: the resolver itself is fine.
+	s.Observations[0] = observe(s.Targets[0], "resolve-api-serving", Bool(true), fresh)
+	a := mustEval(t, s)
+	expectCap(t, a, "t-resolver", "resolve-artifact", Available)
+	// The worker is still pinned to the old digest and must not follow.
+	c := expectCap(t, a, "t-worker", "submit-work", Unknown)
+	expectReason(t, c.Reasons, ReasonDependencyContractMismatch, "t-resolver")
+	expectCap(t, a, "t-worker", "observe-running-work", Available)
+}
+
 // ── S18 cycles ──────────────────────────────────────────────────────────────
 
 func TestS18_LocalCapabilityCycleIsInvalidContract(t *testing.T) {

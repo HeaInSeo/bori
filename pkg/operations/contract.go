@@ -219,7 +219,61 @@ func (c Contract) Validate() []string {
 			}
 		}
 	}
+	if cyc := c.localCycle(); len(cyc) > 0 {
+		add("capability dependency cycle: %v", cyc)
+	}
 	return errs
+}
+
+// localCycle returns the capability names of one local-capability cycle, if
+// any. A cycle is an invalid contract; it is never resolved optimistically.
+// Envelopes reference only assertions, so they cannot close a cycle.
+func (c Contract) localCycle() []string {
+	const (
+		unvisited = iota
+		onStack
+		done
+	)
+	state := map[string]int{}
+	var stack []string
+	var visit func(string) []string
+	visit = func(n string) []string {
+		state[n] = onStack
+		stack = append(stack, n)
+		cp, _ := c.capability(n)
+		for _, r := range cp.Requirements {
+			m := r.LocalCapability
+			if m == "" {
+				continue
+			}
+			if _, ok := c.capability(m); !ok {
+				continue
+			}
+			switch state[m] {
+			case onStack:
+				for i, s := range stack {
+					if s == m {
+						return append([]string(nil), stack[i:]...)
+					}
+				}
+			case unvisited:
+				if cyc := visit(m); cyc != nil {
+					return cyc
+				}
+			}
+		}
+		stack = stack[:len(stack)-1]
+		state[n] = done
+		return nil
+	}
+	for _, cp := range c.Capabilities {
+		if state[cp.Type.Name] == unvisited {
+			if cyc := visit(cp.Type.Name); cyc != nil {
+				return cyc
+			}
+		}
+	}
+	return nil
 }
 
 func (c Contract) capability(name string) (Capability, bool) {
