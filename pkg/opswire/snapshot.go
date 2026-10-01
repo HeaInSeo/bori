@@ -41,6 +41,9 @@ type Input struct {
 type Built struct {
 	Snapshot operations.Snapshot
 	Wire     map[string]TargetWire
+	// namespaceOf maps every OperationalTarget UID to its namespace; status
+	// projection uses it to keep foreign identities out of reason details.
+	namespaceOf map[string]string
 }
 
 // TargetWire holds wire-level results for one target.
@@ -62,8 +65,9 @@ type TargetWire struct {
 // cross-namespace grants, and exact dependency instance pinning.
 func Build(in Input) Built {
 	b := Built{
-		Snapshot: operations.Snapshot{At: in.At, Observations: in.Observations},
-		Wire:     map[string]TargetWire{},
+		Snapshot:    operations.Snapshot{At: in.At, Observations: in.Observations},
+		Wire:        map[string]TargetWire{},
+		namespaceOf: map[string]string{},
 	}
 	grants := newGrantIndex(in.Grants)
 
@@ -77,6 +81,7 @@ func Build(in Input) Built {
 	for i := range in.Targets {
 		t := &in.Targets[i]
 		targets[types.NamespacedName{Namespace: t.Namespace, Name: t.Name}] = t
+		b.namespaceOf[string(t.UID)] = t.Namespace
 	}
 
 	for i := range in.Targets {

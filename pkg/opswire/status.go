@@ -45,7 +45,7 @@ func Project(t *opsv1.OperationalTarget, b Built, a operations.Assessment) opsv1
 		return st
 	}
 	st.Valid = ta.Valid
-	st.InvalidReasons = limit(reasons(ta.InvalidReasons, tw), maxInvalidReasons)
+	st.InvalidReasons = limit(reasons(ta.InvalidReasons, tw, t.Namespace, b.namespaceOf), maxInvalidReasons)
 	for _, e := range ta.Evidence {
 		ref := e.EvidenceRef
 		if len(ref) > maxEvidenceRef {
@@ -63,7 +63,7 @@ func Project(t *opsv1.OperationalTarget, b Built, a operations.Assessment) opsv1
 		st.Capabilities = append(st.Capabilities, opsv1.CapabilityStatus{
 			Type:    opsv1.CapabilityType{Domain: c.Type.Domain, Name: c.Type.Name, Revision: c.Type.Revision},
 			State:   string(c.State),
-			Reasons: limit(reasons(c.Reasons, tw), maxReasons),
+			Reasons: limit(reasons(c.Reasons, tw, t.Namespace, b.namespaceOf), maxReasons),
 		})
 	}
 	for _, e := range ta.Envelopes {
@@ -71,7 +71,7 @@ func Project(t *opsv1.OperationalTarget, b Built, a operations.Assessment) opsv1
 			Name:    e.Name,
 			Class:   string(e.Class),
 			State:   string(e.State),
-			Reasons: limit(reasons(e.Reasons, tw), maxReasons),
+			Reasons: limit(reasons(e.Reasons, tw, t.Namespace, b.namespaceOf), maxReasons),
 		})
 	}
 	return st
@@ -80,13 +80,20 @@ func Project(t *opsv1.OperationalTarget, b Built, a operations.Assessment) opsv1
 // reasons copies O1 reasons into bounded wire reasons. For a dependency bound
 // into another namespace only the reason code, subject and the dependency's
 // capability state are exposed, never details about the other namespace's
-// objects or evidence.
-func reasons(rs []operations.Reason, tw TargetWire) []opsv1.StatusReason {
+// objects or evidence. A dependency-cycle detail is kept only when every
+// cycle member is a target in the projecting target's own namespace;
+// otherwise it would disclose targets the projecting target never bound.
+func reasons(rs []operations.Reason, tw TargetWire, ns string, namespaceOf map[string]string) []opsv1.StatusReason {
 	var out []opsv1.StatusReason
 	for _, r := range rs {
 		detail := r.Detail
-		if strings.HasPrefix(string(r.Code), "dependency-") && r.Code != operations.ReasonDependencyUnmet &&
-			tw.CrossNamespaceSlots[dependencySlot(r.Subject)] {
+		switch {
+		case r.Code == operations.ReasonDependencyCycle:
+			if !cycleWithinNamespace(detail, ns, namespaceOf) {
+				detail = ""
+			}
+		case strings.HasPrefix(string(r.Code), "dependency-") && r.Code != operations.ReasonDependencyUnmet &&
+			tw.CrossNamespaceSlots[dependencySlot(r.Subject)]:
 			detail = ""
 		}
 		out = append(out, opsv1.StatusReason{
@@ -96,6 +103,26 @@ func reasons(rs []operations.Reason, tw TargetWire) []opsv1.StatusReason {
 		})
 	}
 	return out
+}
+
+// cycleWithinNamespace reports whether an O1 cycle detail ("cycle members:
+// <uid>/<capability>,...") names only targets in ns. Anything it cannot parse
+// is treated as foreign (fail closed).
+func cycleWithinNamespace(detail, ns string, namespaceOf map[string]string) bool {
+	members, ok := strings.CutPrefix(detail, "cycle members: ")
+	if !ok || members == "" {
+		return false
+	}
+	for _, m := range strings.Split(members, ",") {
+		uid, _, ok := strings.Cut(m, "/")
+		if !ok || uid == "" {
+			return false
+		}
+		if got, known := namespaceOf[uid]; !known || got != ns {
+			return false
+		}
+	}
+	return true
 }
 
 func dependencySlot(subject string) string {
