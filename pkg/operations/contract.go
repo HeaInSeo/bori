@@ -27,8 +27,10 @@ type AssertionSlot struct {
 	MaxAge time.Duration
 }
 
+// admits reports whether v is a canonical value of the slot's type and, for an
+// enum slot, one of its declared values. No value is coerced.
 func (s AssertionSlot) admits(v Value) bool {
-	if v.Type != s.Type {
+	if v.Type != s.Type || !v.canonical() {
 		return false
 	}
 	if s.Type != TypeString || len(s.Enum) == 0 {

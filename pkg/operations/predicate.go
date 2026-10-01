@@ -26,6 +26,40 @@ func Bool(b bool) Value     { return Value{Type: TypeBoolean, Bool: b} }
 func Int(i int64) Value     { return Value{Type: TypeInteger, Int: i} }
 func String(s string) Value { return Value{Type: TypeString, Str: s} }
 
+// canonical reports whether only the field selected by Type is set. A
+// non-canonical value never takes part in semantic comparison; evidence
+// carrying one is rejected as a type mismatch and an operand carrying one makes
+// the contract invalid.
+func (v Value) canonical() bool {
+	switch v.Type {
+	case TypeBoolean:
+		return v.Int == 0 && v.Str == ""
+	case TypeInteger:
+		return !v.Bool && v.Str == ""
+	case TypeString:
+		return !v.Bool && v.Int == 0
+	}
+	return false
+}
+
+// equal is typed equality: values of different types are never equal and only
+// the field selected by Type is compared. Eq, NotEq and same-instant conflict
+// detection all use it.
+func (v Value) equal(o Value) bool {
+	if v.Type != o.Type {
+		return false
+	}
+	switch v.Type {
+	case TypeBoolean:
+		return v.Bool == o.Bool
+	case TypeInteger:
+		return v.Int == o.Int
+	case TypeString:
+		return v.Str == o.Str
+	}
+	return false
+}
+
 func (v Value) String() string {
 	switch v.Type {
 	case TypeBoolean:
@@ -79,14 +113,14 @@ func (p Predicate) validate(slots map[string]AssertionSlot) error {
 			return fmt.Errorf("%s operand type %q does not match %s assertion %q", p.Op, p.Operand.Type, slot.Type, p.Assertion)
 		}
 		if !slot.admits(p.Operand) {
-			return fmt.Errorf("%s operand %s is not a declared enum value of %q", p.Op, p.Operand, p.Assertion)
+			return fmt.Errorf("%s operand %s is non-canonical or not a declared enum value of %q", p.Op, p.Operand, p.Assertion)
 		}
 	case OpGte, OpLte:
 		if slot.Type != TypeInteger {
 			return fmt.Errorf("%s on %s assertion %q", p.Op, slot.Type, p.Assertion)
 		}
-		if p.Operand.Type != TypeInteger {
-			return fmt.Errorf("%s operand type %q on Integer assertion %q", p.Op, p.Operand.Type, p.Assertion)
+		if p.Operand.Type != TypeInteger || !p.Operand.canonical() {
+			return fmt.Errorf("%s operand %s is not a canonical Integer for assertion %q", p.Op, p.Operand, p.Assertion)
 		}
 	default:
 		return fmt.Errorf("unknown operator %q on %q", p.Op, p.Assertion)
@@ -103,9 +137,9 @@ func (p Predicate) eval(v Value) bool {
 	case OpIsFalse:
 		return !v.Bool
 	case OpEq:
-		return v == p.Operand
+		return v.equal(p.Operand)
 	case OpNotEq:
-		return v != p.Operand
+		return !v.equal(p.Operand)
 	case OpGte:
 		return v.Int >= p.Operand.Int
 	case OpLte:

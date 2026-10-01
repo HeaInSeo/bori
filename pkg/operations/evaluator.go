@@ -64,6 +64,13 @@ type capKey struct {
 	name string
 }
 
+func (k capKey) less(o capKey) bool {
+	if k.uid != o.uid {
+		return k.uid < o.uid
+	}
+	return k.name < o.name
+}
+
 type obsKey struct {
 	namespace, name, slot string
 }
@@ -258,17 +265,16 @@ func (e *evaluator) edges(n capKey) []capKey {
 			}
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].uid != out[j].uid {
-			return out[i].uid < out[j].uid
-		}
-		return out[i].name < out[j].name
-	})
+	sort.Slice(out, func(i, j int) bool { return out[i].less(out[j]) })
 	return out
 }
 
-// rejectCycles invalidates every target owning a capability on a dependency
-// cycle. No cycle is resolved by assuming health or by fixpoint iteration.
+// rejectCycles invalidates every target owning a capability that lies on a
+// dependency cycle: every member of a strongly connected component with more
+// than one node, and every node with a self-edge. Membership is a property of
+// the graph alone (Tarjan's algorithm finds complete SCCs regardless of
+// traversal order). No cycle is resolved by assuming health or by fixpoint
+// iteration.
 func (e *evaluator) rejectCycles() {
 	var nodes []capKey
 	for _, ts := range e.order {
@@ -279,64 +285,72 @@ func (e *evaluator) rejectCycles() {
 			nodes = append(nodes, capKey{ts.t.Identity.UID, cp.Type.Name})
 		}
 	}
-	sort.Slice(nodes, func(i, j int) bool {
-		if nodes[i].uid != nodes[j].uid {
-			return nodes[i].uid < nodes[j].uid
-		}
-		return nodes[i].name < nodes[j].name
-	})
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].less(nodes[j]) })
 
-	const (
-		unvisited = iota
-		onStack
-		done
-	)
-	state := map[capKey]int{}
-	onCycle := map[capKey]bool{}
+	index := map[capKey]int{}
+	low := map[capKey]int{}
+	onStack := map[capKey]bool{}
 	var stack []capKey
-	var visit func(capKey)
-	visit = func(n capKey) {
-		state[n] = onStack
-		stack = append(stack, n)
-		for _, m := range e.edges(n) {
-			switch state[m] {
-			case onStack:
-				for i := len(stack) - 1; i >= 0; i-- {
-					onCycle[stack[i]] = true
-					if stack[i] == m {
-						break
-					}
-				}
-			case unvisited:
-				visit(m)
+	var cyclic [][]capKey
+	next := 0
+
+	var strongConnect func(capKey)
+	strongConnect = func(v capKey) {
+		index[v], low[v] = next, next
+		next++
+		stack = append(stack, v)
+		onStack[v] = true
+		selfLoop := false
+		for _, w := range e.edges(v) {
+			if w == v {
+				selfLoop = true
+			}
+			if _, seen := index[w]; !seen {
+				strongConnect(w)
+				low[v] = min(low[v], low[w])
+			} else if onStack[w] {
+				low[v] = min(low[v], index[w])
 			}
 		}
-		stack = stack[:len(stack)-1]
-		state[n] = done
+		if low[v] != index[v] {
+			return
+		}
+		var scc []capKey
+		for {
+			w := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			onStack[w] = false
+			scc = append(scc, w)
+			if w == v {
+				break
+			}
+		}
+		if len(scc) > 1 || selfLoop {
+			cyclic = append(cyclic, scc)
+		}
 	}
 	for _, n := range nodes {
-		if state[n] == unvisited {
-			visit(n)
+		if _, seen := index[n]; !seen {
+			strongConnect(n)
 		}
 	}
 
-	members := map[string][]string{}
-	for n := range onCycle {
-		members[n.uid] = append(members[n.uid], n.name)
-	}
-	var all []string
-	for n := range onCycle {
-		all = append(all, n.uid+"/"+n.name)
-	}
-	sort.Strings(all)
-	for uid, names := range members {
-		sort.Strings(names)
-		for _, ts := range e.byUID[uid] {
-			ts.invalid = append(ts.invalid, Reason{
-				Code:    ReasonDependencyCycle,
-				Subject: "capabilities:" + strings.Join(names, ","),
-				Detail:  "cycle members: " + strings.Join(all, ","),
-			})
+	for _, scc := range cyclic {
+		sort.Slice(scc, func(i, j int) bool { return scc[i].less(scc[j]) })
+		all := make([]string, len(scc))
+		byUID := map[string][]string{}
+		for i, n := range scc {
+			all[i] = n.uid + "/" + n.name
+			byUID[n.uid] = append(byUID[n.uid], n.name)
+		}
+		for uid, names := range byUID {
+			for _, ts := range e.byUID[uid] {
+				ts.invalid = append(ts.invalid, Reason{
+					Code:    ReasonDependencyCycle,
+					Subject: "capabilities:" + strings.Join(names, ","),
+					Detail:  "cycle members: " + strings.Join(all, ","),
+				})
+			}
 		}
 	}
 }
@@ -411,34 +425,33 @@ func (e *evaluator) resolveEvidence(ts *targetState, slot AssertionSlot) slotEvi
 		}
 	}
 
-	type statement struct {
-		outcome Outcome
-		value   Value
-	}
-	distinct := map[statement]bool{}
+	// Every latest statement must be well-formed before any comparison, so a
+	// non-canonical value can neither satisfy a predicate nor hide or create a
+	// conflict.
 	for _, o := range group {
-		st := statement{outcome: o.Outcome}
-		if o.Outcome == OutcomeValue {
-			st.value = o.Value
+		switch {
+		case o.Outcome == OutcomeProviderUnavailable:
+		case o.Outcome != OutcomeValue || !slot.admits(o.Value):
+			ev.status, ev.code = EvidenceTypeMismatch, ReasonEvidenceTypeMismatch
+			ev.detail = fmt.Sprintf("slot type %s, observed non-canonical or undeclared %s", slot.Type, o.Value)
+			return ev
 		}
-		distinct[st] = true
-	}
-	if len(distinct) > 1 {
-		ev.status, ev.code = EvidenceConflicting, ReasonConflictingEvidence
-		ev.detail = fmt.Sprintf("%d incompatible statements at the latest instant", len(distinct))
-		return ev
 	}
 
 	o := group[0]
-	switch {
-	case o.Outcome == OutcomeProviderUnavailable:
-		ev.status, ev.code = EvidenceProviderUnavailable, ReasonProviderUnavailable
-	case o.Outcome != OutcomeValue || !slot.admits(o.Value):
-		ev.status, ev.code = EvidenceTypeMismatch, ReasonEvidenceTypeMismatch
-		ev.detail = fmt.Sprintf("slot type %s, observed %s", slot.Type, o.Value)
-	default:
-		ev.status, ev.value = EvidenceCurrent, o.Value
+	for _, other := range group[1:] {
+		if other.Outcome != o.Outcome || (o.Outcome == OutcomeValue && !other.Value.equal(o.Value)) {
+			ev.status, ev.code = EvidenceConflicting, ReasonConflictingEvidence
+			ev.detail = "incompatible statements at the latest instant"
+			return ev
+		}
 	}
+
+	if o.Outcome == OutcomeProviderUnavailable {
+		ev.status, ev.code = EvidenceProviderUnavailable, ReasonProviderUnavailable
+		return ev
+	}
+	ev.status, ev.value = EvidenceCurrent, o.Value
 	return ev
 }
 

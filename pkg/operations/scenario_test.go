@@ -1,6 +1,8 @@
 package operations
 
 import (
+	"math/rand"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -762,4 +764,230 @@ func containsErr(errs []string, sub string) bool {
 		}
 	}
 	return false
+}
+
+// ── P2-1 regression: non-canonical values never reach semantic comparison ──
+
+func residueContract() Contract {
+	return Contract{
+		Identity: contractID("residue-v1", "c-res", "sha256:residue1"),
+		Assertions: []AssertionSlot{
+			intSlot("replicas"),
+			boolSlot("ready"),
+			{Name: "role", Type: TypeString, Enum: []string{"primary", "replica"}, MaxAge: 30 * time.Second},
+		},
+		Capabilities: []Capability{
+			{Type: capType("not-zero"), Requirements: []Requirement{pred("replicas", OpNotEq, Int(0), ImpactUnavailable)}},
+			{Type: capType("exactly-one"), Requirements: []Requirement{pred("replicas", OpEq, Int(1), ImpactUnavailable)}},
+			{Type: capType("ready"), Requirements: []Requirement{isTrue("ready", ImpactUnavailable)}},
+			{Type: capType("primary"), Requirements: []Requirement{pred("role", OpEq, String("primary"), ImpactUnavailable)}},
+			{Type: capType("not-replica"), Requirements: []Requirement{pred("role", OpNotEq, String("replica"), ImpactUnavailable)}},
+		},
+	}
+}
+
+func residueSnapshot(replicas, ready, role Value, extra ...Observation) Snapshot {
+	tg := target("res", "t-res", residueContract().Identity,
+		bind("replicas", workloadStat), bind("ready", workloadStat), bind("role", workloadStat))
+	return Snapshot{
+		At:        at,
+		Contracts: []Contract{residueContract()},
+		Targets:   []Target{tg},
+		Observations: append([]Observation{
+			observe(tg, "replicas", replicas, fresh),
+			observe(tg, "ready", ready, fresh),
+			observe(tg, "role", role, fresh),
+		}, extra...),
+	}
+}
+
+func TestP2_1_CanonicalValuesKeepExistingResults(t *testing.T) {
+	a := mustEval(t, residueSnapshot(Int(0), Bool(true), String("primary")))
+	expectCap(t, a, "t-res", "not-zero", Unavailable)
+	expectCap(t, a, "t-res", "exactly-one", Unavailable)
+	expectCap(t, a, "t-res", "ready", Available)
+	expectCap(t, a, "t-res", "primary", Available)
+	expectCap(t, a, "t-res", "not-replica", Available)
+
+	a = mustEval(t, residueSnapshot(Int(1), Bool(false), String("replica")))
+	expectCap(t, a, "t-res", "not-zero", Available)
+	expectCap(t, a, "t-res", "exactly-one", Available)
+	expectCap(t, a, "t-res", "ready", Unavailable)
+	expectCap(t, a, "t-res", "primary", Unavailable)
+	expectCap(t, a, "t-res", "not-replica", Unavailable)
+}
+
+func TestP2_1_OffTypeResidueFailsClosed(t *testing.T) {
+	cases := []struct {
+		name     string
+		replicas Value
+		ready    Value
+		role     Value
+		slot     string
+		caps     []string
+	}{
+		// Guardrail reproduction: Integer 0 with a stray String field must not
+		// satisfy NotEq 0 (fail-open) nor be judged unmet for Eq 1.
+		{"integer zero + stray string", Value{Type: TypeInteger, Int: 0, Str: "stray"}, Bool(true), String("primary"),
+			"replicas", []string{"not-zero", "exactly-one"}},
+		{"integer one + stray bool", Value{Type: TypeInteger, Int: 1, Bool: true}, Bool(true), String("primary"),
+			"replicas", []string{"not-zero", "exactly-one"}},
+		{"boolean + stray int", Int(1), Value{Type: TypeBoolean, Bool: true, Int: 5}, String("primary"),
+			"ready", []string{"ready"}},
+		{"string + stray bool", Int(1), Bool(true), Value{Type: TypeString, Str: "primary", Bool: true},
+			"role", []string{"primary", "not-replica"}},
+		{"string + stray int", Int(1), Bool(true), Value{Type: TypeString, Str: "replica", Int: 7},
+			"role", []string{"primary", "not-replica"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := mustEval(t, residueSnapshot(tc.replicas, tc.ready, tc.role))
+			for _, n := range tc.caps {
+				c := expectCap(t, a, "t-res", n, Unknown)
+				expectReason(t, c.Reasons, ReasonEvidenceTypeMismatch, "assertion:"+tc.slot)
+			}
+		})
+	}
+}
+
+func TestP2_1_EqualLatestResidueIsNotSilentlyMergedOrSplit(t *testing.T) {
+	tg := residueSnapshot(Int(0), Bool(true), String("primary")).Targets[0]
+	// Same instant, same typed value, one statement carries residue.
+	s := residueSnapshot(Int(0), Bool(true), String("primary"),
+		observe(tg, "replicas", Value{Type: TypeInteger, Int: 0, Str: "stray"}, fresh))
+	a := mustEval(t, s)
+	c := expectCap(t, a, "t-res", "not-zero", Unknown)
+	expectReason(t, c.Reasons, ReasonEvidenceTypeMismatch, "assertion:replicas")
+
+	// Canonical identical duplicates are still not a conflict.
+	s = residueSnapshot(Int(0), Bool(true), String("primary"), observe(tg, "replicas", Int(0), fresh))
+	expectCap(t, mustEval(t, s), "t-res", "not-zero", Unavailable)
+
+	// Canonical differing values are still a conflict.
+	s = residueSnapshot(Int(0), Bool(true), String("primary"), observe(tg, "replicas", Int(3), fresh))
+	c = expectCap(t, mustEval(t, s), "t-res", "not-zero", Unknown)
+	expectReason(t, c.Reasons, ReasonConflictingEvidence, "assertion:replicas")
+}
+
+func TestP2_1_TypedEqualityIgnoresOffTypeFields(t *testing.T) {
+	// Defence in depth: comparison itself is typed even if residue slipped
+	// past admission.
+	stray := Value{Type: TypeInteger, Int: 0, Str: "stray"}
+	if !(Predicate{Assertion: "n", Op: OpEq, Operand: Int(0)}).eval(stray) {
+		t.Fatal("Eq compared off-type fields")
+	}
+	if (Predicate{Assertion: "n", Op: OpNotEq, Operand: Int(0)}).eval(stray) {
+		t.Fatal("NotEq compared off-type fields")
+	}
+	if Int(0).equal(Bool(false)) || String("").equal(Int(0)) {
+		t.Fatal("values of different types compared equal")
+	}
+}
+
+func TestP2_1_NonCanonicalOperandIsInvalidContract(t *testing.T) {
+	c := residueContract()
+	c.Capabilities[0].Requirements[0].Predicate.Operand = Value{Type: TypeInteger, Int: 0, Str: "stray"}
+	if len(c.Validate()) == 0 {
+		t.Fatal("non-canonical operand accepted")
+	}
+}
+
+// ── P2-2 regression: complete SCC cycle detection ───────────────────────────
+
+func nodeContract(name string, deps ...string) Contract {
+	c := Contract{
+		Identity:     contractID(name+"-v1", "c-"+name, "sha256:"+name),
+		Assertions:   []AssertionSlot{boolSlot("up")},
+		Capabilities: []Capability{{Type: capType(name), Requirements: []Requirement{isTrue("up", ImpactUnavailable)}}},
+	}
+	for _, d := range deps {
+		c.DependencySlots = append(c.DependencySlots, DependencySlot{Name: d})
+		c.Capabilities[0].Requirements = append(c.Capabilities[0].Requirements, dep(d, d, ImpactUnavailable))
+	}
+	return c
+}
+
+// graphSnapshot builds one target per node with the given UIDs and edges
+// (node → dependency nodes). Each node's capability is named after the node.
+func graphSnapshot(uids map[string]string, edges map[string][]string) Snapshot {
+	s := Snapshot{At: at}
+	targets := map[string]Target{}
+	for n, uid := range uids {
+		c := nodeContract(n, edges[n]...)
+		s.Contracts = append(s.Contracts, c)
+		targets[n] = target("node-"+n, uid, c.Identity, bind("up", workloadStat))
+	}
+	for n, tg := range targets {
+		for _, d := range edges[n] {
+			tg.DependencyBindings = append(tg.DependencyBindings, bindDep(d, targets[d]))
+		}
+		s.Targets = append(s.Targets, tg)
+		s.Observations = append(s.Observations, observe(tg, "up", Bool(true), fresh))
+	}
+	return s
+}
+
+func permutations(xs []string) [][]string {
+	if len(xs) <= 1 {
+		return [][]string{append([]string(nil), xs...)}
+	}
+	var out [][]string
+	for i := range xs {
+		rest := append(append([]string(nil), xs[:i]...), xs[i+1:]...)
+		for _, p := range permutations(rest) {
+			out = append(out, append([]string{xs[i]}, p...))
+		}
+	}
+	return out
+}
+
+func TestP2_2_CrossEdgeSCCInvalidatesAllMembersForEveryUIDOrder(t *testing.T) {
+	// a→b, a→c, b→a, c→b : {a,b,c} is one SCC (c→b→a→c).
+	edges := map[string][]string{"a": {"b", "c"}, "b": {"a"}, "c": {"b"}, "e": {"c"}}
+	for _, perm := range permutations([]string{"u1", "u2", "u3"}) {
+		uids := map[string]string{"a": perm[0], "b": perm[1], "c": perm[2], "d": "u0", "e": "u9"}
+		t.Run(strings.Join(perm, ","), func(t *testing.T) {
+			a := mustEval(t, graphSnapshot(uids, edges))
+			for _, n := range []string{"a", "b", "c"} {
+				ta := targetOf(t, a, uids[n])
+				if ta.Valid {
+					t.Fatalf("SCC member %s (%s) left valid", n, uids[n])
+				}
+				expectReason(t, ta.InvalidReasons, ReasonDependencyCycle, "")
+			}
+			// Unrelated D is untouched; E depends on the SCC and fails closed.
+			expectCap(t, a, "u0", "d", Available)
+			c := expectCap(t, a, "u9", "e", Unknown)
+			expectReason(t, c.Reasons, ReasonDependencyTargetInvalid, uids["c"])
+		})
+	}
+}
+
+func TestP2_2_SCCResultIndependentOfDeclarationOrder(t *testing.T) {
+	edges := map[string][]string{"a": {"b", "c"}, "b": {"a"}, "c": {"b"}, "e": {"c"}}
+	uids := map[string]string{"a": "u3", "b": "u1", "c": "u2", "d": "u0", "e": "u9"}
+	want := mustEval(t, graphSnapshot(uids, edges))
+	r := rand.New(rand.NewSource(7))
+	for i := 0; i < 100; i++ {
+		if got := mustEval(t, shuffle(r, graphSnapshot(uids, edges))); !reflect.DeepEqual(got, want) {
+			t.Fatalf("iteration %d: SCC result depends on order", i)
+		}
+	}
+}
+
+func TestP2_2_SimpleCycleSelfLoopAndAcyclicChain(t *testing.T) {
+	a := mustEval(t, graphSnapshot(
+		map[string]string{"a": "u1", "b": "u2", "s": "u3", "x": "u4", "y": "u5", "z": "u6"},
+		map[string][]string{"a": {"b"}, "b": {"a"}, "s": {"s"}, "x": {"y"}, "y": {"z"}},
+	))
+	for _, uid := range []string{"u1", "u2", "u3"} {
+		ta := targetOf(t, a, uid)
+		if ta.Valid {
+			t.Fatalf("%s on a cycle left valid", uid)
+		}
+		expectReason(t, ta.InvalidReasons, ReasonDependencyCycle, "")
+	}
+	for uid, n := range map[string]string{"u4": "x", "u5": "y", "u6": "z"} {
+		expectCap(t, a, uid, n, Available)
+	}
 }
