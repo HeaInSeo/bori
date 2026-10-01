@@ -1,0 +1,281 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: operationalcontracts.ops.bori.dev
+spec:
+  group: ops.bori.dev
+  names:
+    kind: OperationalContract
+    listKind: OperationalContractList
+    plural: operationalcontracts
+    singular: operationalcontract
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.valid
+      name: Valid
+      type: boolean
+    - jsonPath: .status.specDigest
+      name: Digest
+      priority: 1
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              assertions:
+                items:
+                  properties:
+                    enum:
+                      items:
+                        maxLength: 253
+                        type: string
+                      maxItems: 64
+                      type: array
+                    maxAge:
+                      type: string
+                    name:
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    type:
+                      enum:
+                      - Boolean
+                      - Integer
+                      - String
+                      type: string
+                  required:
+                  - maxAge
+                  - name
+                  - type
+                  type: object
+                maxItems: 64
+                type: array
+              capabilities:
+                items:
+                  properties:
+                    requirements:
+                      items:
+                        properties:
+                          dependency:
+                            properties:
+                              capability:
+                                properties:
+                                  domain:
+                                    maxLength: 253
+                                    minLength: 1
+                                    type: string
+                                  name:
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                  revision:
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - domain
+                                - name
+                                - revision
+                                type: object
+                              slot:
+                                maxLength: 63
+                                minLength: 1
+                                type: string
+                            required:
+                            - capability
+                            - slot
+                            type: object
+                          envelope:
+                            maxLength: 63
+                            type: string
+                          localCapability:
+                            maxLength: 63
+                            type: string
+                          onUnmet:
+                            enum:
+                            - DEGRADED
+                            - UNAVAILABLE
+                            type: string
+                          predicate:
+                            properties:
+                              assertion:
+                                maxLength: 63
+                                minLength: 1
+                                type: string
+                              operand:
+                                properties:
+                                  boolean:
+                                    type: boolean
+                                  integer:
+                                    format: int64
+                                    type: integer
+                                  string:
+                                    maxLength: 253
+                                    type: string
+                                type: object
+                                x-kubernetes-validations:
+                                - message: operand must set exactly one typed value
+                                  rule: '[has(self.boolean), has(self.integer), has(self.string)].filter(x,
+                                    x).size() == 1'
+                              operator:
+                                enum:
+                                - IsTrue
+                                - IsFalse
+                                - Eq
+                                - NotEq
+                                - Gte
+                                - Lte
+                                type: string
+                            required:
+                            - assertion
+                            - operator
+                            type: object
+                        required:
+                        - onUnmet
+                        type: object
+                        x-kubernetes-validations:
+                        - message: exactly one of predicate, dependency, localCapability
+                            or envelope must be set
+                          rule: '[has(self.predicate), has(self.dependency), has(self.localCapability),
+                            has(self.envelope)].filter(x, x).size() == 1'
+                      maxItems: 32
+                      minItems: 1
+                      type: array
+                    type:
+                      properties:
+                        domain:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        name:
+                          maxLength: 63
+                          minLength: 1
+                          type: string
+                        revision:
+                          maxLength: 63
+                          minLength: 1
+                          type: string
+                      required:
+                      - domain
+                      - name
+                      - revision
+                      type: object
+                  required:
+                  - requirements
+                  - type
+                  type: object
+                maxItems: 64
+                minItems: 1
+                type: array
+              dependencySlots:
+                items:
+                  properties:
+                    name:
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                  required:
+                  - name
+                  type: object
+                maxItems: 32
+                type: array
+              envelopes:
+                items:
+                  properties:
+                    class:
+                      enum:
+                      - Minimum
+                      - Recommended
+                      type: string
+                    name:
+                      maxLength: 63
+                      minLength: 1
+                      type: string
+                    requirements:
+                      items:
+                        properties:
+                          assertion:
+                            maxLength: 63
+                            minLength: 1
+                            type: string
+                          operand:
+                            properties:
+                              boolean:
+                                type: boolean
+                              integer:
+                                format: int64
+                                type: integer
+                              string:
+                                maxLength: 253
+                                type: string
+                            type: object
+                            x-kubernetes-validations:
+                            - message: operand must set exactly one typed value
+                              rule: '[has(self.boolean), has(self.integer), has(self.string)].filter(x,
+                                x).size() == 1'
+                          operator:
+                            enum:
+                            - IsTrue
+                            - IsFalse
+                            - Eq
+                            - NotEq
+                            - Gte
+                            - Lte
+                            type: string
+                        required:
+                        - assertion
+                        - operator
+                        type: object
+                      maxItems: 32
+                      minItems: 1
+                      type: array
+                  required:
+                  - class
+                  - name
+                  - requirements
+                  type: object
+                maxItems: 16
+                type: array
+            required:
+            - capabilities
+            type: object
+            x-kubernetes-validations:
+            - message: OperationalContract spec is immutable; publish a new contract
+                object for new semantics
+              rule: self == oldSelf
+          status:
+            properties:
+              observedGeneration:
+                format: int64
+                type: integer
+              specDigest:
+                type: string
+              valid:
+                type: boolean
+              validationErrors:
+                items:
+                  type: string
+                maxItems: 32
+                type: array
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
