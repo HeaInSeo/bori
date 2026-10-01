@@ -158,7 +158,9 @@ spec:
     - slot: serving
       provider: {name: generic-http-probe, configRevision: r1}
 EOF
-deploy_before="$(kubectl get deployment web -n apps -o jsonpath='{.metadata.resourceVersion}')"
+# Deployment status is updated by kube-controller-manager, so resourceVersion
+# is not a mutation signal; spec generation and field managers are.
+deploy_gen_before="$(kubectl get deployment web -n apps -o jsonpath='{.metadata.generation}')"
 
 (cd "$ROOT" && go build -o "$WORK/bori-operator" ./cmd/bori-operator)
 mkdir -p "$WORK/root"
@@ -185,7 +187,10 @@ crv2="$(kubectl get operationalcontract svc-v1 -n apps -o jsonpath='{.metadata.r
 check "zero status writes across repeated evaluations (target $rv1→$rv2, contract $crv1→$crv2)" \
   eq "$rv1/$crv1" "$rv2/$crv2"
 
-check "workload not mutated" eq "$(kubectl get deployment web -n apps -o jsonpath='{.metadata.resourceVersion}')" "$deploy_before"
+check "workload spec not mutated (generation)" \
+  eq "$(kubectl get deployment web -n apps -o jsonpath='{.metadata.generation}')" "$deploy_gen_before"
+managers="$(kubectl get deployment web -n apps -o jsonpath='{.metadata.managedFields[*].manager}')"
+check "no bori field manager on workload ($managers)" eq "${managers//bori/}" "$managers"
 
 kubectl delete deployment web -n apps >/dev/null
 for _ in $(seq 1 30); do
