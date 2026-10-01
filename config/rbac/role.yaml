@@ -47,6 +47,15 @@ rules:
   - apiGroups: ["bori.dev"]
     resources: ["boriverificationruns/status"]
     verbs: ["get", "update", "patch"]
+  # ops.bori.dev (O2 candidate API) — non-actuating evaluator/status controller.
+  # Read-only on specs; status writes only. No Secret access. targetRef UIDs are
+  # read as metadata of the apps/v1 kinds already granted below.
+  - apiGroups: ["ops.bori.dev"]
+    resources: ["operationalcontracts", "operationaltargets", "operationalreferencegrants"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["ops.bori.dev"]
+    resources: ["operationalcontracts/status", "operationaltargets/status"]
+    verbs: ["get", "update", "patch"]
   # Namespace — read for NamespacePolicy; create/patch for kubeapply bootstrap
   - apiGroups: [""]
     resources: ["namespaces"]
