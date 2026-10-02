@@ -97,23 +97,14 @@ func Build(in Input) Built {
 			tw.Contract = ContractIdentity(c)
 		}
 
-		res := in.Resolutions[key]
-		if res.UID == "" {
-			tw.Failure = res.Failure
-			if tw.Failure == "" {
-				tw.Failure = ReasonTargetNotFound
-			}
-			b.Wire[string(t.UID)] = tw
-			continue
-		}
-		tw.ResolvedUID = res.UID
-
 		ot := operations.Target{
 			Identity:          operations.TargetIdentity{Namespace: t.Namespace, Name: t.Name, UID: string(t.UID)},
-			ResolvedUID:       res.UID,
 			ContractRef:       tw.Contract,
 			EnvelopeSelection: t.Spec.EnvelopeSelection,
 		}
+
+		// Grant checks run before the targetRef resolution short-circuit so
+		// that deniedReferences do not depend on whether the workload resolves.
 
 		for _, ab := range t.Spec.AssertionBindings {
 			ns := ab.Provider.Namespace
@@ -166,6 +157,21 @@ func Build(in Input) Built {
 			}
 			return a.Namespace < c.Namespace
 		})
+
+		// An unresolved target keeps its trust report but is not handed to the
+		// O1 evaluator.
+		res := in.Resolutions[key]
+		if res.UID == "" {
+			tw.Failure = res.Failure
+			if tw.Failure == "" {
+				tw.Failure = ReasonTargetNotFound
+			}
+			b.Wire[string(t.UID)] = tw
+			continue
+		}
+		tw.ResolvedUID = res.UID
+		ot.ResolvedUID = res.UID
+
 		b.Wire[string(t.UID)] = tw
 		b.Snapshot.Targets = append(b.Snapshot.Targets, ot)
 	}

@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -381,5 +382,52 @@ func TestOperationalNoObservationsIsUnknownNotGuessed(t *testing.T) {
 	e.reconcile(t)
 	if s := stateOf(e.target(t, "web"), "serve"); s != "UNKNOWN" {
 		t.Fatalf("no evidence gave %s", s)
+	}
+}
+
+func TestOperationalUnresolvedTargetKeepsDeniedReferences(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		breakTarget func(t *testing.T, e *opsEnv, tg *opsv1.OperationalTarget)
+		failure     string
+	}{
+		{"missing workload", func(t *testing.T, e *opsEnv, _ *opsv1.OperationalTarget) {
+			var d appsv1.Deployment
+			_ = e.c.Get(context.Background(), types.NamespacedName{Namespace: "apps", Name: "api"}, &d)
+			if err := e.c.Delete(context.Background(), &d); err != nil {
+				t.Fatal(err)
+			}
+		}, opswire.ReasonTargetNotFound},
+		{"unsupported kind", func(_ *testing.T, _ *opsEnv, tg *opsv1.OperationalTarget) {
+			tg.Spec.TargetRef = opsv1.TargetReference{APIVersion: "v1", Kind: "ConfigMap", Name: "api"}
+		}, opswire.ReasonTargetKindUnsupported},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newOpsEnv(t)
+			tg := e.target(t, "api")
+			// Ungranted cross-namespace provider and dependency bindings.
+			tg.Spec.AssertionBindings[0].Provider.Namespace = "other"
+			tg.Spec.DependencyBindings = []opsv1.DependencyBinding{{
+				Slot:     "upstream",
+				Target:   opsv1.DependencyTargetReference{Namespace: "other", Name: "x", UID: "uid-x"},
+				Contract: opsv1.ContractPin{Name: "c", UID: "u", SpecDigest: "sha256:x"},
+			}}
+			tc.breakTarget(t, e, tg)
+			if err := e.c.Update(context.Background(), tg); err != nil {
+				t.Fatal(err)
+			}
+			e.reconcile(t)
+			st := e.target(t, "api").Status
+			want := []opsv1.DeniedReference{
+				{Type: opsv1.ReferenceEvidenceProvider, Slot: "serving", Namespace: "other"},
+				{Type: opsv1.ReferenceDependency, Slot: "upstream", Namespace: "other"},
+			}
+			if st.Valid || st.InvalidReasons[0].Code != tc.failure || !reflect.DeepEqual(st.DeniedReferences, want) {
+				t.Fatalf("status %+v", st)
+			}
+			if n := e.reconcile(t); n != 0 {
+				t.Fatalf("repeat wrote %d statuses", n)
+			}
+		})
 	}
 }
