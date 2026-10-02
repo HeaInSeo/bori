@@ -19,8 +19,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	opsv1 "github.com/HeaInSeo/bori/apis/ops/v1alpha1"
+	"github.com/HeaInSeo/bori/pkg/investigate"
 	"github.com/HeaInSeo/bori/pkg/operations"
 	"github.com/HeaInSeo/bori/pkg/opswire"
+	"github.com/HeaInSeo/bori/pkg/providers"
 )
 
 // ObservationSource supplies current evidence as O1 observations. O2 defines
@@ -68,12 +70,26 @@ type OperationalReconciler struct {
 	// Now supplies the evaluation instant; the O1 core reads no clock.
 	Now             func() time.Time
 	RequeueInterval time.Duration
+
+	// Investigator and Providers enable the O3 reference evidence profile.
+	// When both are set they replace Observations: only requests derived
+	// from authorized, resolved, O1-valid bindings are dispatched, and only
+	// through the investigation budget. Both nil keeps the O2 behaviour.
+	Investigator *investigate.Investigator
+	Providers    investigate.ProviderLookup
 }
 
-// Reconcile performs one cluster-wide evaluation.
-func (r *OperationalReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result, error) {
-	now := r.now()
+// minRequeue bounds how soon a freshness or cooldown wake-up may requeue.
+const minRequeue = time.Second
 
+// Reconcile performs one cluster-wide evaluation.
+//
+// Order: list → resolve targetRefs → opswire.Build (grants, pins, no
+// evidence) → derive authorized requests → evidence I/O → take the
+// evaluation instant → O1 → conditional status writes. No provider I/O
+// happens before trust and validity are known, and the instant is taken
+// after the I/O so fresh observations are not judged as future evidence.
+func (r *OperationalReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result, error) {
 	var contracts opsv1.OperationalContractList
 	if err := r.Client.List(ctx, &contracts); err != nil {
 		return ctrl.Result{}, fmt.Errorf("list contracts: %w", err)
@@ -97,23 +113,36 @@ func (r *OperationalReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (
 		resolutions[types.NamespacedName{Namespace: t.Namespace, Name: t.Name}] = res
 	}
 
-	src := r.Observations
-	if src == nil {
-		src = NoObservations{}
-	}
-	obs, err := src.Observations(ctx)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("observations: %w", err)
+	built := opswire.Build(opswire.Input{
+		Contracts:   contracts.Items,
+		Targets:     targets.Items,
+		Grants:      grants.Items,
+		Resolutions: resolutions,
+	})
+
+	var obs []operations.Observation
+	var queries investigate.Queries
+	if r.Investigator != nil && r.Providers != nil {
+		queries = investigate.Requests(built.Snapshot, subjects(targets.Items, built), r.Providers)
+		r.Investigator.Run(ctx, built.Snapshot, queries)
+		obs = r.Investigator.Observations()
+	} else {
+		src := r.Observations
+		if src == nil {
+			src = NoObservations{}
+		}
+		var err error
+		if obs, err = src.Observations(ctx); err != nil {
+			// A failing source yields no evidence (UNKNOWN), never a stale
+			// status left in place by an aborted reconcile.
+			ctrl.LoggerFrom(ctx).Error(err, "observation source failed; evaluating without evidence")
+			obs = nil
+		}
 	}
 
-	built := opswire.Build(opswire.Input{
-		At:           now,
-		Contracts:    contracts.Items,
-		Targets:      targets.Items,
-		Grants:       grants.Items,
-		Resolutions:  resolutions,
-		Observations: obs,
-	})
+	now := r.now()
+	built.Snapshot.At = now
+	built.Snapshot.Observations = obs
 	assessment, err := operations.Evaluate(built.Snapshot)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -145,7 +174,49 @@ func (r *OperationalReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (
 	if len(errs) > 0 {
 		return ctrl.Result{}, errors.Join(errs...)
 	}
-	return ctrl.Result{RequeueAfter: r.RequeueInterval}, nil
+	return ctrl.Result{RequeueAfter: r.requeueAfter(queries, now)}, nil
+}
+
+// requeueAfter polls at RequeueInterval, or sooner when held evidence is due
+// for refresh or an episode cooldown ends (never sooner than minRequeue).
+func (r *OperationalReconciler) requeueAfter(qs investigate.Queries, now time.Time) time.Duration {
+	d := r.RequeueInterval
+	if r.Investigator == nil {
+		return d
+	}
+	if wake := r.Investigator.NextWake(qs); !wake.IsZero() {
+		if w := wake.Sub(now); w < d || d <= 0 {
+			d = w
+		}
+	}
+	if d < minRequeue {
+		d = minRequeue
+	}
+	return d
+}
+
+// subjects maps each target the evaluator will see to its own-namespace
+// targetRef and resolved workload UID.
+func subjects(ts []opsv1.OperationalTarget, b opswire.Built) map[string]providers.Subject {
+	resolved := map[string]string{}
+	for _, t := range b.Snapshot.Targets {
+		resolved[t.Identity.UID] = t.ResolvedUID
+	}
+	out := map[string]providers.Subject{}
+	for _, t := range ts {
+		uid, ok := resolved[string(t.UID)]
+		if !ok {
+			continue
+		}
+		out[string(t.UID)] = providers.Subject{
+			Namespace:   t.Namespace,
+			APIVersion:  t.Spec.TargetRef.APIVersion,
+			Kind:        t.Spec.TargetRef.Kind,
+			Name:        t.Spec.TargetRef.Name,
+			ResolvedUID: uid,
+		}
+	}
+	return out
 }
 
 func (r *OperationalReconciler) now() time.Time {
