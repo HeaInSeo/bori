@@ -98,6 +98,10 @@ writes nothing while results are unchanged.
 
 ## Enabling
 
+Evidence providers (O3 reference profile, opt-in via
+`--operational-provider-config`) are described in
+[operational-evidence.md](operational-evidence.md).
+
 The controller is off by default. Run `bori-operator
 --enable-operational-assessment` after installing the CRDs. It never mutates
 workloads, scales, restarts or invokes remediation.
