@@ -1,0 +1,364 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: operationaltargets.ops.bori.dev
+spec:
+  group: ops.bori.dev
+  names:
+    kind: OperationalTarget
+    listKind: OperationalTargetList
+    plural: operationaltargets
+    singular: operationaltarget
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.valid
+      name: Valid
+      type: boolean
+    - jsonPath: .spec.contractRef.name
+      name: Contract
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              assertionBindings:
+                items:
+                  properties:
+                    provider:
+                      properties:
+                        configRevision:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        name:
+                          maxLength: 253
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
+                          type: string
+                        namespace:
+                          maxLength: 63
+                          type: string
+                      required:
+                      - configRevision
+                      - name
+                      type: object
+                    slot:
+                      maxLength: 63
+                      minLength: 1
+                      type: string
+                  required:
+                  - provider
+                  - slot
+                  type: object
+                maxItems: 64
+                type: array
+              contractRef:
+                properties:
+                  name:
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              dependencyBindings:
+                items:
+                  properties:
+                    contract:
+                      properties:
+                        name:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        specDigest:
+                          maxLength: 128
+                          minLength: 1
+                          type: string
+                        uid:
+                          maxLength: 128
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      - specDigest
+                      - uid
+                      type: object
+                    slot:
+                      maxLength: 63
+                      minLength: 1
+                      type: string
+                    target:
+                      properties:
+                        name:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        namespace:
+                          maxLength: 63
+                          type: string
+                        uid:
+                          maxLength: 128
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      - uid
+                      type: object
+                  required:
+                  - contract
+                  - slot
+                  - target
+                  type: object
+                maxItems: 32
+                type: array
+              envelopeSelection:
+                maxLength: 63
+                type: string
+              targetRef:
+                properties:
+                  apiVersion:
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  kind:
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                  name:
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                type: object
+            required:
+            - contractRef
+            - targetRef
+            type: object
+          status:
+            properties:
+              assessedAt:
+                format: date-time
+                type: string
+              capabilities:
+                items:
+                  properties:
+                    reasons:
+                      items:
+                        properties:
+                          code:
+                            maxLength: 128
+                            type: string
+                          detail:
+                            maxLength: 256
+                            type: string
+                          subject:
+                            maxLength: 512
+                            type: string
+                        required:
+                        - code
+                        type: object
+                      maxItems: 40
+                      type: array
+                    state:
+                      type: string
+                    type:
+                      properties:
+                        domain:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        name:
+                          maxLength: 63
+                          minLength: 1
+                          type: string
+                        revision:
+                          maxLength: 63
+                          minLength: 1
+                          type: string
+                      required:
+                      - domain
+                      - name
+                      - revision
+                      type: object
+                  required:
+                  - state
+                  - type
+                  type: object
+                maxItems: 64
+                type: array
+              conditions:
+                items:
+                  properties:
+                    lastTransitionTime:
+                      format: date-time
+                      type: string
+                    message:
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                maxItems: 8
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              deniedReferences:
+                items:
+                  properties:
+                    namespace:
+                      maxLength: 63
+                      type: string
+                    slot:
+                      maxLength: 63
+                      type: string
+                    type:
+                      enum:
+                      - Dependency
+                      - EvidenceProvider
+                      type: string
+                  required:
+                  - namespace
+                  - slot
+                  - type
+                  type: object
+                maxItems: 96
+                type: array
+              envelopeSelection:
+                type: string
+              envelopes:
+                items:
+                  properties:
+                    class:
+                      type: string
+                    name:
+                      type: string
+                    reasons:
+                      items:
+                        properties:
+                          code:
+                            maxLength: 128
+                            type: string
+                          detail:
+                            maxLength: 256
+                            type: string
+                          subject:
+                            maxLength: 512
+                            type: string
+                        required:
+                        - code
+                        type: object
+                      maxItems: 40
+                      type: array
+                    state:
+                      type: string
+                  required:
+                  - class
+                  - name
+                  - state
+                  type: object
+                maxItems: 16
+                type: array
+              evidence:
+                items:
+                  properties:
+                    configRevision:
+                      type: string
+                    evidenceRef:
+                      maxLength: 256
+                      type: string
+                    provider:
+                      type: string
+                    slot:
+                      type: string
+                    state:
+                      type: string
+                  required:
+                  - slot
+                  - state
+                  type: object
+                maxItems: 64
+                type: array
+              identity:
+                properties:
+                  contractName:
+                    type: string
+                  contractSpecDigest:
+                    type: string
+                  contractUID:
+                    type: string
+                  resolvedUID:
+                    type: string
+                  targetUID:
+                    type: string
+                type: object
+              invalidReasons:
+                items:
+                  properties:
+                    code:
+                      maxLength: 128
+                      type: string
+                    detail:
+                      maxLength: 256
+                      type: string
+                    subject:
+                      maxLength: 512
+                      type: string
+                  required:
+                  - code
+                  type: object
+                maxItems: 32
+                type: array
+              observedGeneration:
+                format: int64
+                type: integer
+              sync:
+                type: string
+              valid:
+                type: boolean
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

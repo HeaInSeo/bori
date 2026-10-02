@@ -3,9 +3,8 @@
 # ── Code generation ─────────────────────────────────────────────────────────
 
 # Generate CRD YAML and root-type DeepCopy from Go types.
-# Run after any change to apis/bori/v1alpha1/*.go.
+# Run after any change to apis/*/v1alpha1/*.go.
 # All DeepCopy methods (root + sub-types) are generated.
-# Run after any change to apis/bori/v1alpha1/*.go.
 generate:
 	go run sigs.k8s.io/controller-tools/cmd/controller-gen \
 		crd:maxDescLen=0 \
@@ -19,7 +18,8 @@ generate:
 # Fails if make generate produces any diff (means types changed without regenerating).
 generate-check:
 	$(MAKE) generate
-	git diff --exit-code config/crd/ apis/bori/v1alpha1/zz_generated.deepcopy.go
+	git diff --exit-code config/crd/ apis/bori/v1alpha1/zz_generated.deepcopy.go apis/ops/v1alpha1/zz_generated.deepcopy.go
+	@test -z "$$(git status --porcelain config/crd/ apis/)" || { git status --porcelain config/crd/ apis/; exit 1; }
 
 # ── Build ───────────────────────────────────────────────────────────────────
 

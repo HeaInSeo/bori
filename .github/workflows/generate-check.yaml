@@ -44,7 +44,8 @@ jobs:
 
       - name: Check for diff
         run: |
-          if ! git diff --exit-code config/crd/ apis/bori/v1alpha1/zz_generated.deepcopy.go; then
+          if ! git diff --exit-code config/crd/ apis/bori/v1alpha1/zz_generated.deepcopy.go apis/ops/v1alpha1/zz_generated.deepcopy.go \
+            || [ -n "$(git status --porcelain config/crd/ apis/)" ]; then
             echo "ERROR: Generated files are out of date."
             echo "Run 'make generate' and commit the result."
             exit 1

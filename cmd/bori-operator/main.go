@@ -34,6 +34,7 @@ import (
 	kubeapplyadapter "github.com/HeaInSeo/bori/adapters/kubeapply"
 	shelladapter "github.com/HeaInSeo/bori/adapters/shell"
 	v1alpha1 "github.com/HeaInSeo/bori/apis/bori/v1alpha1"
+	opsv1alpha1 "github.com/HeaInSeo/bori/apis/ops/v1alpha1"
 	"github.com/HeaInSeo/bori/controllers"
 	"github.com/HeaInSeo/bori/pkg/adapter"
 	reconcilepkg "github.com/HeaInSeo/bori/pkg/reconcile"
@@ -49,6 +50,9 @@ func main() {
 		leaderElect     bool
 		requeueInterval time.Duration
 		deployDryRun    bool
+
+		enableOperational   bool
+		operationalInterval time.Duration
 	)
 
 	flag.StringVar(&boriRoot, "bori-root", "/bori",
@@ -67,6 +71,11 @@ func main() {
 		"how often to re-evaluate each BoriDataPlane")
 	flag.BoolVar(&deployDryRun, "deploy-dry-run", false,
 		"skip adapter.Deploy() calls but promote revisions (for kind-based digest smoke tests)")
+
+	flag.BoolVar(&enableOperational, "enable-operational-assessment", false,
+		"run the non-actuating ops.bori.dev evaluator/status controller (O2 candidate API; requires its CRDs)")
+	flag.DurationVar(&operationalInterval, "operational-requeue-interval", 30*time.Second,
+		"how often to re-evaluate evidence currentness for ops.bori.dev targets")
 
 	zapOpts := zap.Options{Development: true}
 	zapOpts.BindFlags(flag.CommandLine)
@@ -92,6 +101,13 @@ func main() {
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		setupLog.Error(err, "add v1alpha1 scheme")
 		os.Exit(1)
+	}
+
+	if enableOperational {
+		if err := opsv1alpha1.AddToScheme(scheme); err != nil {
+			setupLog.Error(err, "add ops v1alpha1 scheme")
+			os.Exit(1)
+		}
 	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
@@ -155,6 +171,18 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "setup BoriVerificationRunReconciler")
 		os.Exit(1)
+	}
+
+	if enableOperational {
+		if err := (&controllers.OperationalReconciler{
+			Client:          mgr.GetClient(),
+			Observations:    controllers.NoObservations{},
+			TargetKinds:     controllers.DefaultTargetKinds,
+			RequeueInterval: operationalInterval,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "setup OperationalReconciler")
+			os.Exit(1)
+		}
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

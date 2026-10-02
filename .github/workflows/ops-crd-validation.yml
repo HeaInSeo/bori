@@ -1,0 +1,54 @@
+name: ops-crd-validation
+
+# Live API-server checks for the ops.bori.dev (O2 candidate) CRDs:
+# immutability, bounded grammar, typed grants and controller zero-churn.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apis/ops/**"
+      - "config/crd/ops.bori.dev_*"
+      - "pkg/operations/**"
+      - "pkg/opswire/**"
+      - "controllers/operational_*"
+      - "cmd/bori-operator/**"
+      - "hack/test-ops-crd-validation.sh"
+      - ".github/workflows/ops-crd-validation.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "apis/ops/**"
+      - "config/crd/ops.bori.dev_*"
+      - "pkg/operations/**"
+      - "pkg/opswire/**"
+      - "controllers/operational_*"
+      - "cmd/bori-operator/**"
+      - "hack/test-ops-crd-validation.sh"
+      - ".github/workflows/ops-crd-validation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  ops-crd-validation:
+    name: ops.bori.dev CRD + controller live validation (kind)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/v0.24.0/kind-$(uname)-amd64"
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Run live validation
+        run: hack/test-ops-crd-validation.sh
+        env:
+          KUBE_VERSION: v1.30.0
