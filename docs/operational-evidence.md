@@ -93,18 +93,19 @@ Currentness is O1's. Provider `observedAt`, optional `validUntil` and the slot
 `maxAge` decide whether evidence is current. Stale, expired, future, wrong-type
 and equal-latest-conflicting evidence is UNKNOWN.
 
-Held statements follow **local receipt order**, not the producer's
-`observedAt`:
+How a new answer for a key relates to what is held:
 
-- The latest call's answer for a key, whether a value or
-  `ProviderUnavailable`, replaces what was held. This holds even when the
-  producer stamps it earlier than the held value.
-- The one exception keeps O1's conflict rule: a later answer with the *same*
-  `observedAt` but a different value is held beside the earlier one, and O1
-  reports conflicting evidence (UNKNOWN).
-- `observedAt` still decides currentness in O1.
-- O1's own supersession rule over a set of statements is unchanged in
-  `pkg/operations`.
+- **Provider unavailable** (stamped with BORI's clock at receipt) always
+  replaces what was held, so there is no fallback to an older value.
+- **A value after an outage** replaces the outage statement: it is the
+  provider's latest answer, and O1 judges its currentness.
+- **Value against a held value** follows the producer's `observedAt` (API F9
+  / O1 S05):
+  - A strictly newer value replaces the held one.
+  - An older value is ignored, so a late red can never overwrite a fresher
+    recovery.
+  - An equal stamp with a different value is held beside the earlier one, and
+    O1 reports conflicting evidence (UNKNOWN).
 
 A value stamped **after its local receipt time** is rejected and recorded as
 `ProviderUnavailable` (`future-observedAt`). It is never clamped or
@@ -288,7 +289,9 @@ public standard.
 - Workload status changes and evidence expiry are observed by bounded
   polling. The reconcile requeues at the earlier of these, with a 1s floor:
   - the configured interval
-  - the next *future* refresh-due time of a queryable target
+  - the next *future* refresh-due time of a queryable target; when the
+    refresh falls due inside the target's cooldown, the cooldown end, which is
+    when the refresh can first be admitted
   - the cooldown end of a queryable target whose last episode stopped with
     work left (budget, deadline, cancellation or capacity)
 

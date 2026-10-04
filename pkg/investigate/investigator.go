@@ -179,12 +179,14 @@ func (iv *Investigator) Episode(targetUID string) (Episode, bool) {
 }
 
 // NextWake is the earliest future time at which a reconcile can do new work:
-// held evidence of a queryable target becoming due for refresh, or the
-// cooldown end of a queryable target whose last episode stopped with work
-// left (budget, deadline, cancellation or capacity). Elapsed times, targets
-// that are no longer queryable and episodes that finished their work never
-// produce a wake, so they cannot pin the requeue to its floor. Zero means
-// nothing is pending.
+// held evidence of a queryable target becoming due for refresh — or, when
+// that refresh falls due inside the target's cooldown, the cooldown end, the
+// first moment the refresh can be admitted — or the cooldown end of a
+// queryable target whose last episode stopped with work left (budget,
+// deadline, cancellation or capacity). Elapsed times, targets that are no
+// longer queryable and episodes that finished their work never produce a
+// wake, so they cannot pin the requeue to its floor. Zero means nothing is
+// pending.
 func (iv *Investigator) NextWake(qs Queries, now time.Time) time.Time {
 	iv.mu.Lock()
 	defer iv.mu.Unlock()
@@ -194,9 +196,16 @@ func (iv *Investigator) NextWake(qs Queries, now time.Time) time.Time {
 			next = t
 		}
 	}
-	for _, slots := range qs {
+	for uid, slots := range qs {
+		var admissible time.Time
+		if e, ok := iv.episodes[uid]; ok {
+			admissible = e.Started.Add(iv.limits.EpisodeCooldown)
+		}
 		for _, q := range slots {
 			if due, ok := iv.refreshDue(q); ok {
+				if admissible.After(due) {
+					due = admissible
+				}
 				consider(due)
 			}
 		}
@@ -519,15 +528,21 @@ func (iv *Investigator) refreshDue(q Query) (time.Time, bool) {
 	return expiry.Add(-margin), true
 }
 
-// admit stores the statement of the latest receipt for its key. Order is the
-// local receipt (dispatch) order, not the producer's ObservedAt: the latest
-// call's statement — value or provider-unavailable — replaces what was held,
-// so a skewed or replayed producer stamp can never shadow a later answer.
-// The one exception keeps O1's conflict semantics: a later receipt carrying
-// the same ObservedAt but a different statement is held beside the earlier
-// one, and O1 reports conflicting evidence (UNKNOWN). ObservedAt still
-// decides currentness in O1. A new key beyond capacity is refused
-// (conservative: the slot stays UNKNOWN) — nothing is evicted.
+// admit stores an observation for its key. Future-stamped values never get
+// here (rejected at receipt), so every held stamp is at or before the time
+// it was received.
+//
+//   - A provider-unavailable statement (stamped with the local receipt time)
+//     always replaces what was held: there is no fallback to an older value.
+//   - A value replaces a held provider-unavailable statement: it is the
+//     provider's latest answer, and O1 judges its currentness.
+//   - Value against held value follows the producer's ObservedAt (API F9 /
+//     O1 S05): a strictly newer value replaces; an older one — a late red
+//     after a fresher recovery — is ignored; an equal stamp with a different
+//     value is held beside the earlier one so O1 reports a conflict.
+//
+// A new key beyond capacity is refused (conservative: the slot stays
+// UNKNOWN) — nothing is evicted.
 func (iv *Investigator) admit(o operations.Observation) bool {
 	list, ok := iv.held[o.Key]
 	if !ok {
@@ -538,8 +553,14 @@ func (iv *Investigator) admit(o operations.Observation) bool {
 		iv.held[o.Key] = []operations.Observation{o}
 		return true
 	}
-	if o.Outcome == operations.OutcomeValue && list[0].Outcome == operations.OutcomeValue &&
-		o.ObservedAt.Equal(list[0].ObservedAt) {
+	if o.Outcome != operations.OutcomeValue || list[0].Outcome != operations.OutcomeValue {
+		iv.held[o.Key] = []operations.Observation{o}
+		return true
+	}
+	switch {
+	case o.ObservedAt.After(list[0].ObservedAt):
+		iv.held[o.Key] = []operations.Observation{o}
+	case o.ObservedAt.Equal(list[0].ObservedAt):
 		for _, h := range list {
 			if h.Value == o.Value {
 				return true
@@ -548,9 +569,7 @@ func (iv *Investigator) admit(o operations.Observation) bool {
 		if len(list) < 4 {
 			iv.held[o.Key] = append(list, o)
 		}
-		return true
 	}
-	iv.held[o.Key] = []operations.Observation{o}
 	return true
 }
 

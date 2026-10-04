@@ -410,21 +410,43 @@ func TestEqualLatestConflictIsUnknown(t *testing.T) {
 	}
 }
 
-// Held statements follow local receipt order: the latest call's answer
-// replaces what was held even if the producer stamps it earlier. The result
-// is never a false AVAILABLE. (O1's own stale-red rule over a given set of
-// statements is unchanged in pkg/operations.)
-func TestLatestReceiptWinsOverProducerStampOrder(t *testing.T) {
+// API F9 / O1 S05: a later answer carrying an older red must not overwrite a
+// fresher recovery. Value-vs-value follows the producer's ObservedAt.
+func TestStaleRedAfterRecoveryIsIgnored(t *testing.T) {
 	w := newWorld(ReferenceLimits())
 	w.seed("available-replicas", operations.Int(3), 0)
 	w.seed("ready-replicas", operations.Int(3), 0)
 	w.seed("api-serving", operations.Bool(true), 16*time.Second) // due
 	w.http.answers["api-serving"] = func() providers.Result {
-		return providers.Result{Value: operations.Bool(false), ObservedAt: t0.Add(-25 * time.Second)} // older stamp
+		return providers.Result{Value: operations.Bool(false), ObservedAt: t0.Add(-25 * time.Second)} // older red
 	}
 	w.run(context.Background())
-	if s := capState(w.assess(), "serve"); s != operations.Unavailable {
-		t.Fatalf("latest receipt did not win: %s", s)
+	expectCalls(t, w.http, "api-serving")
+	if s := capState(w.assess(), "serve"); s != operations.Available {
+		t.Fatalf("older red overwrote recovery: %s", s)
+	}
+}
+
+// After an outage, the provider's next answer replaces the outage statement
+// (no stuck UNKNOWN), and an outage always replaces a held value.
+func TestOutageAndValueReplaceEachOther(t *testing.T) {
+	w := newWorld(ReferenceLimits())
+	w.seed("available-replicas", operations.Int(3), 0)
+	w.seed("ready-replicas", operations.Int(3), 0)
+	w.http.answers["api-serving"] = func() providers.Result { return providers.Result{Unavailable: "http-status-503"} }
+	w.run(context.Background())
+	if s := capState(w.assess(), "serve"); s != operations.Unknown {
+		t.Fatalf("serve %s after outage", s)
+	}
+	w.clk.advance(11 * time.Second)
+	w.seed("available-replicas", operations.Int(3), 0)
+	w.seed("ready-replicas", operations.Int(3), 0)
+	w.http.answers["api-serving"] = func() providers.Result {
+		return providers.Result{Value: operations.Bool(true), ObservedAt: w.clk.now().Add(-12 * time.Second)} // stamped before the outage
+	}
+	w.run(context.Background())
+	if s := capState(w.assess(), "serve"); s != operations.Available {
+		t.Fatalf("serve %s: the answer after an outage was not taken", s)
 	}
 }
 
@@ -607,5 +629,60 @@ func TestOnlyAuthorizedBindingsReachTheRegistry(t *testing.T) {
 	w.queries()
 	if w.reg.lookups != 1 {
 		t.Fatalf("registry lookups %d, want 1", w.reg.lookups)
+	}
+}
+
+// Guardrail f825a5b1 P2-A regression: maxAge 30s, producer lag 10s,
+// cooldown 10s, requeue 30s. The refresh falls due (t+5) inside the
+// cooldown; at t+6 admission is denied, the next wake must be the cooldown
+// end (t+10), and the evidence must still be current/AVAILABLE at t+21.
+func TestRefreshDueInsideCooldownWakesAtCooldownEnd(t *testing.T) {
+	w := newWorld(ReferenceLimits())
+	lagged := func(v operations.Value) func() providers.Result {
+		return func() providers.Result {
+			return providers.Result{Value: v, ObservedAt: w.clk.now().Add(-10 * time.Second), EvidenceRef: "lagged"}
+		}
+	}
+	w.http.answers["api-serving"] = lagged(operations.Bool(true))
+	w.kube.answers["available-replicas"] = lagged(operations.Int(3))
+	w.kube.answers["ready-replicas"] = lagged(operations.Int(3))
+
+	// Scheduler: run, then requeue at min(30s interval, NextWake).
+	schedule := func() time.Time {
+		next := w.clk.now().Add(30 * time.Second)
+		if wk := w.iv.NextWake(w.queries(), w.clk.now()); !wk.IsZero() && wk.Before(next) {
+			next = wk
+		}
+		return next
+	}
+	w.run(context.Background())
+	if s := capState(w.assess(), "serve"); s != operations.Available {
+		t.Fatalf("initial serve %s", s)
+	}
+	calls := len(w.http.callList()) + len(w.kube.callList())
+
+	w.clk.advance(6 * time.Second) // refresh due at t+5, cooldown until t+10
+	w.run(context.Background())
+	if n := len(w.http.callList()) + len(w.kube.callList()); n != calls || w.iv.Stats().AdmissionDenied != 1 {
+		t.Fatalf("t+6: calls %d→%d, denied %d", calls, n, w.iv.Stats().AdmissionDenied)
+	}
+	wake := schedule()
+	if !wake.Equal(t0.Add(10 * time.Second)) {
+		t.Fatalf("t+6: next wake %s, want the cooldown end %s", wake, t0.Add(10*time.Second))
+	}
+	w.clk.advance(wake.Sub(w.clk.now()))
+	w.run(context.Background())
+	if n := len(w.http.callList()) + len(w.kube.callList()); n <= calls {
+		t.Fatal("no refresh at the cooldown end")
+	}
+	w.clk.advance(t0.Add(21 * time.Second).Sub(w.clk.now()))
+	ta := w.assess()
+	if s := capState(ta, "serve"); s != operations.Available {
+		t.Fatalf("t+21: serve %s, evidence lapsed", s)
+	}
+	for _, e := range ta.Evidence {
+		if e.Slot != "unused-slot" && e.Status != operations.EvidenceCurrent {
+			t.Fatalf("t+21: %s evidence %s", e.Slot, e.Status)
+		}
 	}
 }
