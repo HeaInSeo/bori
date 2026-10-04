@@ -96,16 +96,25 @@ and equal-latest-conflicting evidence is UNKNOWN.
 How a new answer for a key relates to what is held:
 
 - **Provider unavailable** (stamped with BORI's clock at receipt) always
-  replaces what was held, so there is no fallback to an older value.
-- **A value after an outage** replaces the outage statement: it is the
-  provider's latest answer, and O1 judges its currentness.
-- **Value against a held value** follows the producer's `observedAt` (API F9
-  / O1 S05):
-  - A strictly newer value replaces the held one.
-  - An older value is ignored, so a late red can never overwrite a fresher
-    recovery.
-  - An equal stamp with a different value is held beside the earlier one, and
-    O1 reports conflicting evidence (UNKNOWN).
+  replaces the held evidence, so there is no fallback to an older value.
+- **Values are ordered against a per-key watermark:** the `observedAt` of the
+  last accepted value for that exact full key. An outage does not erase it
+  (API F9 / O1 S05):
+  - A first-ever value, or one strictly newer than the watermark, replaces
+    the held evidence. This clears an outage and advances the watermark.
+  - An older value, or an equal-stamp replay after an outage, is ignored, so
+    a late red can never overwrite a fresher recovery and a stale green can
+    never resurface after an outage.
+  - While the watermark's value is still held, an equal stamp with a
+    different value is held beside it, and O1 reports conflicting evidence
+    (UNKNOWN).
+- **Rejected results never advance the watermark:** future-stamped,
+  malformed and timed-out results are recorded as provider-unavailable.
+- **The watermark lives and dies with its key.** It survives episodes,
+  cooldowns and reconciles. It counts toward the held-key capacity and is
+  purged with the key on identity change, grant revocation, deletion or
+  invalidation. It is never reused across targets, providers or config
+  revisions.
 
 A value stamped **after its local receipt time** is rejected and recorded as
 `ProviderUnavailable` (`future-observedAt`). It is never clamped or

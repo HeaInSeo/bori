@@ -94,8 +94,12 @@ type Investigator struct {
 	limits Limits
 	clock  func() time.Time
 
-	mu       sync.Mutex
-	held     map[operations.ApplicabilityKey][]operations.Observation
+	mu   sync.Mutex
+	held map[operations.ApplicabilityKey][]operations.Observation
+	// marks is the ObservedAt of the last accepted value per full key. It
+	// survives provider outages so an older or replayed value can never
+	// clear an outage, and it is purged with the key's held evidence.
+	marks    map[operations.ApplicabilityKey]time.Time
 	episodes map[string]*Episode // by OperationalTarget UID
 	stats    Stats
 }
@@ -106,6 +110,7 @@ func New(l Limits, clock func() time.Time) *Investigator {
 		limits:   l,
 		clock:    clock,
 		held:     map[operations.ApplicabilityKey][]operations.Observation{},
+		marks:    map[operations.ApplicabilityKey]time.Time{},
 		episodes: map[string]*Episode{},
 	}
 }
@@ -240,6 +245,7 @@ func (iv *Investigator) purge(qs Queries) {
 	for k := range iv.held {
 		if !authorized[k] {
 			delete(iv.held, k)
+			delete(iv.marks, k)
 		}
 	}
 	now := iv.clock()
@@ -533,16 +539,19 @@ func (iv *Investigator) refreshDue(q Query) (time.Time, bool) {
 // it was received.
 //
 //   - A provider-unavailable statement (stamped with the local receipt time)
-//     always replaces what was held: there is no fallback to an older value.
-//   - A value replaces a held provider-unavailable statement: it is the
-//     provider's latest answer, and O1 judges its currentness.
-//   - Value against held value follows the producer's ObservedAt (API F9 /
-//     O1 S05): a strictly newer value replaces; an older one — a late red
-//     after a fresher recovery — is ignored; an equal stamp with a different
-//     value is held beside the earlier one so O1 reports a conflict.
+//     always replaces the held evidence: there is no fallback to an older
+//     value. It does not touch the key's value watermark.
+//   - A value is ordered against the watermark — the ObservedAt of the last
+//     accepted value for this key — not against whatever is currently held,
+//     so an outage in between cannot erase that ordering (API F9 / O1 S05):
+//     a first-ever or strictly newer value replaces the held evidence
+//     (clearing an outage) and advances the watermark; an equal stamp with a
+//     different value, while that value is still held, is held beside it so
+//     O1 reports a conflict; an older value, or an equal replay after an
+//     outage, is ignored.
 //
 // A new key beyond capacity is refused (conservative: the slot stays
-// UNKNOWN) — nothing is evicted.
+// UNKNOWN) — nothing is evicted. The watermark lives and dies with the key.
 func (iv *Investigator) admit(o operations.Observation) bool {
 	list, ok := iv.held[o.Key]
 	if !ok {
@@ -551,16 +560,21 @@ func (iv *Investigator) admit(o operations.Observation) bool {
 			return false
 		}
 		iv.held[o.Key] = []operations.Observation{o}
+		if o.Outcome == operations.OutcomeValue {
+			iv.marks[o.Key] = o.ObservedAt
+		}
 		return true
 	}
-	if o.Outcome != operations.OutcomeValue || list[0].Outcome != operations.OutcomeValue {
+	if o.Outcome != operations.OutcomeValue {
 		iv.held[o.Key] = []operations.Observation{o}
 		return true
 	}
+	mark, hasMark := iv.marks[o.Key]
 	switch {
-	case o.ObservedAt.After(list[0].ObservedAt):
+	case !hasMark || o.ObservedAt.After(mark):
 		iv.held[o.Key] = []operations.Observation{o}
-	case o.ObservedAt.Equal(list[0].ObservedAt):
+		iv.marks[o.Key] = o.ObservedAt
+	case o.ObservedAt.Equal(mark) && list[0].Outcome == operations.OutcomeValue && list[0].ObservedAt.Equal(mark):
 		for _, h := range list {
 			if h.Value == o.Value {
 				return true

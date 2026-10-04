@@ -427,9 +427,90 @@ func TestStaleRedAfterRecoveryIsIgnored(t *testing.T) {
 	}
 }
 
-// After an outage, the provider's next answer replaces the outage statement
-// (no stuck UNKNOWN), and an outage always replaces a held value.
-func TestOutageAndValueReplaceEachOther(t *testing.T) {
+// outageSequence drives one full key through: value v1 stamped t0 (received
+// at t0) → provider outage received at t0+16 → value v2 stamped `stamp`
+// received at t0+27. It returns serve's state after each step.
+func outageSequence(t *testing.T, v1 bool, v2 func(w *world) providers.Result) [3]operations.CapabilityState {
+	t.Helper()
+	w := newWorld(ReferenceLimits())
+	refresh := func() {
+		w.seed("available-replicas", operations.Int(3), 0)
+		w.seed("ready-replicas", operations.Int(3), 0)
+	}
+	var out [3]operations.CapabilityState
+	refresh()
+	w.http.answers["api-serving"] = func() providers.Result {
+		return providers.Result{Value: operations.Bool(v1), ObservedAt: t0}
+	}
+	w.run(context.Background())
+	out[0] = capState(w.assess(), "serve")
+
+	w.clk.advance(16 * time.Second) // due for refresh, cooldown elapsed
+	refresh()
+	w.http.answers["api-serving"] = func() providers.Result { return providers.Result{Unavailable: "http-status-503"} }
+	w.run(context.Background())
+	out[1] = capState(w.assess(), "serve")
+
+	w.clk.advance(11 * time.Second) // t0+27: next episode admitted
+	refresh()
+	w.http.answers["api-serving"] = func() providers.Result { return v2(w) }
+	w.run(context.Background())
+	if n := len(w.http.callList()); n != 3 {
+		t.Fatalf("http calls %d, want 3 (one per step of the sequence)", n)
+	}
+	out[2] = capState(w.assess(), "serve")
+	return out
+}
+
+// Guardrail 284d22c7 P1-B regressions: an outage must not erase the ordering
+// of the last accepted value.
+func TestOutageDoesNotEraseValueOrdering(t *testing.T) {
+	older := func(v bool) func(w *world) providers.Result {
+		return func(w *world) providers.Result {
+			return providers.Result{Value: operations.Bool(v), ObservedAt: t0.Add(-time.Second)}
+		}
+	}
+	cases := []struct {
+		name string
+		v1   bool
+		v2   func(w *world) providers.Result
+		want [3]operations.CapabilityState
+	}{
+		{"stale red after outage (was false UNAVAILABLE)", true, older(false),
+			[3]operations.CapabilityState{operations.Available, operations.Unknown, operations.Unknown}},
+		{"stale green after outage (was false AVAILABLE)", false, older(true),
+			[3]operations.CapabilityState{operations.Unavailable, operations.Unknown, operations.Unknown}},
+		{"equal replay after outage stays UNKNOWN", true,
+			func(w *world) providers.Result { return providers.Result{Value: operations.Bool(true), ObservedAt: t0} },
+			[3]operations.CapabilityState{operations.Available, operations.Unknown, operations.Unknown}},
+		{"equal stamp, different value after outage stays UNKNOWN", true,
+			func(w *world) providers.Result {
+				return providers.Result{Value: operations.Bool(false), ObservedAt: t0}
+			},
+			[3]operations.CapabilityState{operations.Available, operations.Unknown, operations.Unknown}},
+		{"genuinely newer value recovers", false,
+			func(w *world) providers.Result {
+				return providers.Result{Value: operations.Bool(true), ObservedAt: w.clk.now()}
+			},
+			[3]operations.CapabilityState{operations.Unavailable, operations.Unknown, operations.Available}},
+		{"genuinely newer negative value", true,
+			func(w *world) providers.Result {
+				return providers.Result{Value: operations.Bool(false), ObservedAt: w.clk.now()}
+			},
+			[3]operations.CapabilityState{operations.Available, operations.Unknown, operations.Unavailable}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := outageSequence(t, tc.v1, tc.v2); got != tc.want {
+				t.Fatalf("states %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Positive control: with no value ever accepted for the key, the first value
+// after an outage is taken whatever its (non-future) stamp.
+func TestFirstEverValueAfterOutageIsAccepted(t *testing.T) {
 	w := newWorld(ReferenceLimits())
 	w.seed("available-replicas", operations.Int(3), 0)
 	w.seed("ready-replicas", operations.Int(3), 0)
@@ -446,7 +527,56 @@ func TestOutageAndValueReplaceEachOther(t *testing.T) {
 	}
 	w.run(context.Background())
 	if s := capState(w.assess(), "serve"); s != operations.Available {
-		t.Fatalf("serve %s: the answer after an outage was not taken", s)
+		t.Fatalf("serve %s: first-ever value after an outage was not taken", s)
+	}
+}
+
+// Equal stamp, different value, no outage in between: conflict (UNKNOWN).
+// Equal stamp, same value: idempotent replay.
+func TestEqualStampConflictAndReplayAgainstWatermark(t *testing.T) {
+	for _, tc := range []struct {
+		second bool
+		want   operations.CapabilityState
+	}{{false, operations.Unknown}, {true, operations.Available}} {
+		w := newWorld(ReferenceLimits())
+		w.seed("available-replicas", operations.Int(3), 0)
+		w.seed("ready-replicas", operations.Int(3), 0)
+		stamp := t0.Add(-20 * time.Second) // current, due for refresh
+		val := true
+		w.http.answers["api-serving"] = func() providers.Result { return providers.Result{Value: operations.Bool(val), ObservedAt: stamp} }
+		w.run(context.Background())
+		val = tc.second
+		w.clk.advance(10 * time.Second)
+		w.seed("available-replicas", operations.Int(3), 0)
+		w.seed("ready-replicas", operations.Int(3), 0)
+		w.run(context.Background())
+		if s := capState(w.assess(), "serve"); s != tc.want {
+			t.Fatalf("second=%v: serve %s, want %s", tc.second, s, tc.want)
+		}
+	}
+}
+
+// The watermark is purged with the key: after an identity change nothing of
+// the old key's ordering remains, and nothing carries over to the new key.
+func TestWatermarkPurgedWithKey(t *testing.T) {
+	w := newWorld(ReferenceLimits())
+	w.http.answers["api-serving"] = boolAt(w.clk, true)
+	w.kube.answers["available-replicas"] = intAt(w.clk, 3)
+	w.kube.answers["ready-replicas"] = intAt(w.clk, 3)
+	w.run(context.Background())
+	if len(w.iv.marks) == 0 {
+		t.Fatal("no watermark recorded")
+	}
+	w.base.Targets[0].ResolvedUID = "w-svc-recreated"
+	w.clk.advance(time.Second)
+	w.run(context.Background())
+	for k := range w.iv.marks {
+		if k.ResolvedUID != "w-svc-recreated" {
+			t.Fatalf("watermark of the old identity retained: %+v", k)
+		}
+	}
+	if len(w.iv.marks) > len(w.iv.held) {
+		t.Fatalf("%d watermarks for %d held keys", len(w.iv.marks), len(w.iv.held))
 	}
 }
 
