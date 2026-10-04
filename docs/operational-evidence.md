@@ -186,7 +186,7 @@ the two providers to different slots.
   - A value must be JSON `true`/`false`, an integral number, or a string,
     with no coercion. A type that doesn't match the slot reaches O1, which
     returns `evidence-type-mismatch`.
-  - These all report unavailable: a non-200 status, a non-JSON body, a missing
+  - These all report unavailable: a non-200 status, a non-JSON body, any data after the single typed object other than whitespace (garbage, a second JSON value, a truncated tail), a missing
     subject, `observedAt` or field, a float/null/object value, an oversized
     body, and a subject mismatch.
   - Unknown fields are ignored. URLs, namespaces, tool names, budgets or

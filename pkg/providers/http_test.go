@@ -258,3 +258,41 @@ func TestHTTPPayloadCannotChangeAuthority(t *testing.T) {
 		t.Fatalf("payload changed the applicability key: %+v", o.Key)
 	}
 }
+
+// Codex 4177407393 regression: the whole HTTP 200 body must be exactly one
+// typed object (plus whitespace). Anything after it makes the response
+// malformed instead of promoting the first object to evidence.
+func TestHTTPRejectsTrailingDataAfterTypedObject(t *testing.T) {
+	valid := body(subjectUID, observed, `{"serving":true}`)
+	cases := map[string]struct {
+		body string
+		want string
+	}{
+		"trailing garbage":             {valid + "oops", "malformed-response"},
+		"second contradicting object":  {valid + body(subjectUID, observed, `{"serving":false}`), "malformed-response"},
+		"trailing scalar":              {valid + " true", "malformed-response"},
+		"trailing null":                {valid + "\nnull", "malformed-response"},
+		"truncated trailing JSON":      {valid + "{", "malformed-response"},
+		"control: single object":       {valid, ""},
+		"control: trailing whitespace": {valid + " \n\t\r\n", ""},
+		"control: unknown fields kept": {`{"subject":"` + subjectUID + `","observedAt":"` + observed + `","extra":{"a":[1,2]},"values":{"serving":true}}`, ""},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			s := serve(t, func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, tc.body) })
+			res := provider(t, s.URL, lab, time.Second).Observe(context.Background(), req("api-serving", operations.TypeBoolean))
+			if res.Unavailable != tc.want {
+				t.Fatalf("result %+v, want unavailable %q", res, tc.want)
+			}
+			if tc.want != "" && (res.Value != (operations.Value{}) || res.EvidenceRef != "") {
+				t.Fatalf("malformed body promoted a value: %+v", res)
+			}
+			if tc.want == "" && res.Value != operations.Bool(true) {
+				t.Fatalf("control rejected: %+v", res)
+			}
+			if s.hits.Load() != 1 {
+				t.Fatalf("%d HTTP calls, want 1", s.hits.Load())
+			}
+		})
+	}
+}

@@ -184,6 +184,13 @@ func (h *HTTPTyped) Observe(ctx context.Context, req Request) Result {
 	if err := dec.Decode(&tr); err != nil {
 		return Result{Unavailable: "malformed-response"}
 	}
+	// The whole body must be that one object (plus whitespace): trailing
+	// garbage or a second JSON value makes the response ambiguous, so the
+	// first object is never promoted to evidence.
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return Result{Unavailable: "malformed-response"}
+	}
 	if tr.Subject != ep.SubjectUID {
 		return Result{Unavailable: "subject-mismatch"}
 	}
