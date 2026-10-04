@@ -93,14 +93,29 @@ Currentness is O1's. Provider `observedAt`, optional `validUntil` and the slot
 `maxAge` decide whether evidence is current. Stale, expired, future, wrong-type
 and equal-latest-conflicting evidence is UNKNOWN.
 
-For one key, a strictly later statement replaces older ones. An older
-statement (for example, a late red after a recovery) is ignored.
+Held statements follow **local receipt order**, not the producer's
+`observedAt`:
+
+- The latest call's answer for a key, whether a value or
+  `ProviderUnavailable`, replaces what was held. This holds even when the
+  producer stamps it earlier than the held value.
+- The one exception keeps O1's conflict rule: a later answer with the *same*
+  `observedAt` but a different value is held beside the earlier one, and O1
+  reports conflicting evidence (UNKNOWN).
+- `observedAt` still decides currentness in O1.
+- O1's own supersession rule over a set of statements is unchanged in
+  `pkg/operations`.
+
+A value stamped **after its local receipt time** is rejected and recorded as
+`ProviderUnavailable` (`future-observedAt`). It is never clamped or
+restamped. Held, it would shadow every later answer and silently turn
+"current" once the clock caught up. A producer whose clock runs ahead of
+BORI's therefore yields UNKNOWN until its clock is corrected.
 
 A provider failure is recorded as `ProviderUnavailable` for that exact key. It
-is stamped with BORI's clock after the call and supersedes the previous value,
+is stamped with BORI's clock after the call and replaces the previous value,
 so there is no fallback to an older AVAILABLE. It is never evidence that the
-application failed. Producer `observedAt` and BORI's clock can differ; skew is
-a known limit of the reference profile.
+application failed.
 
 One authoritative binding per target/slot (O1) still holds. The fixtures bind
 the two providers to different slots.
@@ -235,7 +250,7 @@ supersedes the episode.
 | `MaxCallsPerEpisode` 6 | real provider calls; each call is exactly one GET (no retries, redirects or fan-out) |
 | `MaxStepsPerEpisode` 8 | planner iterations |
 | `EpisodeDeadline` 10s | elapsed time from episode start (absolute) |
-| `PerCallTimeout` 2s | one call, also capped by the remaining deadline; enforced on both the context and the evaluation clock |
+| `PerCallTimeout` 2s | one call, also capped by the remaining deadline; enforced on both the context and the evaluation clock. The configured `limits.perCallTimeout` (cap 10s) is applied to the investigator, the HTTP client and Kubernetes-status calls alike |
 | concurrency 1 | calls are strictly sequential |
 | `MaxCandidates` 32, `MaxTraceEntries` 64 | per episode |
 | `MaxResidentEpisodes` 256 | episode records in memory |
@@ -271,8 +286,15 @@ public standard.
   (UNKNOWN) and no episode history. It claims no durable incident or budget
   continuity.
 - Workload status changes and evidence expiry are observed by bounded
-  polling. The reconcile requeues at the earlier of the configured interval
-  and the next refresh-due or cooldown-end time, with a 1s floor. No
+  polling. The reconcile requeues at the earlier of these, with a 1s floor:
+  - the configured interval
+  - the next *future* refresh-due time of a queryable target
+  - the cooldown end of a queryable target whose last episode stopped with
+    work left (budget, deadline, cancellation or capacity)
+
+  Elapsed times, finished episodes and targets that are no longer queryable
+  produce no wake. Obsolete terminal episode records are forgotten once their
+  cooldown has elapsed, so the requeue cannot collapse to the floor. No
   status-update watch is added.
 
 ### Snapshot and race boundary

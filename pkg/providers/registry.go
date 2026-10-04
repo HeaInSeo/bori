@@ -81,18 +81,28 @@ func LoadConfig(path string) (*Config, error) {
 	return &c, nil
 }
 
+// PerCallTimeout is the validated per-call timeout: the configured value or
+// DefaultPerCallTimeout. The investigator and the HTTP client both use it.
+func (c *Config) PerCallTimeout() (time.Duration, error) {
+	if c.Limits == nil || c.Limits.PerCallTimeout == "" {
+		return DefaultPerCallTimeout, nil
+	}
+	d, err := time.ParseDuration(c.Limits.PerCallTimeout)
+	if err != nil || d <= 0 || d > MaxPerCallTimeout {
+		return 0, fmt.Errorf("perCallTimeout must be in (0, %s]", MaxPerCallTimeout)
+	}
+	return d, nil
+}
+
 // Build constructs the registry. The Kubernetes adapter reads through reader,
 // which should be an uncached reader so each query is one bounded GET.
 func (c *Config) Build(reader client.Reader, now func() time.Time) (*Registry, error) {
-	timeout, maxBody := DefaultPerCallTimeout, int64(DefaultMaxBodyBytes)
+	timeout, err := c.PerCallTimeout()
+	if err != nil {
+		return nil, err
+	}
+	maxBody := int64(DefaultMaxBodyBytes)
 	if c.Limits != nil {
-		if c.Limits.PerCallTimeout != "" {
-			d, err := time.ParseDuration(c.Limits.PerCallTimeout)
-			if err != nil || d <= 0 || d > MaxPerCallTimeout {
-				return nil, fmt.Errorf("perCallTimeout must be in (0, %s]", MaxPerCallTimeout)
-			}
-			timeout = d
-		}
 		if c.Limits.MaxResponseByte != 0 {
 			if c.Limits.MaxResponseByte < 0 || c.Limits.MaxResponseByte > MaxBodyBytesCap {
 				return nil, fmt.Errorf("maxResponseBytes must be in (0, %d]", MaxBodyBytesCap)

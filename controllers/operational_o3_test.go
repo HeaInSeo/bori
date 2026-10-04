@@ -635,3 +635,24 @@ func TestO3TraceIsBoundedAndOwnSlotsOnly(t *testing.T) {
 		}
 	}
 }
+
+// Guardrail P2-1 / Codex 4166341286 regression: elapsed cooldowns and
+// targets that are no longer queryable must not pin requeue to its 1s floor.
+func TestO3RequeueDoesNotCollapseToFloor(t *testing.T) {
+	e := newO3Env(t)
+	e.reconcile()
+	e.clk.add(11 * time.Second) // every episode's cooldown has elapsed
+	if d := e.r.requeueAfter(investigate.Queries{}, e.clk.now()); d != e.r.RequeueInterval {
+		t.Fatalf("requeue %s with nothing pending, want the %s interval", d, e.r.RequeueInterval)
+	}
+	if _, err := e.r.Reconcile(context.Background(), ctrl.Request{}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := e.r.Reconcile(context.Background(), ctrl.Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RequeueAfter <= time.Second {
+		t.Fatalf("requeue %s collapsed to the floor", res.RequeueAfter)
+	}
+}

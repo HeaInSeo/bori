@@ -199,8 +199,13 @@ func main() {
 				setupLog.Error(err, "build provider registry")
 				os.Exit(1)
 			}
+			limits, err := investigate.ForConfig(cfg)
+			if err != nil {
+				setupLog.Error(err, "provider limits")
+				os.Exit(1)
+			}
 			rec.Providers = reg
-			rec.Investigator = investigate.New(investigate.ReferenceLimits(), time.Now)
+			rec.Investigator = investigate.New(limits, time.Now)
 			setupLog.Info("operational evidence providers enabled (O3 reference profile)", "config", providerConfigPath)
 		}
 		if err := rec.SetupWithManager(mgr); err != nil {

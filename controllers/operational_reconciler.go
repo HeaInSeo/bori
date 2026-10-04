@@ -184,7 +184,7 @@ func (r *OperationalReconciler) requeueAfter(qs investigate.Queries, now time.Ti
 	if r.Investigator == nil {
 		return d
 	}
-	if wake := r.Investigator.NextWake(qs); !wake.IsZero() {
+	if wake := r.Investigator.NextWake(qs, now); !wake.IsZero() {
 		if w := wake.Sub(now); w < d || d <= 0 {
 			d = w
 		}

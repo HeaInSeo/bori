@@ -10,7 +10,11 @@
 // capability; they are never promoted to facts or RCA.
 package investigate
 
-import "time"
+import (
+	"time"
+
+	"github.com/HeaInSeo/bori/pkg/providers"
+)
 
 // Limits is the reference profile budget. The values are a reference
 // configuration for this bounded experiment, not a public semantic standard.
@@ -69,4 +73,17 @@ func ReferenceLimits() Limits {
 		RefreshFraction:     0.5,
 		RunSlice:            20 * time.Second,
 	}
+}
+
+// ForConfig returns the reference limits with the per-call timeout taken
+// from the provider configuration, so the investigator enforces the same
+// bound the HTTP client is built with and Kubernetes-status calls get it too.
+func ForConfig(cfg *providers.Config) (Limits, error) {
+	l := ReferenceLimits()
+	d, err := cfg.PerCallTimeout()
+	if err != nil {
+		return Limits{}, err
+	}
+	l.PerCallTimeout = d
+	return l, nil
 }

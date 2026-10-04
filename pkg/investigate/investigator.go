@@ -178,14 +178,19 @@ func (iv *Investigator) Episode(targetUID string) (Episode, bool) {
 	return c, true
 }
 
-// NextWake is the earliest time held evidence becomes due for refresh or a
-// cooldown ends, or zero if nothing is pending.
-func (iv *Investigator) NextWake(qs Queries) time.Time {
+// NextWake is the earliest future time at which a reconcile can do new work:
+// held evidence of a queryable target becoming due for refresh, or the
+// cooldown end of a queryable target whose last episode stopped with work
+// left (budget, deadline, cancellation or capacity). Elapsed times, targets
+// that are no longer queryable and episodes that finished their work never
+// produce a wake, so they cannot pin the requeue to its floor. Zero means
+// nothing is pending.
+func (iv *Investigator) NextWake(qs Queries, now time.Time) time.Time {
 	iv.mu.Lock()
 	defer iv.mu.Unlock()
 	var next time.Time
 	consider := func(t time.Time) {
-		if !t.IsZero() && (next.IsZero() || t.Before(next)) {
+		if t.After(now) && (next.IsZero() || t.Before(next)) {
 			next = t
 		}
 	}
@@ -196,10 +201,22 @@ func (iv *Investigator) NextWake(qs Queries) time.Time {
 			}
 		}
 	}
-	for _, e := range iv.episodes {
-		consider(e.Started.Add(iv.limits.EpisodeCooldown))
+	for uid, e := range iv.episodes {
+		if _, queryable := qs[uid]; queryable && workLeft(e.State) {
+			consider(e.Started.Add(iv.limits.EpisodeCooldown))
+		}
 	}
 	return next
+}
+
+// workLeft reports whether an episode ended before its work was done, so a
+// new episode after the cooldown may make progress.
+func workLeft(s EpisodeState) bool {
+	switch s {
+	case ExhaustedCalls, ExhaustedSteps, DeadlineHit, Cancelled, CapacityHit:
+		return true
+	}
+	return false
 }
 
 // purge drops held evidence whose key is not currently authorized and
@@ -216,9 +233,18 @@ func (iv *Investigator) purge(qs Queries) {
 			delete(iv.held, k)
 		}
 	}
+	now := iv.clock()
 	for uid, e := range iv.episodes {
-		if _, ok := qs[uid]; !ok && e.active() {
+		if _, ok := qs[uid]; ok {
+			continue
+		}
+		if e.active() {
 			iv.end(e, Superseded, "target no longer queryable")
+		}
+		// A record whose cooldown has elapsed no longer restricts admission;
+		// forgetting it grants no allowance and bounds memory.
+		if !now.Before(e.Started.Add(iv.limits.EpisodeCooldown)) {
+			delete(iv.episodes, uid)
 		}
 	}
 }
@@ -359,6 +385,12 @@ func (iv *Investigator) investigate(ctx, runCtx context.Context, base operations
 			}
 			res = providers.Result{Unavailable: "timeout"}
 		}
+		// A producer stamp later than our own receipt is not trusted: it
+		// would shadow every later statement and turn current only once the
+		// clock caught up. It is rejected, never clamped or restamped.
+		if res.Unavailable == "" && res.ObservedAt.After(after) {
+			res = providers.Result{Unavailable: "future-observedAt"}
+		}
 		obs := providers.Observation(q.Request, res, after)
 		if !iv.admit(obs) {
 			iv.end(ep, CapacityHit, "")
@@ -487,11 +519,15 @@ func (iv *Investigator) refreshDue(q Query) (time.Time, bool) {
 	return expiry.Add(-margin), true
 }
 
-// admit stores an observation as the latest statement of its key. A strictly
-// later statement replaces the held ones; an equal-instant statement is kept
-// beside them (O1 then reports a conflict if they differ); an older one is
-// ignored. A new key beyond capacity is refused (conservative: the slot stays
-// UNKNOWN) — nothing is evicted.
+// admit stores the statement of the latest receipt for its key. Order is the
+// local receipt (dispatch) order, not the producer's ObservedAt: the latest
+// call's statement — value or provider-unavailable — replaces what was held,
+// so a skewed or replayed producer stamp can never shadow a later answer.
+// The one exception keeps O1's conflict semantics: a later receipt carrying
+// the same ObservedAt but a different statement is held beside the earlier
+// one, and O1 reports conflicting evidence (UNKNOWN). ObservedAt still
+// decides currentness in O1. A new key beyond capacity is refused
+// (conservative: the slot stays UNKNOWN) — nothing is evicted.
 func (iv *Investigator) admit(o operations.Observation) bool {
 	list, ok := iv.held[o.Key]
 	if !ok {
@@ -502,19 +538,19 @@ func (iv *Investigator) admit(o operations.Observation) bool {
 		iv.held[o.Key] = []operations.Observation{o}
 		return true
 	}
-	switch {
-	case o.ObservedAt.After(list[0].ObservedAt):
-		iv.held[o.Key] = []operations.Observation{o}
-	case o.ObservedAt.Equal(list[0].ObservedAt):
+	if o.Outcome == operations.OutcomeValue && list[0].Outcome == operations.OutcomeValue &&
+		o.ObservedAt.Equal(list[0].ObservedAt) {
 		for _, h := range list {
-			if h == o {
+			if h.Value == o.Value {
 				return true
 			}
 		}
 		if len(list) < 4 {
 			iv.held[o.Key] = append(list, o)
 		}
+		return true
 	}
+	iv.held[o.Key] = []operations.Observation{o}
 	return true
 }
 

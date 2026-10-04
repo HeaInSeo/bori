@@ -366,11 +366,12 @@ func TestCurrentnessSemanticsAreO1s(t *testing.T) {
 				return providers.Result{Value: operations.Bool(true), ObservedAt: w.clk.now(), ValidUntil: w.clk.now()}
 			}
 		}, operations.ReasonEvidenceStale},
+		// A stamp after local receipt is rejected, not held for later.
 		"future": {func(w *world) func() providers.Result {
 			return func() providers.Result {
 				return providers.Result{Value: operations.Bool(true), ObservedAt: w.clk.now().Add(time.Hour)}
 			}
-		}, operations.ReasonEvidenceMissing},
+		}, operations.ReasonProviderUnavailable},
 		"wrong type": {func(w *world) func() providers.Result {
 			return func() providers.Result { return providers.Result{Value: operations.Int(1), ObservedAt: w.clk.now()} }
 		}, operations.ReasonEvidenceTypeMismatch},
@@ -409,17 +410,139 @@ func TestEqualLatestConflictIsUnknown(t *testing.T) {
 	}
 }
 
-func TestStaleRedAfterRecoveryIsIgnored(t *testing.T) {
+// Held statements follow local receipt order: the latest call's answer
+// replaces what was held even if the producer stamps it earlier. The result
+// is never a false AVAILABLE. (O1's own stale-red rule over a given set of
+// statements is unchanged in pkg/operations.)
+func TestLatestReceiptWinsOverProducerStampOrder(t *testing.T) {
 	w := newWorld(ReferenceLimits())
 	w.seed("available-replicas", operations.Int(3), 0)
 	w.seed("ready-replicas", operations.Int(3), 0)
 	w.seed("api-serving", operations.Bool(true), 16*time.Second) // due
 	w.http.answers["api-serving"] = func() providers.Result {
-		return providers.Result{Value: operations.Bool(false), ObservedAt: t0.Add(-25 * time.Second)} // older red
+		return providers.Result{Value: operations.Bool(false), ObservedAt: t0.Add(-25 * time.Second)} // older stamp
 	}
 	w.run(context.Background())
-	if s := capState(w.assess(), "serve"); s != operations.Available {
-		t.Fatalf("older red overwrote recovery: %s", s)
+	if s := capState(w.assess(), "serve"); s != operations.Unavailable {
+		t.Fatalf("latest receipt did not win: %s", s)
+	}
+}
+
+// Guardrail P1-1 regression: a far-future stamped success must not shadow
+// later real negative facts nor turn into AVAILABLE once the clock catches up.
+func TestFarFutureSuccessCannotShadowLaterNegativeFacts(t *testing.T) {
+	w := newWorld(ReferenceLimits())
+	w.seed("available-replicas", operations.Int(3), 0)
+	w.seed("ready-replicas", operations.Int(3), 0)
+	answer := func() providers.Result {
+		return providers.Result{Value: operations.Bool(true), ObservedAt: w.clk.now().Add(time.Hour)}
+	}
+	w.http.answers["api-serving"] = func() providers.Result { return answer() }
+	w.run(context.Background())
+	if s := capState(w.assess(), "serve"); s == operations.Available {
+		t.Fatal("future-stamped success accepted")
+	}
+	// Real negative facts follow.
+	answer = func() providers.Result {
+		return providers.Result{Value: operations.Bool(false), ObservedAt: w.clk.now()}
+	}
+	for i := 0; i < 8; i++ {
+		w.clk.advance(11 * time.Second)
+		w.seed("available-replicas", operations.Int(3), 0)
+		w.seed("ready-replicas", operations.Int(3), 0)
+		w.run(context.Background())
+		if s := capState(w.assess(), "serve"); s != operations.Unavailable {
+			t.Fatalf("round %d: serve %s, want the real negative fact", i, s)
+		}
+	}
+	// Long after the future stamp would have become "current".
+	w.clk.advance(time.Hour)
+	w.seed("available-replicas", operations.Int(3), 0)
+	w.seed("ready-replicas", operations.Int(3), 0)
+	w.run(context.Background())
+	if s := capState(w.assess(), "serve"); s == operations.Available {
+		t.Fatal("shadowed future success became a false AVAILABLE")
+	}
+}
+
+// Guardrail P1-1 regression: a success stamped ahead of our clock (producer
+// skew) followed by a provider outage — the outage must win, at every
+// evaluation instant afterwards.
+func TestSkewedSuccessFollowedByOutageNeverAvailable(t *testing.T) {
+	w := newWorld(ReferenceLimits())
+	w.seed("available-replicas", operations.Int(3), 0)
+	w.seed("ready-replicas", operations.Int(3), 0)
+	w.http.answers["api-serving"] = func() providers.Result {
+		return providers.Result{Value: operations.Bool(true), ObservedAt: w.clk.now().Add(5 * time.Second)}
+	}
+	w.run(context.Background())
+	w.http.answers["api-serving"] = func() providers.Result { return providers.Result{Unavailable: "http-status-503"} }
+	for i := 0; i < 6; i++ {
+		w.clk.advance(2 * time.Second)
+		if s := capState(w.assess(), "serve"); s == operations.Available {
+			t.Fatalf("t+%ds: skewed success surfaced as AVAILABLE", 2*(i+1))
+		}
+	}
+	w.clk.advance(10 * time.Second)
+	w.seed("available-replicas", operations.Int(3), 0)
+	w.seed("ready-replicas", operations.Int(3), 0)
+	w.run(context.Background())
+	cr, _ := w.assess().Capability("serve")
+	if cr.State != operations.Unknown || cr.Reasons[0].Code != operations.ReasonProviderUnavailable {
+		t.Fatalf("serve %+v, want the outage", cr)
+	}
+
+	// Same order with a stamp that is not in the future: the later outage
+	// still replaces the earlier success.
+	w = newWorld(ReferenceLimits())
+	w.seed("available-replicas", operations.Int(3), 0)
+	w.seed("ready-replicas", operations.Int(3), 0)
+	w.http.answers["api-serving"] = boolAt(w.clk, true)
+	w.run(context.Background())
+	w.clk.advance(16 * time.Second) // due for refresh
+	w.http.answers["api-serving"] = func() providers.Result { return providers.Result{Unavailable: "http-status-503"} }
+	w.run(context.Background())
+	if s := capState(w.assess(), "serve"); s != operations.Unknown {
+		t.Fatalf("serve %s after the outage", s)
+	}
+}
+
+// Guardrail P2-1 / Codex 4166341286 regression.
+func TestNextWakeIgnoresElapsedAndFinishedWork(t *testing.T) {
+	w := newWorld(ReferenceLimits())
+	w.http.answers["api-serving"] = boolAt(w.clk, true)
+	w.kube.answers["available-replicas"] = intAt(w.clk, 3)
+	w.kube.answers["ready-replicas"] = intAt(w.clk, 3)
+	w.run(context.Background()) // Resolved: no cooldown wake needed
+	qs := w.queries()
+	wake := w.iv.NextWake(qs, w.clk.now())
+	if want := t0.Add(15 * time.Second); !wake.Equal(want) {
+		t.Fatalf("wake %s, want the refresh due time %s", wake, want)
+	}
+	// Target gone: no wake at all, and its old record is forgotten once
+	// its cooldown has elapsed.
+	w.clk.advance(11 * time.Second)
+	w.iv.Run(context.Background(), w.base, Queries{})
+	if wk := w.iv.NextWake(Queries{}, w.clk.now()); !wk.IsZero() {
+		t.Fatalf("wake %s for a target that is no longer queryable", wk)
+	}
+	if _, ok := w.iv.Episode("t-svc"); ok {
+		t.Fatal("obsolete terminal episode retained")
+	}
+
+	// Exhausted episode: the cooldown end is a wake while it lies ahead,
+	// and never once it has elapsed.
+	l := ReferenceLimits()
+	l.MaxCallsPerEpisode = 1
+	w = newWorld(l)
+	w.http.answers["api-serving"] = boolAt(w.clk, true)
+	w.run(context.Background())
+	qs = w.queries()
+	if wk := w.iv.NextWake(qs, w.clk.now()); !wk.Equal(t0.Add(10 * time.Second)) {
+		t.Fatalf("wake %s, want the cooldown end", wk)
+	}
+	if wk := w.iv.NextWake(qs, t0.Add(10*time.Second)); !wk.IsZero() && !wk.After(t0.Add(10*time.Second)) {
+		t.Fatalf("elapsed cooldown returned as wake %s", wk)
 	}
 }
 
