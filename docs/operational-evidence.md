@@ -219,7 +219,11 @@ Each step picks exactly one query:
 
 1. **Investigation query.** A slot qualifies when it has no current evidence
    and would decide at least one Open candidate. Among those, the slot that
-   decides the most Open candidates wins; ties go to the slot name.
+   decides the most Open candidates wins. Ties go to the slot least recently
+   queried across this target identity's episodes, then to the slot name, so
+   equal-score slots take turns and a few always-failing slots cannot starve
+   the rest. This per-identity history is bounded by the target's bindings,
+   reset when the identity changes, and dropped with the target.
 2. **Freshness query.** Only if no investigation query exists: a slot with
    current evidence that is due for refresh (within `RefreshFraction × maxAge`
    of expiry) and is read by some capability or a referenced or selected
@@ -270,7 +274,7 @@ supersedes the episode.
 | `MaxHeldObservations` 1024 | cached applicability keys |
 | `EpisodeCooldown` 10s | minimum time between episode starts per OperationalTarget UID |
 | `RefreshFraction` 0.5 | refresh due at half of `maxAge` before expiry |
-| `RunSlice` 20s | wall time per reconcile; an unfinished episode keeps its remaining budget |
+| `RunSlice` 20s | wall time per reconcile, including in-flight calls: every call derives from the slice, so the earliest of shutdown, slice end, remaining episode deadline and per-call timeout bounds it. A call cut by the slice end is discarded (nothing recorded, still counted). The unfinished episode stays active with its remaining budget |
 
 These values are a reference configuration chosen for the fixtures (a few
 slots per target; a 30s maxAge refreshed 15s before expiry). They are not a

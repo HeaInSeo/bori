@@ -78,6 +78,14 @@ func (e *Episode) trace(lim int, t TraceEntry) {
 	e.Trace = append(e.Trace, t)
 }
 
+// slotProgress is the selection history of one target identity (episode
+// key): a monotonically increasing dispatch sequence per slot.
+type slotProgress struct {
+	key  string
+	next uint64
+	seq  map[string]uint64
+}
+
 // Stats are cumulative I/O and admission counters.
 type Stats struct {
 	Dispatched      int
@@ -101,6 +109,11 @@ type Investigator struct {
 	// clear an outage, and it is purged with the key's held evidence.
 	marks    map[operations.ApplicabilityKey]time.Time
 	episodes map[string]*Episode // by OperationalTarget UID
+	// progress records, per target identity, when each slot was last
+	// dispatched, so equal-score slots are tried least-recently-queried
+	// first across episodes. Bounded by the target's bindings; reset on
+	// identity change and dropped with the target.
+	progress map[string]*slotProgress
 	stats    Stats
 }
 
@@ -112,6 +125,7 @@ func New(l Limits, clock func() time.Time) *Investigator {
 		held:     map[operations.ApplicabilityKey][]operations.Observation{},
 		marks:    map[operations.ApplicabilityKey]time.Time{},
 		episodes: map[string]*Episode{},
+		progress: map[string]*slotProgress{},
 	}
 }
 
@@ -278,6 +292,7 @@ func (iv *Investigator) purge(qs Queries) {
 		if e.active() {
 			iv.end(e, Superseded, "target no longer queryable")
 		}
+		delete(iv.progress, uid)
 		// A record whose cooldown has elapsed no longer restricts admission;
 		// forgetting it grants no allowance and bounds memory.
 		if !now.Before(e.Started.Add(iv.limits.EpisodeCooldown)) {
@@ -313,13 +328,19 @@ func (iv *Investigator) investigate(ctx, runCtx context.Context, base operations
 		return
 	}
 	key := episodeKey(ta, slots)
+	prog := iv.progress[uid]
+	if prog == nil || prog.key != key {
+		// New or changed identity: no history of another identity steers
+		// selection.
+		prog = &slotProgress{key: key, seq: map[string]uint64{}}
+	}
 
 	if ep != nil && ep.active() && ep.Key != key {
 		iv.end(ep, Superseded, "identity or bindings changed")
 	}
 	if ep == nil || !ep.active() {
 		cands := deriveCandidates(ta, contract, iv.limits.MaxCandidates)
-		q, class := iv.selectQuery(ta, contract, cands, slots, nil, now)
+		q, class := iv.selectQuery(ta, contract, cands, slots, nil, prog.seq, now)
 		if q == nil {
 			return
 		}
@@ -347,6 +368,7 @@ func (iv *Investigator) investigate(ctx, runCtx context.Context, base operations
 			dispatched: map[string]bool{},
 		}
 		iv.episodes[uid] = ep
+		iv.progress[uid] = prog
 		iv.stats.EpisodesStarted++
 	}
 
@@ -371,7 +393,7 @@ func (iv *Investigator) investigate(ctx, runCtx context.Context, base operations
 			return
 		}
 		iv.updateCandidates(ep, deriveCandidates(ta, contract, iv.limits.MaxCandidates))
-		q, class := iv.selectQuery(ta, contract, ep.Candidates, slots, ep.dispatched, now)
+		q, class := iv.selectQuery(ta, contract, ep.Candidates, slots, ep.dispatched, prog.seq, now)
 		if q == nil {
 			switch {
 			case hasOpen(ep.Candidates):
@@ -391,6 +413,8 @@ func (iv *Investigator) investigate(ctx, runCtx context.Context, base operations
 		ep.Steps++
 		ep.Calls++
 		ep.dispatched[slot] = true
+		prog.next++
+		prog.seq[slot] = prog.next
 		iv.stats.Dispatched++
 		ep.trace(iv.limits.MaxTraceEntries, TraceEntry{Action: "select", Slot: slot, Detail: class.reason(ep.Candidates, slot)})
 
@@ -398,7 +422,11 @@ func (iv *Investigator) investigate(ctx, runCtx context.Context, base operations
 		if rem := ep.Deadline.Sub(now); rem < timeout {
 			timeout = rem
 		}
-		callCtx, cancel := context.WithTimeout(ctx, timeout)
+		// The call derives from the run slice, so the earliest of shutdown,
+		// slice end, remaining episode deadline and per-call timeout bounds
+		// it — for both provider types.
+		callCtx, cancel := context.WithTimeout(runCtx, timeout)
+		ownDeadline, _ := callCtx.Deadline()
 		res := q.Provider.Observe(callCtx, q.Request)
 		callErr := callCtx.Err()
 		cancel()
@@ -409,6 +437,16 @@ func (iv *Investigator) investigate(ctx, runCtx context.Context, base operations
 			iv.stats.LateDiscarded++
 			ep.trace(iv.limits.MaxTraceEntries, TraceEntry{Action: "late", Slot: slot, Detail: "cancelled"})
 			iv.end(ep, Cancelled, "")
+			return
+		}
+		if callErr != nil && runCtx.Err() != nil && sliceEndedFirst(runCtx, ownDeadline) {
+			// The run slice ended before the call's own bounds: the result
+			// is discarded and nothing is recorded (the provider did not
+			// fail). The call stays counted and the slot dispatched; the
+			// episode stays active and resumes on the next Run with its
+			// remaining budget — no new allowance.
+			iv.stats.LateDiscarded++
+			ep.trace(iv.limits.MaxTraceEntries, TraceEntry{Action: "late", Slot: slot, Detail: "run slice ended"})
 			return
 		}
 		// Timed out by the context (real I/O) or by the evaluation clock.
@@ -435,6 +473,15 @@ func (iv *Investigator) investigate(ctx, runCtx context.Context, base operations
 		}
 		ep.trace(iv.limits.MaxTraceEntries, TraceEntry{Action: "result", Slot: slot, Detail: resultDetail(res)})
 	}
+}
+
+// sliceEndedFirst reports whether the call's effective deadline was the
+// run slice's rather than its own per-call / episode bound. The call context
+// derives from the run slice, so its deadline is never later than the
+// slice's; equality means the slice was the binding bound.
+func sliceEndedFirst(runCtx context.Context, callDeadline time.Time) bool {
+	slice, ok := runCtx.Deadline()
+	return ok && !slice.After(callDeadline)
 }
 
 type queryClass int
@@ -464,7 +511,7 @@ func (c queryClass) reason(cands []Candidate, slot string) string {
 // with current evidence that is due before expiry. A slot is queried at most
 // once per episode. Slots with current, not-yet-due evidence and slots no
 // candidate needs are never queried.
-func (iv *Investigator) selectQuery(ta operations.TargetAssessment, c operations.Contract, cands []Candidate, slots map[string]Query, dispatched map[string]bool, now time.Time) (*Query, queryClass) {
+func (iv *Investigator) selectQuery(ta operations.TargetAssessment, c operations.Contract, cands []Candidate, slots map[string]Query, dispatched map[string]bool, seq map[string]uint64, now time.Time) (*Query, queryClass) {
 	evidence := map[string]operations.EvidenceStatus{}
 	for _, e := range ta.Evidence {
 		evidence[e.Slot] = e.Status
@@ -476,11 +523,19 @@ func (iv *Investigator) selectQuery(ta operations.TargetAssessment, c operations
 		}
 	}
 	used := usedSlots(c, ta.EnvelopeSelection)
+	// Order: least recently dispatched (across this identity's episodes)
+	// first, then slot name — so equal-score slots take turns instead of the
+	// same names consuming every episode budget.
 	names := make([]string, 0, len(slots))
 	for s := range slots {
 		names = append(names, s)
 	}
-	sort.Strings(names)
+	sort.Slice(names, func(i, j int) bool {
+		if seq[names[i]] != seq[names[j]] {
+			return seq[names[i]] < seq[names[j]]
+		}
+		return names[i] < names[j]
+	})
 
 	best, bestScore := "", 0
 	for _, s := range names {
@@ -665,6 +720,7 @@ func (iv *Investigator) pruneEpisodes(now time.Time) {
 	for uid, e := range iv.episodes {
 		if !e.active() && !now.Before(e.Started.Add(iv.limits.EpisodeCooldown)) {
 			delete(iv.episodes, uid)
+			delete(iv.progress, uid)
 		}
 	}
 }
