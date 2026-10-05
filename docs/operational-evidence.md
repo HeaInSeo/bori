@@ -113,7 +113,10 @@ How a new answer for a key relates to what is held:
 - **The watermark lives and dies with its key.** It survives episodes,
   cooldowns and reconciles. It counts toward the held-key capacity and is
   purged with the key on identity change, grant revocation, deletion or
-  invalidation. It is never reused across targets, providers or config
+  invalidation. Only targets O1 assesses as valid authorize held keys: a
+  target that becomes invalid loses its held evidence and watermarks at the
+  next reconcile, so correcting its spec needs a fresh provider call and an
+  invalid target never holds cache capacity. It is never reused across targets, providers or config
   revisions.
 
 A value stamped **after its local receipt time** is rejected and recorded as

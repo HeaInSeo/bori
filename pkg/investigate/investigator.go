@@ -129,6 +129,10 @@ func (iv *Investigator) Run(ctx context.Context, base operations.Snapshot, qs Qu
 	iv.mu.Lock()
 	defer iv.mu.Unlock()
 
+	// Only O1-valid targets authorize held evidence. An invalid target's
+	// keys and watermarks are purged here, so correcting its spec later
+	// needs a fresh provider call and it never holds cache capacity.
+	qs = iv.validOnly(base, qs)
 	iv.purge(qs)
 	runCtx, cancel := context.WithTimeout(ctx, iv.limits.RunSlice)
 	defer cancel()
@@ -144,6 +148,24 @@ func (iv *Investigator) Run(ctx context.Context, base operations.Snapshot, qs Qu
 		}
 		iv.investigate(ctx, runCtx, base, uid, qs[uid])
 	}
+}
+
+// validOnly drops queries of targets O1 assesses as invalid (validity is
+// structural; it does not depend on evidence) and ends their active
+// episodes as TargetInvalid.
+func (iv *Investigator) validOnly(base operations.Snapshot, qs Queries) Queries {
+	a := iv.evaluate(base, iv.clock())
+	out := Queries{}
+	for uid, slots := range qs {
+		if ta, ok := a.Target(uid); ok && ta.Valid {
+			out[uid] = slots
+			continue
+		}
+		if e, ok := iv.episodes[uid]; ok && e.active() {
+			iv.end(e, TargetInvalid, "")
+		}
+	}
+	return out
 }
 
 // Observations returns all held evidence in a deterministic order.
