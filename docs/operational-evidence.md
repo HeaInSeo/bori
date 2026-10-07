@@ -269,11 +269,12 @@ supersedes the episode.
 | `EpisodeDeadline` 10s | elapsed time from episode start (absolute) |
 | `PerCallTimeout` 2s | one call, also capped by the remaining deadline; enforced on both the context and the evaluation clock. The configured `limits.perCallTimeout` (cap 10s) is applied to the investigator, the HTTP client and Kubernetes-status calls alike |
 | concurrency 1 | calls are strictly sequential |
-| `MaxCandidates` 32, `MaxTraceEntries` 64 | per episode |
+| `MaxCandidates` 32, `MaxTraceEntries` 64 | per episode, for stored/traced state. Selection always scores the complete candidate set derived from O1 at each step (transient, bounded by the contract schema), and the stored set reserves open candidates of queryable assertions first (least recently queried first), so the cap never hides an authorized registered query |
 | `MaxResidentEpisodes` 256 | episode records in memory |
 | `MaxHeldObservations` 1024 | cached applicability keys |
 | `EpisodeCooldown` 10s | minimum time between episode starts per OperationalTarget UID |
 | `RefreshFraction` 0.5 | refresh due at half of `maxAge` before expiry |
+| target rotation | each run starts at the target the previous slice stopped on (or the one after the last completed), wrapping in UID order; a single cursor, so slow early targets cannot consume every slice while later targets wait |
 | `RunSlice` 20s | wall time per reconcile, including in-flight calls: every call derives from the slice, so the earliest of shutdown, slice end, remaining episode deadline and per-call timeout bounds it. A call cut by the slice end is discarded (nothing recorded, still counted). The unfinished episode stays active with its remaining budget |
 
 These values are a reference configuration chosen for the fixtures (a few

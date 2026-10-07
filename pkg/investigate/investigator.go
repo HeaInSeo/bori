@@ -114,7 +114,12 @@ type Investigator struct {
 	// first across episodes. Bounded by the target's bindings; reset on
 	// identity change and dropped with the target.
 	progress map[string]*slotProgress
-	stats    Stats
+	// cursor is the target UID the next Run starts from (sorted, wrapping):
+	// the target the previous slice stopped on, or the one after the last
+	// target it completed. A single string; a removed UID resumes at the
+	// next greater one.
+	cursor string
+	stats  Stats
 }
 
 // New returns an investigator with the given limits and clock.
@@ -156,12 +161,33 @@ func (iv *Investigator) Run(ctx context.Context, base operations.Snapshot, qs Qu
 		uids = append(uids, uid)
 	}
 	sort.Strings(uids)
-	for _, uid := range uids {
+	if len(uids) == 0 {
+		iv.cursor = ""
+		return
+	}
+	// Rotate through the targets across run slices: start where the
+	// previous slice stopped, so slow early targets cannot consume every
+	// slice while later targets wait. Order, sequential I/O, per-target
+	// episodes, budgets and cooldowns are unchanged.
+	start := 0
+	if iv.cursor != "" {
+		start = sort.SearchStrings(uids, iv.cursor) % len(uids)
+	}
+	next := uids[start]
+	for i := range uids {
+		uid := uids[(start+i)%len(uids)]
 		if ctx.Err() != nil || runCtx.Err() != nil {
+			next = uid
 			break
 		}
 		iv.investigate(ctx, runCtx, base, uid, qs[uid])
+		if runCtx.Err() != nil {
+			next = uid // the slice ended on this target: resume here
+			break
+		}
+		next = uids[(start+i+1)%len(uids)]
 	}
+	iv.cursor = next
 }
 
 // validOnly drops queries of targets O1 assesses as invalid (validity is
@@ -339,7 +365,7 @@ func (iv *Investigator) investigate(ctx, runCtx context.Context, base operations
 		iv.end(ep, Superseded, "identity or bindings changed")
 	}
 	if ep == nil || !ep.active() {
-		cands := deriveCandidates(ta, contract, iv.limits.MaxCandidates)
+		cands := deriveCandidates(ta, contract)
 		q, class := iv.selectQuery(ta, contract, cands, slots, nil, prog.seq, now)
 		if q == nil {
 			return
@@ -392,11 +418,12 @@ func (iv *Investigator) investigate(ctx, runCtx context.Context, base operations
 			iv.end(ep, TargetInvalid, "")
 			return
 		}
-		iv.updateCandidates(ep, deriveCandidates(ta, contract, iv.limits.MaxCandidates))
-		q, class := iv.selectQuery(ta, contract, ep.Candidates, slots, ep.dispatched, prog.seq, now)
+		full := deriveCandidates(ta, contract)
+		iv.updateCandidates(ep, full, boundCandidates(full, queryableSlots(slots), prog.seq, iv.limits.MaxCandidates))
+		q, class := iv.selectQuery(ta, contract, full, slots, ep.dispatched, prog.seq, now)
 		if q == nil {
 			switch {
-			case hasOpen(ep.Candidates):
+			case hasOpen(full):
 				iv.end(ep, NoAllowedQuery, "")
 			case ep.Kind == KindRefresh:
 				iv.end(ep, Refreshed, "")
@@ -416,7 +443,7 @@ func (iv *Investigator) investigate(ctx, runCtx context.Context, base operations
 		prog.next++
 		prog.seq[slot] = prog.next
 		iv.stats.Dispatched++
-		ep.trace(iv.limits.MaxTraceEntries, TraceEntry{Action: "select", Slot: slot, Detail: class.reason(ep.Candidates, slot)})
+		ep.trace(iv.limits.MaxTraceEntries, TraceEntry{Action: "select", Slot: slot, Detail: class.reason(full, slot)})
 
 		timeout := iv.limits.PerCallTimeout
 		if rem := ep.Deadline.Sub(now); rem < timeout {
@@ -501,7 +528,11 @@ func (c queryClass) reason(cands []Candidate, slot string) string {
 			ids = append(ids, cd.ID)
 		}
 	}
-	return fmt.Sprintf("investigate: decides %d open candidate(s) %s", len(ids), strings.Join(ids, ","))
+	listed := ids
+	if len(listed) > 4 {
+		listed = append(append([]string(nil), ids[:4]...), fmt.Sprintf("+%d more", len(ids)-4))
+	}
+	return fmt.Sprintf("investigate: decides %d open candidate(s) %s", len(ids), strings.Join(listed, ","))
 }
 
 // selectQuery picks the next single query, or nil. Investigation queries —
@@ -664,40 +695,49 @@ func (iv *Investigator) admit(o operations.Observation) bool {
 	return true
 }
 
-func (iv *Investigator) updateCandidates(ep *Episode, cands []Candidate) {
+func (iv *Investigator) updateCandidates(ep *Episode, full, kept []Candidate) {
 	prev := map[string]CandidateStatus{}
 	for _, c := range ep.Candidates {
 		prev[c.ID] = c.Status
 	}
-	for _, c := range cands {
+	inFull := map[string]bool{}
+	for _, c := range full {
+		inFull[c.ID] = true
 		if p, ok := prev[c.ID]; ok && p != c.Status {
 			ep.trace(iv.limits.MaxTraceEntries, TraceEntry{Action: "candidate", Slot: c.Ref, Detail: c.ID + ": " + string(p) + "→" + string(c.Status)})
 		}
 	}
 	// A candidate whose capability became AVAILABLE disappears from the
-	// derived set: every input it could name is now proven accepted.
-	for id, p := range prev {
-		if !containsID(cands, id) && p != Refuted {
-			ep.trace(iv.limits.MaxTraceEntries, TraceEntry{Action: "candidate", Detail: id + ": " + string(p) + "→Refuted (capability proven available)"})
-			cands = append(cands, Candidate{ID: id, Status: Refuted})
-		} else if !containsID(cands, id) {
-			cands = append(cands, Candidate{ID: id, Status: Refuted})
+	// derived set: every input it could name is now proven accepted. One
+	// merely outside the stored cap is still in the full set and is not
+	// reported as refuted.
+	ids := make([]string, 0, len(prev))
+	for id := range prev {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if inFull[id] {
+			continue
+		}
+		if prev[id] != Refuted {
+			ep.trace(iv.limits.MaxTraceEntries, TraceEntry{Action: "candidate", Detail: id + ": " + string(prev[id]) + "→Refuted (capability proven available)"})
+		}
+		if len(kept) < iv.limits.MaxCandidates {
+			kept = append(kept, Candidate{ID: id, Status: Refuted})
 		}
 	}
-	sort.Slice(cands, func(i, j int) bool { return cands[i].ID < cands[j].ID })
-	if len(cands) > iv.limits.MaxCandidates {
-		cands = cands[:iv.limits.MaxCandidates]
-	}
-	ep.Candidates = cands
+	sort.Slice(kept, func(i, j int) bool { return kept[i].ID < kept[j].ID })
+	ep.Candidates = kept
 }
 
-func containsID(cs []Candidate, id string) bool {
-	for _, c := range cs {
-		if c.ID == id {
-			return true
-		}
+// queryableSlots is the set of slots with an authorized registered query.
+func queryableSlots(slots map[string]Query) map[string]bool {
+	out := make(map[string]bool, len(slots))
+	for s := range slots {
+		out[s] = true
 	}
-	return false
+	return out
 }
 
 func hasOpen(cs []Candidate) bool {

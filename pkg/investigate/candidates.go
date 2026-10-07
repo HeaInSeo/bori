@@ -50,8 +50,11 @@ var unmetCodes = map[operations.ReasonCode]bool{
 // deriveCandidates reads hypotheses off the O1 assessment only: status comes
 // from O1's own reasons for the input (unmet reason → Maintained, any other
 // reason → Open, no reason → Refuted). It adds no evaluation rule. The list is
-// sorted and truncated to max.
-func deriveCandidates(ta operations.TargetAssessment, c operations.Contract, max int) []Candidate {
+// sorted and complete: it is transient, recomputed each step, and bounded by
+// the contract schema (capabilities × requirements, envelopes × predicates).
+// Selection always sees the complete set; only the stored/traced episode
+// candidates are capped (see boundCandidates).
+func deriveCandidates(ta operations.TargetAssessment, c operations.Contract) []Candidate {
 	var out []Candidate
 	for _, cr := range ta.Capabilities {
 		if cr.State == operations.Available {
@@ -98,10 +101,37 @@ func deriveCandidates(ta operations.TargetAssessment, c operations.Contract, max
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	out = dedupe(out)
+	return dedupe(out)
+}
+
+// boundCandidates selects at most max candidates to keep in episode state.
+// Open assertion candidates with an authorized registered query are reserved
+// first — least recently queried slot first, then ID — so the cap never
+// hides a queryable assertion; the remaining room goes to the other
+// candidates in ID order.
+func boundCandidates(full []Candidate, queryable map[string]bool, seq map[string]uint64, max int) []Candidate {
+	if len(full) <= max {
+		return append([]Candidate(nil), full...)
+	}
+	var reserved, rest []Candidate
+	for _, c := range full {
+		if c.Kind == KindAssertion && c.Status == Open && queryable[c.Ref] {
+			reserved = append(reserved, c)
+		} else {
+			rest = append(rest, c)
+		}
+	}
+	sort.SliceStable(reserved, func(i, j int) bool {
+		if seq[reserved[i].Ref] != seq[reserved[j].Ref] {
+			return seq[reserved[i].Ref] < seq[reserved[j].Ref]
+		}
+		return reserved[i].ID < reserved[j].ID
+	})
+	out := append(reserved, rest...)
 	if len(out) > max {
 		out = out[:max]
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
 
