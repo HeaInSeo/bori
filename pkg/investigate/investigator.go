@@ -245,15 +245,22 @@ func (iv *Investigator) Episode(targetUID string) (Episode, bool) {
 	return c, true
 }
 
-// NextWake is the earliest future time at which a reconcile can do new work:
-// held evidence of a queryable target becoming due for refresh — or, when
-// that refresh falls due inside the target's cooldown, the cooldown end, the
-// first moment the refresh can be admitted — or the cooldown end of a
-// queryable target whose last episode stopped with work left (budget,
-// deadline, cancellation or capacity). Elapsed times, targets that are no
-// longer queryable and episodes that finished their work never produce a
-// wake, so they cannot pin the requeue to its floor. Zero means nothing is
-// pending.
+// NextWake is the earliest time at which a reconcile can do new work:
+//   - now, when a queryable target still has an active episode inside its
+//     original deadline (a run slice ended before it finished): the next
+//     reconcile resumes that same episode with its remaining calls, steps
+//     and deadline, so it must come before the deadline rather than at the
+//     poll interval;
+//   - held evidence of a queryable target becoming due for refresh — or,
+//     when that refresh falls due inside the target's cooldown, the
+//     cooldown end, the first moment the refresh can be admitted;
+//   - the cooldown end of a queryable target whose last episode stopped
+//     with work left (budget, deadline, cancellation or capacity).
+//
+// Elapsed times, expired active episodes, targets that are no longer
+// queryable or have no query, and episodes that finished their work never
+// produce a wake, so they cannot pin the requeue to its floor. Zero means
+// nothing is pending.
 func (iv *Investigator) NextWake(qs Queries, now time.Time) time.Time {
 	iv.mu.Lock()
 	defer iv.mu.Unlock()
@@ -278,7 +285,14 @@ func (iv *Investigator) NextWake(qs Queries, now time.Time) time.Time {
 		}
 	}
 	for uid, e := range iv.episodes {
-		if _, queryable := qs[uid]; queryable && workLeft(e.State) {
+		slots, queryable := qs[uid]
+		switch {
+		case !queryable:
+		case e.active():
+			if len(slots) > 0 && now.Before(e.Deadline) {
+				return now
+			}
+		case workLeft(e.State):
 			consider(e.Started.Add(iv.limits.EpisodeCooldown))
 		}
 	}

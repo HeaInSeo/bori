@@ -311,9 +311,13 @@ public standard.
     when the refresh can first be admitted
   - the cooldown end of a queryable target whose last episode stopped with
     work left (budget, deadline, cancellation or capacity)
+  - immediately (so the floor applies), when a run slice ended while a
+    queryable target's episode was still active inside its original
+    deadline: the next reconcile resumes that same episode with its
+    remaining calls, steps and deadline (no reset, no new allowance)
 
-  Elapsed times, finished episodes and targets that are no longer queryable
-  produce no wake. Obsolete terminal episode records are forgotten once their
+  Elapsed times, expired active episodes, finished episodes and targets that
+  are no longer queryable or have no query produce no wake. Obsolete terminal episode records are forgotten once their
   cooldown has elapsed, so the requeue cannot collapse to the floor. No
   status-update watch is added.
 

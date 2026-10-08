@@ -178,7 +178,8 @@ func (r *OperationalReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (
 }
 
 // requeueAfter polls at RequeueInterval, or sooner when held evidence is due
-// for refresh or an episode cooldown ends (never sooner than minRequeue).
+// for refresh, an episode cooldown ends or an active episode is waiting to
+// resume before its deadline (never sooner than minRequeue).
 func (r *OperationalReconciler) requeueAfter(qs investigate.Queries, now time.Time) time.Duration {
 	d := r.RequeueInterval
 	if r.Investigator == nil {
