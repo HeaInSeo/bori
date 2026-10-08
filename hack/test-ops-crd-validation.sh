@@ -13,6 +13,10 @@
 #     providers through controller -> O1 -> status; refresh with zero writes,
 #     real transitions, provider outage != application failure, unrelated
 #     capability not contaminated, no workload mutation
+#   - O4 interaction summary: derived level/summary in status and the
+#     human-readable query, zero churn across refreshes, a declared approval
+#     boundary → DECISION_REQUIRED (display only), outage ≠ app failure,
+#     no workload mutation
 #
 # Usage: hack/test-ops-crd-validation.sh [--keep]
 set -euo pipefail
@@ -25,11 +29,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 OP_PID=""
 APP_PID=""
+APP4_PID=""
 FAILURES=0
 
 cleanup() {
   if [[ -n "$OP_PID" ]]; then kill "$OP_PID" 2>/dev/null || true; fi
   if [[ -n "$APP_PID" ]]; then kill "$APP_PID" 2>/dev/null || true; fi
+  if [[ -n "$APP4_PID" ]]; then kill "$APP4_PID" 2>/dev/null || true; fi
   if ! $KEEP; then kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true; fi
   rm -rf "$WORK"
 }
@@ -324,9 +330,96 @@ check "no bori field manager on the O3 workload ($managers)" eq "${managers//bor
 check "workload generation changed only by the driver scale" \
   eq "$(kubectl get deployment svc -n apps -o jsonpath='{.metadata.generation}')" "2"
 
+echo "── O4 operator interaction summary"
+kill "$OP_PID" 2>/dev/null || true
+wait "$OP_PID" 2>/dev/null || true
+OP_PID=""
+
+itr() { kubectl get operationaltarget "$1" -n apps -o jsonpath="{.status.interaction.$2}"; }
+
+kubectl create deployment web4 -n apps --image=registry.k8s.io/pause:3.9 --replicas=1 >/dev/null
+kubectl rollout status deployment/web4 -n apps --timeout=120s >/dev/null
+web4_uid="$(kubectl get deployment web4 -n apps -o jsonpath='{.metadata.uid}')"
+web4_gen="$(kubectl get deployment web4 -n apps -o jsonpath='{.metadata.generation}')"
+echo true >"$WORK/value4"
+: >"$WORK/hits4"
+python3 "$WORK/app.py" 18081 "$WORK/value4" "$WORK/hits4" "$web4_uid" &
+APP4_PID=$!
+
+expect_accept "O4 target" <<YAML
+apiVersion: ops.bori.dev/v1alpha1
+kind: OperationalTarget
+metadata: {name: web4, namespace: apps}
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: web4}
+  contractRef: {name: svc-o3-v1}
+  assertionBindings:
+    - {slot: api-serving, provider: {name: app-http4, configRevision: r1}}
+    - {slot: available-replicas, provider: {name: kube-status, configRevision: r1}}
+    - {slot: ready-replicas, provider: {name: kube-status, configRevision: r1}}
+YAML
+cat "$WORK/providers.yaml" >"$WORK/providers4.yaml"
+cat >>"$WORK/providers4.yaml" <<YAML
+  - namespace: apps
+    name: app-http4
+    configRevision: r1
+    http:
+      endpoints:
+        - subjectUID: $web4_uid
+          url: http://127.0.0.1:18081/bori/assertions
+          fields: {api-serving: serving}
+YAML
+cat >"$WORK/profile.json" <<JSON
+{"revision": "p1", "responses": [{
+  "action": {"name": "restart", "revision": "r1"},
+  "target": {"namespace": "apps", "name": "web4"},
+  "for": {"domain": "example.io", "name": "provide", "revision": "v1"},
+  "owner": "app-oncall", "requiresApproval": true, "risks": ["service-interruption"]}]}
+JSON
+"$WORK/bori-operator" --bori-root "$WORK/root" --bori-dir "$WORK/root/.bori" \
+  --metrics-bind-address 0 --health-probe-bind-address 0 \
+  --enable-operational-assessment --operational-requeue-interval 2s \
+  --operational-provider-config "$WORK/providers4.yaml" \
+  --enable-operational-interaction --operational-interaction-profile "$WORK/profile.json" \
+  >"$WORK/operator-o4.log" 2>&1 &
+OP_PID=$!
+
+wait_eq "healthy web4 → NO_ACTION on current evidence" NO_ACTION 60 itr web4 level
+check "web4 summary states current proof ($(itr web4 summary))" eq "$(itr web4 summary)" "all 2 capabilities AVAILABLE on current evidence"
+check "web4 investigation concluded" eq "$(itr web4 investigation.outcome)" "Concluded"
+check "printer column shows the level" grep -q "INTERACTION" <(kubectl get operationaltargets -n apps 2>&1)
+(cd "$ROOT" && go build -o "$WORK/bori" ./cmd/bori)
+kubectl get operationaltargets -n apps -o json >"$WORK/targets.json"
+check "bori ops interaction renders the summary" grep -q "level:      NO_ACTION" <("$WORK/bori" ops interaction -f "$WORK/targets.json")
+
+rv1="$(kubectl get operationaltarget web4 -n apps -o jsonpath='{.metadata.resourceVersion}')"
+hits1="$(wc -l <"$WORK/hits4")"
+sleep 25 # spans at least one freshness refresh
+rv2="$(kubectl get operationaltarget web4 -n apps -o jsonpath='{.metadata.resourceVersion}')"
+hits2="$(wc -l <"$WORK/hits4")"
+check "O4 evidence refreshed (HTTP calls $hits1→$hits2)" test "$hits2" -gt "$hits1"
+check "refresh writes no status with the summary (rv $rv1→$rv2)" eq "$rv1" "$rv2"
+
+echo false >"$WORK/value4"
+wait_eq "declared approval boundary → DECISION_REQUIRED" DECISION_REQUIRED 45 itr web4 level
+check "affected capability is provide" eq "$(itr web4 'affected[*].type.name')" "provide"
+check "human reason approval-required" eq "$(itr web4 'humanReasons[0].code')" "approval-required"
+check "response shown, not run ($(itr web4 'responses[0].status'))" eq "$(itr web4 'responses[0].status')" "ApprovalRequired"
+check "post-condition unconfirmed" eq "$(itr web4 'pendingPostConditions[0].detail')" "unconfirmed"
+check "svc (outage + scaled down) is not NO_ACTION ($(itr svc level))" test "$(itr svc level)" != "NO_ACTION"
+check "svc outage is unknown, not affected" eq "$(itr svc 'unknown[*].type.name')" "provide"
+rv3="$(kubectl get operationaltarget web4 -n apps -o jsonpath='{.metadata.resourceVersion}')"
+sleep 12
+check "steady decision writes nothing ($rv3)" eq "$(kubectl get operationaltarget web4 -n apps -o jsonpath='{.metadata.resourceVersion}')" "$rv3"
+
+managers="$(kubectl get deployment web4 -n apps -o jsonpath='{.metadata.managedFields[*].manager}')"
+check "no bori field manager on the O4 workload ($managers)" eq "${managers//bori/}" "$managers"
+check "O4 workload generation unchanged" eq "$(kubectl get deployment web4 -n apps -o jsonpath='{.metadata.generation}')" "$web4_gen"
+
 if ((FAILURES > 0)); then
   echo "── operator log (tail)"; tail -50 "$WORK/operator.log"
   echo "── O3 operator log (tail)"; tail -50 "$WORK/operator-o3.log" 2>/dev/null || true
+  echo "── O4 operator log (tail)"; tail -50 "$WORK/operator-o4.log" 2>/dev/null || true
   echo "$FAILURES check(s) failed"; exit 1
 fi
 echo "all checks passed"

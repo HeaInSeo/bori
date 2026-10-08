@@ -245,6 +245,18 @@ func (iv *Investigator) Episode(targetUID string) (Episode, bool) {
 	return c, true
 }
 
+// Current returns a copy of the target's latest episode only if it belongs
+// to the exact identity and bindings of ta and slots (the same key the
+// episode was run under). A record of a replaced target, contract, workload
+// or provider binding is never returned. It reads only; no I/O, no budget.
+func (iv *Investigator) Current(ta operations.TargetAssessment, slots map[string]Query) (Episode, bool) {
+	e, ok := iv.Episode(ta.Target.UID)
+	if !ok || e.Key != episodeKey(ta, slots) {
+		return Episode{}, false
+	}
+	return e, true
+}
+
 // NextWake is the earliest time at which a reconcile can do new work:
 //   - now, when a queryable target still has an active episode inside its
 //     original deadline (a run slice ended before it finished): the next

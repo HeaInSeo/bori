@@ -37,6 +37,7 @@ import (
 	opsv1alpha1 "github.com/HeaInSeo/bori/apis/ops/v1alpha1"
 	"github.com/HeaInSeo/bori/controllers"
 	"github.com/HeaInSeo/bori/pkg/adapter"
+	"github.com/HeaInSeo/bori/pkg/interaction"
 	"github.com/HeaInSeo/bori/pkg/investigate"
 	"github.com/HeaInSeo/bori/pkg/providers"
 	reconcilepkg "github.com/HeaInSeo/bori/pkg/reconcile"
@@ -56,6 +57,8 @@ func main() {
 		enableOperational   bool
 		operationalInterval time.Duration
 		providerConfigPath  string
+		enableInteraction   bool
+		interactionProfile  string
 	)
 
 	flag.StringVar(&boriRoot, "bori-root", "/bori",
@@ -83,6 +86,11 @@ func main() {
 	flag.StringVar(&providerConfigPath, "operational-provider-config", "",
 		"O3 reference evidence profile: process-local provider registry file (Kubernetes status + HTTP typed response). "+
 			"Empty = no provider I/O; every evidence-backed capability stays UNKNOWN")
+	flag.BoolVar(&enableInteraction, "enable-operational-interaction", false,
+		"O4: add the derived, non-authoritative operator interaction summary to OperationalTarget status")
+	flag.StringVar(&interactionProfile, "operational-interaction-profile", "",
+		"O4 reference profile: declared response candidates and their human-decision boundary (display only). "+
+			"Empty = no response is declared; the lack is reported")
 
 	zapOpts := zap.Options{Development: true}
 	zapOpts.BindFlags(flag.CommandLine)
@@ -180,6 +188,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	if (enableInteraction || interactionProfile != "") && !enableOperational {
+		setupLog.Error(nil, "--enable-operational-interaction requires --enable-operational-assessment")
+		os.Exit(1)
+	}
 	if enableOperational {
 		rec := &controllers.OperationalReconciler{
 			Client:          mgr.GetClient(),
@@ -207,6 +219,22 @@ func main() {
 			rec.Providers = reg
 			rec.Investigator = investigate.New(limits, time.Now)
 			setupLog.Info("operational evidence providers enabled (O3 reference profile)", "config", providerConfigPath)
+		}
+		if interactionProfile != "" && !enableInteraction {
+			setupLog.Error(nil, "--operational-interaction-profile requires --enable-operational-interaction")
+			os.Exit(1)
+		}
+		if enableInteraction {
+			rec.Interaction = true
+			if interactionProfile != "" {
+				p, err := interaction.LoadProfile(interactionProfile)
+				if err != nil {
+					setupLog.Error(err, "load interaction profile")
+					os.Exit(1)
+				}
+				rec.InteractionProfile = p
+			}
+			setupLog.Info("operator interaction summary enabled (O4)", "profile", interactionProfile)
 		}
 		if err := rec.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "setup OperationalReconciler")

@@ -21,6 +21,13 @@ spec:
     - jsonPath: .spec.contractRef.name
       name: Contract
       type: string
+    - jsonPath: .status.interaction.level
+      name: Interaction
+      type: string
+    - jsonPath: .status.interaction.summary
+      name: Summary
+      priority: 1
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -329,6 +336,377 @@ spec:
                     type: string
                   targetUID:
                     type: string
+                type: object
+              interaction:
+                properties:
+                  affected:
+                    items:
+                      properties:
+                        reasons:
+                          items:
+                            properties:
+                              code:
+                                maxLength: 128
+                                type: string
+                              detail:
+                                maxLength: 256
+                                type: string
+                              subject:
+                                maxLength: 512
+                                type: string
+                            required:
+                            - code
+                            type: object
+                          maxItems: 4
+                          type: array
+                        state:
+                          type: string
+                        type:
+                          properties:
+                            domain:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            name:
+                              maxLength: 63
+                              minLength: 1
+                              type: string
+                            revision:
+                              maxLength: 63
+                              minLength: 1
+                              type: string
+                          required:
+                          - domain
+                          - name
+                          - revision
+                          type: object
+                      required:
+                      - state
+                      - type
+                      type: object
+                    maxItems: 64
+                    type: array
+                  causeCandidates:
+                    items:
+                      properties:
+                        id:
+                          maxLength: 512
+                          type: string
+                        kind:
+                          maxLength: 32
+                          type: string
+                        ref:
+                          maxLength: 253
+                          type: string
+                        status:
+                          maxLength: 16
+                          type: string
+                      required:
+                      - id
+                      - kind
+                      - ref
+                      - status
+                      type: object
+                    maxItems: 16
+                    type: array
+                  confirmedFacts:
+                    items:
+                      properties:
+                        configRevision:
+                          type: string
+                        evidenceRef:
+                          maxLength: 256
+                          type: string
+                        provider:
+                          type: string
+                        slot:
+                          type: string
+                        state:
+                          type: string
+                      required:
+                      - slot
+                      - state
+                      type: object
+                    maxItems: 64
+                    type: array
+                  fingerprint:
+                    maxLength: 64
+                    type: string
+                  humanReasons:
+                    items:
+                      properties:
+                        code:
+                          maxLength: 128
+                          type: string
+                        detail:
+                          maxLength: 256
+                          type: string
+                        subject:
+                          maxLength: 512
+                          type: string
+                      required:
+                      - code
+                      type: object
+                    maxItems: 8
+                    type: array
+                  identityDigest:
+                    maxLength: 64
+                    type: string
+                  investigation:
+                    properties:
+                      maintained:
+                        format: int32
+                        type: integer
+                      open:
+                        format: int32
+                        type: integer
+                      outcome:
+                        maxLength: 32
+                        type: string
+                      refuted:
+                        format: int32
+                        type: integer
+                    required:
+                    - outcome
+                    type: object
+                  level:
+                    enum:
+                    - NO_ACTION
+                    - AWARENESS
+                    - DECISION_REQUIRED
+                    - IMMEDIATE_INTERVENTION
+                    type: string
+                  levelReasons:
+                    items:
+                      properties:
+                        code:
+                          maxLength: 128
+                          type: string
+                        detail:
+                          maxLength: 256
+                          type: string
+                        subject:
+                          maxLength: 512
+                          type: string
+                      required:
+                      - code
+                      type: object
+                    maxItems: 8
+                    type: array
+                  missingEvidence:
+                    items:
+                      properties:
+                        configRevision:
+                          type: string
+                        evidenceRef:
+                          maxLength: 256
+                          type: string
+                        provider:
+                          type: string
+                        slot:
+                          type: string
+                        state:
+                          type: string
+                      required:
+                      - slot
+                      - state
+                      type: object
+                    maxItems: 64
+                    type: array
+                  pendingPostConditions:
+                    items:
+                      properties:
+                        code:
+                          maxLength: 128
+                          type: string
+                        detail:
+                          maxLength: 256
+                          type: string
+                        subject:
+                          maxLength: 512
+                          type: string
+                      required:
+                      - code
+                      type: object
+                    maxItems: 16
+                    type: array
+                  recentFingerprints:
+                    items:
+                      type: string
+                    maxItems: 4
+                    type: array
+                  recurrences:
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  recurring:
+                    type: boolean
+                  responses:
+                    items:
+                      properties:
+                        for:
+                          properties:
+                            domain:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            name:
+                              maxLength: 63
+                              minLength: 1
+                              type: string
+                            revision:
+                              maxLength: 63
+                              minLength: 1
+                              type: string
+                          required:
+                          - domain
+                          - name
+                          - revision
+                          type: object
+                        name:
+                          maxLength: 128
+                          type: string
+                        owner:
+                          maxLength: 128
+                          type: string
+                        preconditions:
+                          items:
+                            properties:
+                              code:
+                                maxLength: 128
+                                type: string
+                              detail:
+                                maxLength: 256
+                                type: string
+                              subject:
+                                maxLength: 512
+                                type: string
+                            required:
+                            - code
+                            type: object
+                          maxItems: 8
+                          type: array
+                        requiresApproval:
+                          type: boolean
+                        risks:
+                          items:
+                            type: string
+                          maxItems: 4
+                          type: array
+                        status:
+                          maxLength: 32
+                          type: string
+                        target:
+                          maxLength: 512
+                          type: string
+                      required:
+                      - for
+                      - name
+                      - status
+                      - target
+                      type: object
+                    maxItems: 8
+                    type: array
+                  summary:
+                    maxLength: 256
+                    type: string
+                  unaffected:
+                    items:
+                      properties:
+                        reasons:
+                          items:
+                            properties:
+                              code:
+                                maxLength: 128
+                                type: string
+                              detail:
+                                maxLength: 256
+                                type: string
+                              subject:
+                                maxLength: 512
+                                type: string
+                            required:
+                            - code
+                            type: object
+                          maxItems: 4
+                          type: array
+                        state:
+                          type: string
+                        type:
+                          properties:
+                            domain:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            name:
+                              maxLength: 63
+                              minLength: 1
+                              type: string
+                            revision:
+                              maxLength: 63
+                              minLength: 1
+                              type: string
+                          required:
+                          - domain
+                          - name
+                          - revision
+                          type: object
+                      required:
+                      - state
+                      - type
+                      type: object
+                    maxItems: 64
+                    type: array
+                  unknown:
+                    items:
+                      properties:
+                        reasons:
+                          items:
+                            properties:
+                              code:
+                                maxLength: 128
+                                type: string
+                              detail:
+                                maxLength: 256
+                                type: string
+                              subject:
+                                maxLength: 512
+                                type: string
+                            required:
+                            - code
+                            type: object
+                          maxItems: 4
+                          type: array
+                        state:
+                          type: string
+                        type:
+                          properties:
+                            domain:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            name:
+                              maxLength: 63
+                              minLength: 1
+                              type: string
+                            revision:
+                              maxLength: 63
+                              minLength: 1
+                              type: string
+                          required:
+                          - domain
+                          - name
+                          - revision
+                          type: object
+                      required:
+                      - state
+                      - type
+                      type: object
+                    maxItems: 64
+                    type: array
+                required:
+                - level
+                - summary
                 type: object
               invalidReasons:
                 items:

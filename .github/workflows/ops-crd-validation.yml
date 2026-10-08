@@ -1,7 +1,8 @@
 name: ops-crd-validation
 
 # Live API-server checks for the ops.bori.dev (O2 candidate) CRDs:
-# immutability, bounded grammar, typed grants and controller zero-churn.
+# immutability, bounded grammar, typed grants, controller zero-churn, the O3
+# reference providers and the O4 interaction summary.
 
 on:
   push:
@@ -13,6 +14,8 @@ on:
       - "pkg/opswire/**"
       - "pkg/providers/**"
       - "pkg/investigate/**"
+      - "pkg/interaction/**"
+      - "cmd/bori/opsinteraction.go"
       - "hack/ops-typed-producer.py"
       - "controllers/operational_*"
       - "cmd/bori-operator/**"
@@ -27,6 +30,8 @@ on:
       - "pkg/opswire/**"
       - "pkg/providers/**"
       - "pkg/investigate/**"
+      - "pkg/interaction/**"
+      - "cmd/bori/opsinteraction.go"
       - "hack/ops-typed-producer.py"
       - "controllers/operational_*"
       - "cmd/bori-operator/**"

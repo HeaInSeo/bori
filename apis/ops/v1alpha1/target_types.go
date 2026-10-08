@@ -165,6 +165,11 @@ type OperationalTargetStatus struct {
 	// +optional
 	Envelopes []EnvelopeStatus `json:"envelopes,omitempty"`
 
+	// Interaction is the optional, derived and non-authoritative operator
+	// interaction summary. It never feeds back into capability truth.
+	// +optional
+	Interaction *InteractionStatus `json:"interaction,omitempty"`
+
 	// Conditions report controller protocol state only, never operational
 	// truth. Type AssessmentReady.
 	// +listType=map
@@ -248,6 +253,8 @@ type EnvelopeStatus struct {
 // +kubebuilder:resource:scope=Namespaced
 // +kubebuilder:printcolumn:name="Valid",type=boolean,JSONPath=`.status.valid`
 // +kubebuilder:printcolumn:name="Contract",type=string,JSONPath=`.spec.contractRef.name`
+// +kubebuilder:printcolumn:name="Interaction",type=string,JSONPath=`.status.interaction.level`
+// +kubebuilder:printcolumn:name="Summary",type=string,priority=1,JSONPath=`.status.interaction.summary`
 type OperationalTarget struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
