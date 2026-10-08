@@ -126,7 +126,10 @@ type InteractionCapability struct {
 
 // InteractionCandidate is one investigation hypothesis.
 type InteractionCandidate struct {
-	// +kubebuilder:validation:MaxLength=512
+	// ID is the O3 candidate identity, copied unchanged. Its longest legal
+	// form is "<domain 253>/<name 63>@<revision 63>/envelope:<63>/assertion:<63>"
+	// = 528 characters.
+	// +kubebuilder:validation:MaxLength=528
 	ID string `json:"id"`
 	// +kubebuilder:validation:MaxLength=32
 	Kind string `json:"kind"`

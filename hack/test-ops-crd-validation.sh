@@ -369,6 +369,46 @@ cat >>"$WORK/providers4.yaml" <<YAML
           url: http://127.0.0.1:18081/bori/assertions
           fields: {api-serving: serving}
 YAML
+# Maximum-length legal names: the O3 candidate ID for the envelope predicate
+# is 528 characters; the summary carrying it must be accepted by the API server.
+L63a="$(printf 'a%.0s' $(seq 63))"; L63b="$(printf 'b%.0s' $(seq 63))"; L63c="$(printf 'c%.0s' $(seq 63))"
+MAXDOM="$L63a.$L63b.$L63c.$(printf 'd%.0s' $(seq 61))"
+MAXCAP="$(printf 'n%.0s' $(seq 63))"; MAXREV="$(printf 'r%.0s' $(seq 63))"
+MAXENV="$(printf 'e%.0s' $(seq 63))"; MAXSLOT="$(printf 's%.0s' $(seq 63))"
+expect_accept "O4 max-length contract" <<YAML
+apiVersion: ops.bori.dev/v1alpha1
+kind: OperationalContract
+metadata: {name: max-v1, namespace: apps}
+spec:
+  assertions:
+    - {name: $MAXSLOT, type: Integer, maxAge: 30s}
+  capabilities:
+    - type: {domain: $MAXDOM, name: $MAXCAP, revision: $MAXREV}
+      requirements:
+        - {envelope: $MAXENV, onUnmet: DEGRADED}
+  envelopes:
+    - name: $MAXENV
+      class: Recommended
+      requirements:
+        - {assertion: $MAXSLOT, operator: Gte, operand: {integer: 5}}
+YAML
+expect_accept "O4 max-length target" <<YAML
+apiVersion: ops.bori.dev/v1alpha1
+kind: OperationalTarget
+metadata: {name: max4, namespace: apps}
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: web4}
+  contractRef: {name: max-v1}
+  assertionBindings:
+    - {slot: $MAXSLOT, provider: {name: kube-max, configRevision: r1}}
+YAML
+cat >>"$WORK/providers4.yaml" <<YAML
+  - namespace: apps
+    name: kube-max
+    configRevision: r1
+    kubernetesStatus:
+      fields: {$MAXSLOT: readyReplicas}
+YAML
 cat >"$WORK/profile.json" <<JSON
 {"revision": "p1", "responses": [{
   "action": {"name": "restart", "revision": "r1"},
@@ -391,6 +431,10 @@ check "printer column shows the level" grep -q "INTERACTION" <(kubectl get opera
 (cd "$ROOT" && go build -o "$WORK/bori" ./cmd/bori)
 kubectl get operationaltargets -n apps -o json >"$WORK/targets.json"
 check "bori ops interaction renders the summary" grep -q "level:      NO_ACTION" <("$WORK/bori" ops interaction -f "$WORK/targets.json")
+
+wait_eq "max-length target summary written (envelope gap → AWARENESS)" AWARENESS 60 itr max4 level
+longest_id() { kubectl get operationaltarget max4 -n apps -o json | python3 -c 'import json,sys; c=json.load(sys.stdin)["status"]["interaction"].get("causeCandidates",[]); print(max([len(x["id"]) for x in c] or [0]))'; }
+wait_eq "API server accepts the 528-character candidate ID" 528 30 longest_id
 
 rv1="$(kubectl get operationaltarget web4 -n apps -o jsonpath='{.metadata.resourceVersion}')"
 hits1="$(wc -l <"$WORK/hits4")"

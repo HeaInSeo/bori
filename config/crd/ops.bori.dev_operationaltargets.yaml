@@ -390,7 +390,7 @@ spec:
                     items:
                       properties:
                         id:
-                          maxLength: 512
+                          maxLength: 528
                           type: string
                         kind:
                           maxLength: 32

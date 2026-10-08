@@ -75,6 +75,9 @@ const (
 	maxPost       = 16
 	maxHistory    = 4
 	maxSummary    = 256
+	// statusReasonBound is the per-capability reason bound of the projected
+	// status (CapabilityStatus.Reasons MaxItems).
+	statusReasonBound = 40
 )
 
 // Investigation is the target's current O3 episode record, already checked
@@ -150,7 +153,9 @@ func Project(in Input, prev *opsv1.InteractionStatus) *opsv1.InteractionStatus {
 	}
 
 	caps := map[string]opsv1.CapabilityStatus{}
+	full := map[string][]opsv1.StatusReason{} // untruncated, for classification
 	for _, c := range st.Capabilities {
+		full[typeKey(c.Type)] = c.Reasons
 		caps[typeKey(c.Type)] = c
 		ic := opsv1.InteractionCapability{Type: c.Type, State: c.State, Reasons: limit(c.Reasons, maxCapReasons)}
 		switch c.State {
@@ -193,7 +198,7 @@ func Project(in Input, prev *opsv1.InteractionStatus) *opsv1.InteractionStatus {
 
 	responses := declared(in, caps)
 	for _, c := range append(append([]opsv1.InteractionCapability(nil), out.Affected...), out.Unknown...) {
-		decideCapability(d, c, responses[typeKey(c.Type)])
+		decideCapability(d, c, full[typeKey(c.Type)], responses[typeKey(c.Type)])
 		out.PendingPostConditions = append(out.PendingPostConditions, opsv1.StatusReason{Code: PostCapabilityAvailable, Subject: typeKey(c.Type), Detail: PostUnconfirmed})
 	}
 	for _, k := range sortedKeys(responses) {
@@ -225,14 +230,17 @@ func Project(in Input, prev *opsv1.InteractionStatus) *opsv1.InteractionStatus {
 // decideCapability applies the declared response boundary to one affected or
 // unknown capability. Without a declaration nothing escalates: the lack is
 // reported. UNKNOWN alone never reaches IMMEDIATE_INTERVENTION.
-func decideCapability(d *decision, c opsv1.InteractionCapability, rs []opsv1.InteractionResponse) {
+//
+// reasons are the capability's complete reasons as projected in the status,
+// not the display-truncated copy in c.
+func decideCapability(d *decision, c opsv1.InteractionCapability, reasons []opsv1.StatusReason, rs []opsv1.InteractionResponse) {
 	subject := typeKey(c.Type)
 	unknown := c.State != "DEGRADED" && c.State != "UNAVAILABLE"
 	if len(rs) == 0 {
 		switch {
 		case unknown:
 			// Already raised as capability-unknown.
-		case fromDependencyOnly(c):
+		case fromDependencyOnly(reasons):
 			d.raise(opsv1.LevelAwareness, ReasonImpactFromDependency, subject)
 		default:
 			d.raise(opsv1.LevelAwareness, ReasonNoDeclaredResponse, subject)
@@ -282,12 +290,14 @@ func decideCapability(d *decision, c opsv1.InteractionCapability, rs []opsv1.Int
 
 // fromDependencyOnly reports whether every reason of an affected capability
 // names a dependency: the cause and its decision belong to that dependency's
-// own target, so this target does not repeat the request (fan-out).
-func fromDependencyOnly(c opsv1.InteractionCapability) bool {
-	if len(c.Reasons) == 0 {
+// own target, so this target does not repeat the request (fan-out). It reads
+// the complete reasons; a list that may have been cut at the status bound is
+// not proof that nothing local follows, so it fails closed (local).
+func fromDependencyOnly(reasons []opsv1.StatusReason) bool {
+	if len(reasons) == 0 || len(reasons) >= statusReasonBound {
 		return false
 	}
-	for _, r := range c.Reasons {
+	for _, r := range reasons {
 		if !strings.HasPrefix(r.Code, "dependency-") {
 			return false
 		}

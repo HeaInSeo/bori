@@ -87,7 +87,7 @@ and the summary reports that lack. The profile flag requires the enable flag.
 | `affected` / `unaffected` / `unknown` | capabilities by O1 state (DEGRADED or UNAVAILABLE / AVAILABLE / UNKNOWN), each with ≤4 already-redacted O1 reasons | 64 each |
 | `confirmedFacts` | own slots with `Current` evidence, provider, config revision, permitted evidence reference | 64 |
 | `missingEvidence` | own slots without current evidence (state only, no reference) and `BindingDenied:<type>` | 64 |
-| `causeCandidates` | O3 hypotheses (Maintained, Open, Refuted) about capabilities not AVAILABLE now; never facts | 16 |
+| `causeCandidates` | O3 hypotheses (Maintained, Open, Refuted) about capabilities not AVAILABLE now; never facts. IDs are copied unchanged; the longest legal ID (`<domain 253>/<name 63>@<rev 63>/envelope:<63>/assertion:<63>`) is 528 characters, the schema bound | 16 |
 | `investigation` | outcome class of the identity's latest episode (NotRun, InProgress, Concluded, NoAllowedQuery, BudgetExhausted, Cancelled, CapacityLimited, Superseded) and hypothesis counts | — |
 | `responses` | declared responses with status Ready, ApprovalRequired, SafetyUnproven, OwnerUndeclared, OwnerConflict or Inapplicable; exact target `ns/name#uid`, owner, approval, risks, preconditions (proven/unproven/unmet) | 8 |
 | `humanReasons` | why a person is needed; empty below DECISION_REQUIRED | 8 |
@@ -109,7 +109,7 @@ Checks are evaluated together; the level is the highest one raised.
 | Any capability UNKNOWN | AWARENESS | `capability-unknown` | — |
 | Selected or Minimum-class envelope UNSATISFIED / UNKNOWN | AWARENESS | `envelope-unsatisfied` / `envelope-unknown` | — |
 | Investigation episode still active | AWARENESS | `investigation-in-progress` | — |
-| Affected only through dependencies, nothing declared (the dependency's own target carries the decision) | AWARENESS | `impact-from-dependency` | — |
+| Affected only through dependencies, judged on **all** the capability's status reasons (not the 4 displayed); fails closed to local when the list may be cut at its 40-entry bound. Nothing declared; the dependency's own target carries the decision | AWARENESS | `impact-from-dependency` | — |
 | Affected locally, nothing declared (the lack is reported) | AWARENESS | `no-declared-response` | — |
 | Exactly one viable response, status Ready | AWARENESS | `declared-response-ready` | — |
 | Viable response needs approval or declares a risk | DECISION_REQUIRED | `approval-required` | `approval-required` |
@@ -205,6 +205,7 @@ apps/y
 | Human boundary: approval, priority, owner conflict/absence, unproven safety, no safe path | `declared`, `decideCapability` | `TestDeclaredBoundaryLevels`, `TestResponsesBindToExactTarget`, controller `TestO4DeclaredApprovalIsDisplayOnly` |
 | Repeat / refresh / fan-out / flapping dedup; transitions kept | `fingerprint`, `finish` | `TestRepeatAndRefreshDoNotChurn`, `TestFlappingIsShownButRequestedOnce`, `TestBurdenAgainstBaseline`, controller `TestO4ZeroChurn`, `TestO4SteadyFailureDoesNotChurn` |
 | Identity / contract / provider / profile revision change reuses nothing | `identityDigest`, `Investigator.Current` | `TestIdentityChangeResetsHistory`, controller `TestO4IdentityChangeReusesNothing` |
+| Legal maximum-length names fit the schema; dependency-only judged on all reasons (Codex r4219279473 / r4219279487) | `InteractionCandidate.ID` bound, `fromDependencyOnly` | `TestMaxLengthLegalNamesFitTheSchema`, `TestScenarioSummariesFitTheSchema`, `TestDependencyOnlyIsJudgedOnAllReasons`, `TestStatusReasonBoundMatchesSchema`, live kind max-length check |
 | Cross-namespace denied / existence / cycle non-disclosure | reads redacted status only | `TestCrossNamespaceNonDisclosure`, `TestCrossNamespaceCycleStaysRedacted` |
 | Deterministic, bounded, order-independent | sorting, `limit`, `clip` | `TestDeterministicUnderInputOrder`, `TestOutputIsBounded`, `TestInteractionSummaryIsBoundedStatus` (CRD) |
 | Read-only, no extra provider I/O, no actuation | controller wiring | controller `TestO4AddsNoProviderIO`, `otherWrites == 0` in every controller test, live kind checks |
