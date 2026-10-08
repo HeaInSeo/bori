@@ -37,6 +37,8 @@ import (
 	opsv1alpha1 "github.com/HeaInSeo/bori/apis/ops/v1alpha1"
 	"github.com/HeaInSeo/bori/controllers"
 	"github.com/HeaInSeo/bori/pkg/adapter"
+	"github.com/HeaInSeo/bori/pkg/investigate"
+	"github.com/HeaInSeo/bori/pkg/providers"
 	reconcilepkg "github.com/HeaInSeo/bori/pkg/reconcile"
 )
 
@@ -53,6 +55,7 @@ func main() {
 
 		enableOperational   bool
 		operationalInterval time.Duration
+		providerConfigPath  string
 	)
 
 	flag.StringVar(&boriRoot, "bori-root", "/bori",
@@ -76,6 +79,10 @@ func main() {
 		"run the non-actuating ops.bori.dev evaluator/status controller (O2 candidate API; requires its CRDs)")
 	flag.DurationVar(&operationalInterval, "operational-requeue-interval", 30*time.Second,
 		"how often to re-evaluate evidence currentness for ops.bori.dev targets")
+
+	flag.StringVar(&providerConfigPath, "operational-provider-config", "",
+		"O3 reference evidence profile: process-local provider registry file (Kubernetes status + HTTP typed response). "+
+			"Empty = no provider I/O; every evidence-backed capability stays UNKNOWN")
 
 	zapOpts := zap.Options{Development: true}
 	zapOpts.BindFlags(flag.CommandLine)
@@ -174,12 +181,34 @@ func main() {
 	}
 
 	if enableOperational {
-		if err := (&controllers.OperationalReconciler{
+		rec := &controllers.OperationalReconciler{
 			Client:          mgr.GetClient(),
 			Observations:    controllers.NoObservations{},
 			TargetKinds:     controllers.DefaultTargetKinds,
 			RequeueInterval: operationalInterval,
-		}).SetupWithManager(mgr); err != nil {
+		}
+		if providerConfigPath != "" {
+			cfg, err := providers.LoadConfig(providerConfigPath)
+			if err != nil {
+				setupLog.Error(err, "load provider config")
+				os.Exit(1)
+			}
+			// Uncached reader: each Kubernetes status query is one bounded GET.
+			reg, err := cfg.Build(mgr.GetAPIReader(), time.Now)
+			if err != nil {
+				setupLog.Error(err, "build provider registry")
+				os.Exit(1)
+			}
+			limits, err := investigate.ForConfig(cfg)
+			if err != nil {
+				setupLog.Error(err, "provider limits")
+				os.Exit(1)
+			}
+			rec.Providers = reg
+			rec.Investigator = investigate.New(limits, time.Now)
+			setupLog.Info("operational evidence providers enabled (O3 reference profile)", "config", providerConfigPath)
+		}
+		if err := rec.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "setup OperationalReconciler")
 			os.Exit(1)
 		}

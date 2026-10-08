@@ -9,6 +9,10 @@
 #   - OperationalReferenceGrant: typed, exact, no Secret/Action, no wildcard
 #   - contractRef has no namespace field (strict field validation)
 #   - zero-churn: repeated evaluations do not write status
+#   - O3 reference profile: real Kubernetes status + HTTP typed-response
+#     providers through controller -> O1 -> status; refresh with zero writes,
+#     real transitions, provider outage != application failure, unrelated
+#     capability not contaminated, no workload mutation
 #
 # Usage: hack/test-ops-crd-validation.sh [--keep]
 set -euo pipefail
@@ -20,10 +24,12 @@ KEEP=false
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 OP_PID=""
+APP_PID=""
 FAILURES=0
 
 cleanup() {
   if [[ -n "$OP_PID" ]]; then kill "$OP_PID" 2>/dev/null || true; fi
+  if [[ -n "$APP_PID" ]]; then kill "$APP_PID" 2>/dev/null || true; fi
   if ! $KEEP; then kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true; fi
   rm -rf "$WORK"
 }
@@ -200,8 +206,127 @@ done
 check "workload deletion → target-not-found" \
   eq "$(kubectl get operationaltarget web -n apps -o jsonpath='{.status.invalidReasons[0].code}')" "target-not-found"
 
+echo "── O3 reference providers (Kubernetes status + HTTP typed response)"
+kill "$OP_PID" 2>/dev/null || true
+wait "$OP_PID" 2>/dev/null || true
+OP_PID=""
+
+# wait_eq DESCRIPTION EXPECTED TIMEOUT COMMAND... — poll until COMMAND prints EXPECTED.
+wait_eq() {
+  local d="$1" want="$2" timeout="$3" got=""
+  shift 3
+  for _ in $(seq 1 "$timeout"); do
+    got="$("$@" 2>/dev/null || true)"
+    if [[ "$got" == "$want" ]]; then
+      pass "$d"
+      return
+    fi
+    sleep 1
+  done
+  fail "$d (got '$got', want '$want')"
+}
+cap_state() { kubectl get operationaltarget svc -n apps -o jsonpath="{.status.capabilities[?(@.type.name==\"$1\")].state}"; }
+slot_state() { kubectl get operationaltarget svc -n apps -o jsonpath="{.status.evidence[?(@.slot==\"$1\")].state}"; }
+
+kubectl create deployment svc -n apps --image=registry.k8s.io/pause:3.9 --replicas=1 >/dev/null
+kubectl rollout status deployment/svc -n apps --timeout=120s >/dev/null
+svc_uid="$(kubectl get deployment svc -n apps -o jsonpath='{.metadata.uid}')"
+
+# Controlled HTTP producer of typed responses. Its payload also carries a URL,
+# a namespace and an instruction, all of which must be ignored.
+echo true >"$WORK/value"
+: >"$WORK/hits"
+cp "$ROOT/hack/ops-typed-producer.py" "$WORK/app.py"
+python3 "$WORK/app.py" 18080 "$WORK/value" "$WORK/hits" "$svc_uid" &
+APP_PID=$!
+
+expect_accept "O3 contract" <<YAML
+apiVersion: ops.bori.dev/v1alpha1
+kind: OperationalContract
+metadata: {name: svc-o3-v1, namespace: apps}
+spec:
+  assertions:
+    - {name: api-serving, type: Boolean, maxAge: 30s}
+    - {name: available-replicas, type: Integer, maxAge: 30s}
+    - {name: ready-replicas, type: Integer, maxAge: 30s}
+  capabilities:
+    - type: {domain: example.io, name: provide, revision: v1}
+      requirements:
+        - {predicate: {assertion: api-serving, operator: IsTrue}, onUnmet: UNAVAILABLE}
+        - {predicate: {assertion: available-replicas, operator: Gte, operand: {integer: 1}}, onUnmet: UNAVAILABLE}
+    - type: {domain: example.io, name: count, revision: v1}
+      requirements:
+        - {predicate: {assertion: ready-replicas, operator: Gte, operand: {integer: 1}}, onUnmet: DEGRADED}
+YAML
+expect_accept "O3 target" <<YAML
+apiVersion: ops.bori.dev/v1alpha1
+kind: OperationalTarget
+metadata: {name: svc, namespace: apps}
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: svc}
+  contractRef: {name: svc-o3-v1}
+  assertionBindings:
+    - {slot: api-serving, provider: {name: app-http, configRevision: r1}}
+    - {slot: available-replicas, provider: {name: kube-status, configRevision: r1}}
+    - {slot: ready-replicas, provider: {name: kube-status, configRevision: r1}}
+YAML
+cat >"$WORK/providers.yaml" <<YAML
+http: {allowInsecureHTTP: true, allowPrivateNetworks: true}
+providers:
+  - namespace: apps
+    name: kube-status
+    configRevision: r1
+    kubernetesStatus:
+      fields: {available-replicas: availableReplicas, ready-replicas: readyReplicas}
+  - namespace: apps
+    name: app-http
+    configRevision: r1
+    http:
+      endpoints:
+        - subjectUID: $svc_uid
+          url: http://127.0.0.1:18080/bori/assertions
+          fields: {api-serving: serving}
+YAML
+"$WORK/bori-operator" --bori-root "$WORK/root" --bori-dir "$WORK/root/.bori" \
+  --metrics-bind-address 0 --health-probe-bind-address 0 \
+  --enable-operational-assessment --operational-requeue-interval 2s \
+  --operational-provider-config "$WORK/providers.yaml" >"$WORK/operator-o3.log" 2>&1 &
+OP_PID=$!
+
+wait_eq "both providers → provide AVAILABLE" AVAILABLE 60 cap_state provide
+wait_eq "count AVAILABLE" AVAILABLE 10 cap_state count
+check "HTTP evidence current" eq "$(slot_state api-serving)" "Current"
+check "Kubernetes evidence current" eq "$(slot_state available-replicas)" "Current"
+
+rv1="$(kubectl get operationaltarget svc -n apps -o jsonpath='{.metadata.resourceVersion}')"
+hits1="$(wc -l <"$WORK/hits")"
+sleep 25 # spans at least one freshness refresh (due 15s before the 30s maxAge)
+rv2="$(kubectl get operationaltarget svc -n apps -o jsonpath='{.metadata.resourceVersion}')"
+hits2="$(wc -l <"$WORK/hits")"
+check "evidence refreshed (HTTP calls $hits1→$hits2)" test "$hits2" -gt "$hits1"
+check "refreshed identical facts write no status (rv $rv1→$rv2)" eq "$rv1" "$rv2"
+check "only the configured path was ever requested" eq "$(grep -vc '^/bori/assertions$' "$WORK/hits" || true)" "0"
+
+echo false >"$WORK/value"
+wait_eq "application fact false → provide UNAVAILABLE" UNAVAILABLE 45 cap_state provide
+check "unrelated count stays AVAILABLE" eq "$(cap_state count)" "AVAILABLE"
+
+echo down >"$WORK/value"
+wait_eq "HTTP provider outage → provide UNKNOWN (not UNAVAILABLE)" UNKNOWN 45 cap_state provide
+check "outage evidence is ProviderUnavailable" eq "$(slot_state api-serving)" "ProviderUnavailable"
+check "count not contaminated by the HTTP outage" eq "$(cap_state count)" "AVAILABLE"
+
+kubectl scale deployment svc -n apps --replicas=0 >/dev/null # test driver, not the operator
+wait_eq "Kubernetes fact 0 ready → count DEGRADED" DEGRADED 60 cap_state count
+
+managers="$(kubectl get deployment svc -n apps -o jsonpath='{.metadata.managedFields[*].manager}')"
+check "no bori field manager on the O3 workload ($managers)" eq "${managers//bori/}" "$managers"
+check "workload generation changed only by the driver scale" \
+  eq "$(kubectl get deployment svc -n apps -o jsonpath='{.metadata.generation}')" "2"
+
 if ((FAILURES > 0)); then
   echo "── operator log (tail)"; tail -50 "$WORK/operator.log"
+  echo "── O3 operator log (tail)"; tail -50 "$WORK/operator-o3.log" 2>/dev/null || true
   echo "$FAILURES check(s) failed"; exit 1
 fi
 echo "all checks passed"
