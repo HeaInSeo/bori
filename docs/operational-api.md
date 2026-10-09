@@ -96,6 +96,12 @@ updates of its own kinds (generation predicate). Every event collapses into
 one cluster-wide evaluation. Periodic re-evaluation of evidence currentness
 writes nothing while results are unchanged.
 
+With `--enable-operational-interaction` the status also carries the O4
+`interaction` summary: a derived, non-authoritative operator projection
+(level, affected/unaffected/unknown, facts, missing evidence, what was
+checked, declared responses shown only). See
+[operational-interaction.md](operational-interaction.md).
+
 ## Enabling
 
 Evidence providers (O3 reference profile, opt-in via

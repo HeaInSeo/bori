@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	opsv1 "github.com/HeaInSeo/bori/apis/ops/v1alpha1"
+	"github.com/HeaInSeo/bori/pkg/interaction"
 	"github.com/HeaInSeo/bori/pkg/investigate"
 	"github.com/HeaInSeo/bori/pkg/operations"
 	"github.com/HeaInSeo/bori/pkg/opswire"
@@ -77,6 +78,14 @@ type OperationalReconciler struct {
 	// through the investigation budget. Both nil keeps the O2 behaviour.
 	Investigator *investigate.Investigator
 	Providers    investigate.ProviderLookup
+
+	// Interaction enables the O4 operator interaction summary in
+	// OperationalTarget.status.interaction. It is derived from the projected
+	// status, the target's current investigation record and
+	// InteractionProfile only: no provider call, no other object read, no
+	// action. False keeps the O2/O3 status unchanged.
+	Interaction        bool
+	InteractionProfile *interaction.Profile
 }
 
 // minRequeue bounds how soon a freshness or cooldown wake-up may requeue.
@@ -162,7 +171,18 @@ func (r *OperationalReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (
 	}
 	for i := range targets.Items {
 		t := &targets.Items[i]
-		next, changed := opswire.Apply(t.Status, opswire.Project(t, built, assessment), now)
+		desired := opswire.Project(t, built, assessment)
+		if r.Interaction {
+			desired.Interaction = interaction.Project(interaction.Input{
+				Namespace:     t.Namespace,
+				Name:          t.Name,
+				UID:           string(t.UID),
+				Status:        desired,
+				Investigation: r.investigation(string(t.UID), assessment, queries),
+				Profile:       r.InteractionProfile,
+			}, t.Status.Interaction)
+		}
+		next, changed := opswire.Apply(t.Status, desired, now)
 		if !changed {
 			continue
 		}
@@ -175,6 +195,27 @@ func (r *OperationalReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (
 		return ctrl.Result{}, errors.Join(errs...)
 	}
 	return ctrl.Result{RequeueAfter: r.requeueAfter(queries, now)}, nil
+}
+
+// investigation returns the target's investigation record only when it
+// belongs to the target's exact current identity and bindings.
+func (r *OperationalReconciler) investigation(uid string, a operations.Assessment, qs investigate.Queries) *interaction.Investigation {
+	if r.Investigator == nil {
+		return nil
+	}
+	ta, ok := a.Target(uid)
+	if !ok || !ta.Valid {
+		return nil
+	}
+	e, ok := r.Investigator.Current(ta, qs[uid])
+	if !ok {
+		return nil
+	}
+	inv := &interaction.Investigation{Kind: string(e.Kind), Outcome: string(e.State)}
+	for _, c := range e.Candidates {
+		inv.Candidates = append(inv.Candidates, interaction.Candidate{ID: c.ID, Kind: string(c.Kind), Ref: c.Ref, Status: string(c.Status)})
+	}
+	return inv
 }
 
 // requeueAfter polls at RequeueInterval, or sooner when held evidence is due

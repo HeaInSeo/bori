@@ -150,7 +150,8 @@ func TestNoSecretOrActionReferences(t *testing.T) {
 	for _, plural := range []string{"operationalcontracts", "operationaltargets", "operationalreferencegrants"} {
 		props := propertyNames(schemaOf(t, plural))
 		for _, p := range props {
-			l := strings.ToLower(p)
+			// "interaction" (the O4 status summary) is not an action reference.
+			l := strings.ReplaceAll(strings.ToLower(p), "interaction", "")
 			if strings.Contains(l, "secret") || strings.Contains(l, "action") || strings.Contains(l, "credential") {
 				t.Errorf("%s: property %q", plural, p)
 			}
@@ -209,6 +210,43 @@ func TestWireIsAppNeutral(t *testing.T) {
 		}
 		if loc := banned.FindIndex(b); loc != nil {
 			t.Errorf("%s contains %q", f, b[loc[0]:loc[1]])
+		}
+	}
+}
+
+// The O4 interaction summary is status-only, its level vocabulary is exactly
+// the four levels, and every list and text is bounded.
+func TestInteractionSummaryIsBoundedStatus(t *testing.T) {
+	s := schemaOf(t, "operationaltargets")
+	for _, p := range propertyNames(at(t, s, "properties", "spec")) {
+		if strings.Contains(strings.ToLower(p), "interaction") || p == "responses" || p == "level" {
+			t.Fatalf("spec carries interaction field %q", p)
+		}
+	}
+	in := at(t, s, "properties", "status", "properties", "interaction")
+	props := at(t, in, "properties").(map[string]any)
+	if got := enum(t, props["level"]); !reflect.DeepEqual(got, []string{"NO_ACTION", "AWARENESS", "DECISION_REQUIRED", "IMMEDIATE_INTERVENTION"}) {
+		t.Fatalf("levels %v", got)
+	}
+	if req := toStrings(at(t, in, "required").([]any)); !reflect.DeepEqual(req, []string{"level", "summary"}) {
+		t.Fatalf("required %v", req)
+	}
+	if at(t, props["summary"], "maxLength") != float64(256) {
+		t.Fatal("summary unbounded")
+	}
+	for name, p := range props {
+		m := p.(map[string]any)
+		if m["type"] == "array" && m["maxItems"] == nil {
+			t.Errorf("interaction.%s has no maxItems", name)
+		}
+		if m["type"] == "string" && m["maxLength"] == nil && m["enum"] == nil {
+			t.Errorf("interaction.%s has no maxLength", name)
+		}
+	}
+	resp := at(t, props["responses"], "items", "properties").(map[string]any)
+	for _, banned := range []string{"command", "endpoint", "url", "secretRef", "approve", "execute"} {
+		if resp[banned] != nil {
+			t.Fatalf("response carries %q", banned)
 		}
 	}
 }

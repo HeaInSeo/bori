@@ -13,6 +13,7 @@
 //	bori reconcile           --release <name> --env <name> [--bori-root <dir>] [--dry-run]
 //	bori release apply       --name <name> [--bori-root <dir>] [--namespace <ns>] [--apply]
 //	bori release set-image   --release <name> --component <name> --image-digest <sha256:...> [--version <v>] [--git-sha <sha>]
+//	bori ops interaction     [-f <kubectl-json>|-] [-o text|json]
 package main
 
 import (
@@ -77,6 +78,8 @@ func main() {
 		cmdReconcile(os.Args[2:])
 	case "release":
 		cmdRelease(os.Args[2:])
+	case "ops":
+		cmdOps(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "bori: unknown subcommand %q\n", os.Args[1])
 		usage()
@@ -98,7 +101,8 @@ Usage:
   bori shadow status     --release <name> [--bori-root <dir>] [--bori-dir <dir>] [--json]
   bori reconcile           --release <name> --env <name> [--bori-root <dir>] [--dry-run] [-v]
   bori release apply       --name <name> [--bori-root <dir>] [--namespace <ns>] [--apply]
-  bori release set-image   --release <name> --component <name> --image-digest <sha256:...> [--version <v>] [--git-sha <sha>]`)
+  bori release set-image   --release <name> --component <name> --image-digest <sha256:...> [--version <v>] [--git-sha <sha>]
+  bori ops interaction     [-f <kubectl-json>|-] [-o text|json]   (read-only; renders OperationalTarget interaction summaries)`)
 }
 
 // cmdPlan loads the release/environment model and prints the deploy plan.
