@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"unicode/utf8"
 
 	opsv1 "github.com/HeaInSeo/bori/apis/ops/v1alpha1"
 )
@@ -130,8 +131,8 @@ func (r Response) validate() error {
 		return errors.New("target needs a namespace and a name")
 	case len(r.Target.UID) > 128:
 		return errors.New("target uid too long")
-	case !validType(r.For):
-		return errors.New("for needs domain, name and revision")
+	case checkType(r.For) != nil:
+		return fmt.Errorf("for: %w", checkType(r.For))
 	case len(r.Owner) > maxOwner:
 		return errors.New("owner too long")
 	case len(r.Risks) > maxRisks:
@@ -149,16 +150,29 @@ func (r Response) validate() error {
 			return fmt.Errorf("risk %q unknown", k)
 		}
 	}
-	for _, c := range r.Preconditions {
-		if !validType(c) {
-			return errors.New("precondition needs domain, name and revision")
+	for i, c := range r.Preconditions {
+		if err := checkType(c); err != nil {
+			return fmt.Errorf("precondition %d: %w", i, err)
 		}
 	}
 	return nil
 }
 
-func validType(c opsv1.CapabilityType) bool {
-	return c.Domain != "" && c.Name != "" && c.Revision != ""
+// checkType holds each field of a declared capability type to the
+// CapabilityType API bounds (domain 1–253, name 1–63, revision 1–63
+// characters, counted as the API server counts them). A type outside them
+// can never name a contract capability, and its key would not fit a status
+// subject, so the profile is rejected at load instead.
+func checkType(c opsv1.CapabilityType) error {
+	for _, f := range []struct {
+		field, v string
+		max      int
+	}{{"domain", c.Domain, 253}, {"name", c.Name, 63}, {"revision", c.Revision, 63}} {
+		if n := utf8.RuneCountInString(f.v); n < 1 || n > f.max {
+			return fmt.Errorf("capability %s must be 1-%d characters, got %d", f.field, f.max, n)
+		}
+	}
+	return nil
 }
 
 func (r Response) triggers(state string) bool {

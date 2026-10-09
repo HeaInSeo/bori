@@ -69,6 +69,11 @@ and the summary reports that lack. The profile flag requires the enable flag.
 - Strict decoding: unknown fields are rejected. At most 128 responses, 8
   preconditions and 4 risks each. Risks are `data-loss`,
   `service-interruption` or `security-scope-expansion`.
+- Every capability type, in `for` and in each precondition, is held to the
+  `CapabilityType` API bounds per field: domain 1–253, name 1–63, revision
+  1–63 characters. A profile outside them fails to load (the operator does
+  not start), so a precondition key (at most 381 characters) always fits a
+  status subject; nothing is truncated or dropped.
 - A response applies only to the exact `namespace/name` (and `uid` when
   pinned) and only while its capability is in one of `states` (default
   DEGRADED, UNAVAILABLE). Preconditions name capabilities **of the same
@@ -206,6 +211,7 @@ apps/y
 | Repeat / refresh / fan-out / flapping dedup; transitions kept | `fingerprint`, `finish` | `TestRepeatAndRefreshDoNotChurn`, `TestFlappingIsShownButRequestedOnce`, `TestBurdenAgainstBaseline`, controller `TestO4ZeroChurn`, `TestO4SteadyFailureDoesNotChurn` |
 | Identity / contract / provider / profile revision change reuses nothing | `identityDigest`, `Investigator.Current` | `TestIdentityChangeResetsHistory`, controller `TestO4IdentityChangeReusesNothing` |
 | Legal maximum-length names fit the schema; dependency-only judged on all reasons (Codex r4219279473 / r4219279487) | `InteractionCandidate.ID` bound, `fromDependencyOnly` | `TestMaxLengthLegalNamesFitTheSchema`, `TestScenarioSummariesFitTheSchema`, `TestDependencyOnlyIsJudgedOnAllReasons`, `TestStatusReasonBoundMatchesSchema`, live kind max-length check |
+| Profile capability types held to API bounds per field at load (Codex r4228097338) | `checkType` | `TestProfileCapabilityTypeBounds`, `TestMaximumPreconditionKeysFitTheSchema` |
 | Cross-namespace denied / existence / cycle non-disclosure | reads redacted status only | `TestCrossNamespaceNonDisclosure`, `TestCrossNamespaceCycleStaysRedacted` |
 | Deterministic, bounded, order-independent | sorting, `limit`, `clip` | `TestDeterministicUnderInputOrder`, `TestOutputIsBounded`, `TestInteractionSummaryIsBoundedStatus` (CRD) |
 | Read-only, no extra provider I/O, no actuation | controller wiring | controller `TestO4AddsNoProviderIO`, `otherWrites == 0` in every controller test, live kind checks |
