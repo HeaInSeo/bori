@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"time"
 	"unicode/utf8"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	opsv1 "github.com/HeaInSeo/bori/apis/ops/v1alpha1"
 )
@@ -42,6 +45,98 @@ type Response struct {
 	// Preconditions are capabilities of the same target that must be
 	// AVAILABLE on current evidence for the response to be safe.
 	Preconditions []opsv1.CapabilityType `json:"preconditions,omitempty"`
+	// Execution makes the response eligible for an O5 proposal and handoff
+	// to an external ActionProvider. Without it the response is display-only.
+	Execution *Execution `json:"execution,omitempty"`
+}
+
+// Execution is the O5 action contract of a response: who carries it out,
+// who may approve it, what it is expected to restore and what it may
+// interrupt, and its bounded timeouts and retry budget. It grants BORI no
+// mutation authority; it only says to whom and under which conditions a
+// handoff may be made.
+type Execution struct {
+	// Provider names the registered ActionProvider the handoff goes to.
+	Provider string `json:"provider"`
+	// Approvers are the principals whose verified decision may approve or
+	// reject the exact proposal. Required when a person must decide.
+	Approvers []string `json:"approvers,omitempty"`
+	// ExpectedImpact are the capabilities of this target the action is
+	// expected to restore; it must include For. Recovery is judged on
+	// exactly these.
+	ExpectedImpact []opsv1.CapabilityType `json:"expectedImpact"`
+	// MayInterrupt are capabilities of this target the action may
+	// interrupt (blast radius). Any entry needs a human decision.
+	MayInterrupt []opsv1.CapabilityType `json:"mayInterrupt,omitempty"`
+	// AckTimeout bounds the wait for the provider's durable acceptance.
+	AckTimeout metav1.Duration `json:"ackTimeout"`
+	// CompletionTimeout bounds the wait for a result after acceptance.
+	CompletionTimeout metav1.Duration `json:"completionTimeout"`
+	// RecoveryWindow bounds the wait for post-execution evidence.
+	RecoveryWindow metav1.Duration `json:"recoveryWindow"`
+	// ApprovalTTL bounds the age of an approval decision (default 1h).
+	ApprovalTTL metav1.Duration `json:"approvalTTL,omitempty"`
+	// MaxSends bounds the sends of one attempt with the same idempotency
+	// key (default 3).
+	MaxSends int `json:"maxSends,omitempty"`
+	// MaxAttempts bounds the attempts of one proposal (default 1). A new
+	// attempt is made only after a definitive Failed result and only when
+	// Retryable.
+	MaxAttempts int  `json:"maxAttempts,omitempty"`
+	Retryable   bool `json:"retryable,omitempty"`
+}
+
+// Execution defaults and bounds.
+const (
+	DefaultApprovalTTL = time.Hour
+	DefaultMaxSends    = 3
+	DefaultMaxAttempts = 1
+	maxApprovers       = 8
+	maxImpact          = 8
+	maxExecSends       = 5
+	maxExecAttempts    = 3
+	maxExecDuration    = 24 * time.Hour
+)
+
+// HumanDecisionReasons are the declared reasons a person must approve the
+// response, in a fixed order; empty means the declared profile is itself the
+// policy approval.
+func (r Response) HumanDecisionReasons() []string {
+	var out []string
+	if r.RequiresApproval {
+		out = append(out, "approval-declared")
+	}
+	if len(r.Risks) > 0 {
+		out = append(out, "risk-declared")
+	}
+	if r.Execution != nil && len(r.Execution.MayInterrupt) > 0 {
+		out = append(out, "may-interrupt")
+	}
+	return out
+}
+
+// SendBudget is the declared or default send bound of one attempt.
+func (e Execution) SendBudget() int {
+	if e.MaxSends == 0 {
+		return DefaultMaxSends
+	}
+	return e.MaxSends
+}
+
+// AttemptBudget is the declared or default attempt bound.
+func (e Execution) AttemptBudget() int {
+	if e.MaxAttempts == 0 {
+		return DefaultMaxAttempts
+	}
+	return e.MaxAttempts
+}
+
+// ApprovalAge is the declared or default approval TTL.
+func (e Execution) ApprovalAge() time.Duration {
+	if e.ApprovalTTL.Duration == 0 {
+		return DefaultApprovalTTL
+	}
+	return e.ApprovalTTL.Duration
 }
 
 // ActionRef is a declared action identity.
@@ -154,6 +249,59 @@ func (r Response) validate() error {
 		if err := checkType(c); err != nil {
 			return fmt.Errorf("precondition %d: %w", i, err)
 		}
+	}
+	if r.Execution != nil {
+		if err := r.Execution.validate(r); err != nil {
+			return fmt.Errorf("execution: %w", err)
+		}
+	}
+	return nil
+}
+
+func (e Execution) validate(r Response) error {
+	switch {
+	case !nameRE.MatchString(e.Provider) || len(e.Provider) > 63:
+		return fmt.Errorf("provider %q invalid", e.Provider)
+	case len(e.Approvers) > maxApprovers:
+		return errors.New("too many approvers")
+	case len(e.ExpectedImpact) == 0 || len(e.ExpectedImpact) > maxImpact:
+		return fmt.Errorf("expectedImpact needs 1-%d capabilities", maxImpact)
+	case len(e.MayInterrupt) > maxImpact:
+		return errors.New("too many mayInterrupt capabilities")
+	case e.MaxSends < 0 || e.MaxSends > maxExecSends:
+		return fmt.Errorf("maxSends must be 0-%d", maxExecSends)
+	case e.MaxAttempts < 0 || e.MaxAttempts > maxExecAttempts:
+		return fmt.Errorf("maxAttempts must be 0-%d", maxExecAttempts)
+	case len(r.HumanDecisionReasons()) > 0 && len(e.Approvers) == 0:
+		return errors.New("a response that needs a human decision must declare approvers")
+	}
+	for _, f := range []struct {
+		name string
+		d    time.Duration
+	}{{"ackTimeout", e.AckTimeout.Duration}, {"completionTimeout", e.CompletionTimeout.Duration}, {"recoveryWindow", e.RecoveryWindow.Duration}} {
+		if f.d <= 0 || f.d > maxExecDuration {
+			return fmt.Errorf("%s must be within (0, %s]", f.name, maxExecDuration)
+		}
+	}
+	if d := e.ApprovalTTL.Duration; d < 0 || d > maxExecDuration {
+		return fmt.Errorf("approvalTTL must be within [0, %s]", maxExecDuration)
+	}
+	seen := map[string]bool{}
+	for _, a := range e.Approvers {
+		if a == "" || len(a) > maxOwner || seen[a] {
+			return fmt.Errorf("approver %q invalid or repeated", a)
+		}
+		seen[a] = true
+	}
+	forIncluded := false
+	for i, c := range append(append([]opsv1.CapabilityType{}, e.ExpectedImpact...), e.MayInterrupt...) {
+		if err := checkType(c); err != nil {
+			return fmt.Errorf("capability %d: %w", i, err)
+		}
+		forIncluded = forIncluded || (i < len(e.ExpectedImpact) && c == r.For)
+	}
+	if !forIncluded {
+		return errors.New("expectedImpact must include for")
 	}
 	return nil
 }

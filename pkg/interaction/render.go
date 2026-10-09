@@ -98,6 +98,7 @@ func renderTarget(b *strings.Builder, t opsv1.OperationalTarget) {
 		rs = append(rs, fmt.Sprintf("%s for %s on %s, owner %s: %s%s (display only)", r.Name, r.For.Name, r.Target, owner, r.Status, preconds(r)))
 	}
 	line(b, "responses", rs)
+	line(b, "actions", actionLines(s.Actions))
 	line(b, "human", reasonList(s.HumanReasons))
 	line(b, "pending", reasonList(s.PendingPostConditions))
 }
@@ -167,4 +168,35 @@ func preconds(r opsv1.InteractionResponse) string {
 		p = append(p, c.Subject+"="+c.Code)
 	}
 	return "; preconditions " + strings.Join(p, ", ")
+}
+
+// actionLines keeps proposal, execution result and recovery apart: an
+// execution result is never shown as recovery.
+func actionLines(as []opsv1.InteractionAction) []string {
+	var out []string
+	for _, a := range as {
+		s := fmt.Sprintf("%s for %s: %s (attempt %d)", a.Name, a.For.Name, a.Phase, a.Attempt)
+		var codes []string
+		for _, r := range a.Reasons {
+			codes = append(codes, r.Code)
+		}
+		if len(codes) > 0 {
+			s += " [" + strings.Join(codes, ", ") + "]"
+		}
+		recovery := a.Recovery
+		if recovery == "" {
+			recovery = "not assessed"
+		}
+		var detail []string
+		for _, d := range a.RecoveryDetail {
+			detail = append(detail, d.Subject+"="+d.Code)
+		}
+		s += "; recovery " + recovery
+		if len(detail) > 0 {
+			s += " (" + strings.Join(detail, ", ") + ")"
+		}
+		s += "; proposal " + a.Proposal + " digest " + a.Digest
+		out = append(out, s)
+	}
+	return out
 }

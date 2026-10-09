@@ -5,7 +5,9 @@
 > action authority. The levels are not a severity order of capability states,
 > and there is no overall platform health. Response candidates are **display
 > only**: nothing here requests, approves or runs an action. Approval, external
-> execution and RecoveryAssessment belong to O5 and are not implemented.
+> execution and RecoveryAssessment belong to O5: see
+> [operational-actions.md](operational-actions.md). With O5 off the summary,
+> including its fingerprint, is exactly the one described here.
 
 ## What the canon fixes and what this implementation chooses
 
@@ -244,7 +246,10 @@ operational SLO is claimed; there was no human experiment.
 ## Not included
 
 - ActionProposal, approval, external ActionProvider, execution and
-  RecoveryAssessment (O5).
+  RecoveryAssessment: O5, opt-in (`--enable-operational-actions`), see
+  [operational-actions.md](operational-actions.md). It adds
+  `status.interaction.actions` and two human reasons
+  (`action-outcome-unknown`, `action-not-recovered`).
 - Real-world packs (O6).
 - `OperationalPolicy` CRD.
 - Notification channels.

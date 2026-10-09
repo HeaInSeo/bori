@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	opsv1 "github.com/HeaInSeo/bori/apis/ops/v1alpha1"
+	"github.com/HeaInSeo/bori/pkg/action"
 	"github.com/HeaInSeo/bori/pkg/interaction"
 	"github.com/HeaInSeo/bori/pkg/investigate"
 	"github.com/HeaInSeo/bori/pkg/operations"
@@ -86,6 +87,13 @@ type OperationalReconciler struct {
 	// action. False keeps the O2/O3 status unchanged.
 	Interaction        bool
 	InteractionProfile *interaction.Profile
+
+	// Actions enables the O5 proposal/handoff/recovery engine (requires
+	// Interaction). Its views appear in status.interaction.actions. BORI
+	// never mutates a workload: a handoff goes only to a registered external
+	// ActionProvider, after persist-before-send, and only with a durable
+	// journal. Nil keeps the O4 status unchanged.
+	Actions *action.Engine
 }
 
 // minRequeue bounds how soon a freshness or cooldown wake-up may requeue.
@@ -157,6 +165,18 @@ func (r *OperationalReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
+	var acts action.Output
+	if r.Interaction && r.Actions != nil {
+		if acts, err = r.Actions.Step(ctx, action.Input{
+			Snapshot: built.Snapshot, Assessment: assessment, Profile: r.InteractionProfile, Now: now,
+		}); err != nil {
+			// No journal, no actions: nothing is handed off and no action
+			// state is shown rather than a stale one.
+			ctrl.LoggerFrom(ctx).Error(err, "action engine step failed; no action is shown or handed off")
+			acts = action.Output{}
+		}
+	}
+
 	var errs []error
 	for i := range contracts.Items {
 		c := &contracts.Items[i]
@@ -180,6 +200,7 @@ func (r *OperationalReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (
 				Status:        desired,
 				Investigation: r.investigation(string(t.UID), assessment, queries),
 				Profile:       r.InteractionProfile,
+				Actions:       action.Status(acts.Views[string(t.UID)]),
 			}, t.Status.Interaction)
 		}
 		next, changed := opswire.Apply(t.Status, desired, now)
@@ -194,7 +215,11 @@ func (r *OperationalReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (
 	if len(errs) > 0 {
 		return ctrl.Result{}, errors.Join(errs...)
 	}
-	return ctrl.Result{RequeueAfter: r.requeueAfter(queries, now)}, nil
+	d := r.requeueAfter(queries, now)
+	if w := acts.NextWake; !w.IsZero() && (d <= 0 || w.Sub(now) < d) {
+		d = max(w.Sub(now), minRequeue)
+	}
+	return ctrl.Result{RequeueAfter: d}, nil
 }
 
 // investigation returns the target's investigation record only when it
