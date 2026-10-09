@@ -8,13 +8,22 @@ import (
 )
 
 // ErrConflict is returned by Journal.Put when the record's version is not
-// the stored one: another writer (for example an engine with an older or
-// newer epoch) changed it first.
+// the stored one: another writer changed it first.
 var ErrConflict = errors.New("journal: version conflict")
+
+// ErrFenced is returned by Journal.Put when the record's Fence is lower than
+// the newest epoch the journal has issued: a newer engine exists, so the
+// writer may no longer persist, and therefore never send, anything.
+var ErrFenced = errors.New("journal: writer fenced by a newer epoch")
 
 // Journal is the durable execution log. Every handoff is written here
 // before it is sent. Put is a compare-and-swap on Version: a new record
 // has Version 0; the stored record is returned with the next version.
+// Put must also reject (ErrFenced) any record whose Fence is lower than the
+// newest epoch issued, atomically with the write: once a newer engine has
+// taken an epoch, an older one can write nothing. Together with the
+// engine's one-in-flight-per-target rule this makes target occupancy
+// exclusive across overlapping engines.
 //
 // The concrete store is OPEN (API v0.1 §19); see docs/operational-actions.md.
 type Journal interface {
@@ -75,6 +84,9 @@ func (j *MemJournal) List(context.Context) ([]Record, error) {
 func (j *MemJournal) Put(_ context.Context, r Record) (Record, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if r.Fence < j.epoch {
+		return Record{}, ErrFenced
+	}
 	cur, ok := j.recs[r.Key]
 	switch {
 	case !ok && r.Version != 0, ok && cur.Version != r.Version:

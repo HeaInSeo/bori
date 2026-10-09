@@ -60,7 +60,7 @@ block. Without it the response stays display-only, exactly as in O4.
 | Expected capability impact | `execution.expectedImpact` (must include `for`): the capabilities the action is expected to restore. Recovery is judged on exactly these. |
 | Blast radius | Same target only (v0.1 has no cross-namespace action). `execution.mayInterrupt` lists the capabilities of this target the action may interrupt. |
 | Execution owner and authority | `owner` (O4) is the accountable owner. `execution.provider` names the registered ActionProvider. The registry entry declares the owner it acts for and the namespaces and actions it is authorised for. |
-| Human approval and why | Required when `requiresApproval`, any declared `risks`, or a non-empty `mayInterrupt`. The reasons are reported as codes. `execution.approvers` are the principals that may approve. Otherwise the declared profile itself is the policy approval. |
+| Human approval and why | Required when `requiresApproval`, any declared `risks`, or a non-empty `mayInterrupt`. It is also required when another declared response (executable or display-only) addresses the same capability of the target now: `no-priority-authority`, the same boundary O4 shows. The same action declared with different owners is `owner-conflict` and is blocked. The reasons are reported as codes. `execution.approvers` are the principals that may approve. Otherwise the declared profile itself is the policy approval. |
 | Approval binding | A decision names the proposal ID **and** digest. TTL is `execution.approvalTTL` (default 1h). |
 | Idempotency, retry, timeout, budget | Idempotency key = `<proposal ID>/<attempt>`. Fence = journal epoch. `ackTimeout`, `completionTimeout`, `maxSends` (resends of one attempt with the same key), `maxAttempts` + `retryable` (a new attempt with a new key only after a definitive Failed result). |
 | Receipt/result linkage | A receipt or result is accepted only when key, fence and proposal digest all equal the current attempt's. Anything else is counted and ignored. |
@@ -91,8 +91,8 @@ Proposal phase (derived each step, never stored on its own):
 
 | Phase | Meaning |
 |---|---|
-| `Blocked` | A gate fails. Reasons: `owner-undeclared`, `provider-unregistered`, `authority-insufficient`, `precondition-unproven`, `precondition-unmet`, `journal-not-durable`, `target-busy`, `no-approver`, `executed-not-recovered`, `outcome-unknown`, `attempts-exhausted`, `identity-changed` |
-| `AwaitingApproval` | All execution gates pass but a human approval is required. The reasons say why: `approval-declared`, `risk-declared`, `may-interrupt`. |
+| `Blocked` | A gate fails. Reasons: `owner-undeclared`, `owner-conflict`, `provider-unregistered`, `authority-insufficient`, `precondition-unproven`, `precondition-unmet`, `journal-not-durable`, `target-busy`, `no-approver`, `executed-not-recovered`, `outcome-unknown`, `attempts-exhausted`, `identity-changed` |
+| `AwaitingApproval` | All execution gates pass but a human approval is required. The reasons say why: `approval-declared`, `risk-declared`, `may-interrupt`, `no-priority-authority`. |
 | `Rejected` | A verified, allowed approver rejected this exact ID and digest. |
 | `Dispatching` | Handoff intent persisted. Sent (possibly) but not acknowledged. |
 | `Accepted` | Receipt received: durable acceptance only. |
@@ -130,7 +130,7 @@ result.
 2. **Persist before send:** a `Dispatching` record with key, fence and digest is written by compare-and-swap. If the write fails, nothing is sent.
 3. **Send:** `Submit(handoff)`. A receipt with the same key, fence and digest moves the record to `Accepted`. If that write fails, the next step polls the provider by key and adopts its answer, so nothing is sent twice.
 4. **Resend** (same key and fence, at most `maxSends`) only while unacknowledged and only after the gates of step 1 pass again. Otherwise the record becomes `Withdrawn`.
-5. **Restart:** a new engine takes a fresh epoch from the journal. Before resending, it rewrites every in-flight record with the new fence. The reference actor rejects lower fences for a key, and writes from the old engine fail compare-and-swap.
+5. **Restart and overlap:** a new engine takes a fresh epoch from the journal, and every record it writes carries that epoch. The journal **rejects any write whose fence is below the newest issued epoch**, atomically with the write. Once a newer engine exists, an older one can persist nothing, so it can send nothing; this makes the one-in-flight-per-target rule hold across overlapping engines. A resend carries the new fence. The reference actor rejects lower fences, so an older send that was already on the wire before the takeover is deduplicated by key or refused.
 6. **Results:** an accepted result for the current key, fence and digest records BORI's own completion time, never the provider's clock. Duplicate results are no-ops. Results for another key, fence or digest are counted and ignored. A result never becomes an O1 observation.
 
 ## 3. OPEN decisions (§19) — options and the writer's recommendation
@@ -241,6 +241,8 @@ Each scenario runs the independent forbidden-outcome checker after every step.
 | 8 | Target recreation, contract/provider revision change | S17, S19 | `TestIdentityChangeReusesNothing` |
 | 9 | Journal failure, crash before/after send, lost receipt, duplicate/forged results, stale engine, retry budget, restart every step | R2-B | `TestFaultsNeverDuplicateOrMislink`, `TestResendRevalidates`, `TestNoRetryAfterSuccessOrUnknownOutcome`, `TestOneInFlightExecutionPerTarget` |
 | 10 | Unrelated failure/recovery does not contaminate | S03, S12 | `TestUnrelatedFailureAndRecoveryDoNotContaminate` |
+| — | Codex P1 r4234734088: competing responses and owner conflicts need a person / block | §4.2, O4 | `TestCompetingResponsesNeedAPerson` |
+| — | Codex P1 r4234734092: overlapping engines cannot both occupy a target | R2-B | `TestOverlappingEnginesCannotBothOccupyATarget` |
 | — | Determinism and zero churn; checker detects each class; no scenario/product/readiness branch; no cluster client | §2, §10 | `TestDeterministicAndZeroChurn`, `TestForbiddenCheckerDetectsViolations`, `TestActionCodeIsAppScenarioAndReadinessNeutral`, `TestActionCodeHasNoClusterClient` |
 | — | O4 linkage: fingerprints unchanged when off, escalation only on unknown outcome/non-recovery, schema at bounds | O4 | `TestFingerprintUnchangedWithoutActions`, `TestActionsEscalateOnlyOnUnknownOutcomeOrNonRecovery`, `TestActionsAtBoundsFitTheSchema`, `TestO5OffEquivalenceAndNoAddedEvidenceIO` |
 

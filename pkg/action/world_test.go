@@ -254,3 +254,8 @@ func hasReason(v action.View, code string) bool {
 	}
 	return false
 }
+
+// view2 returns y's views (several responses).
+func (w *world) view2(out action.Output) []action.View { return out.Views["t-y"] }
+
+func evaluate(s operations.Snapshot) (operations.Assessment, error) { return operations.Evaluate(s) }

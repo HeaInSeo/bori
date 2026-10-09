@@ -188,7 +188,18 @@ func (w *world) checkExecution(f *forbidden, e executed, s stepLog) {
 			f.add(&f.staleReuse, "executed digest %s but the current proposal digest is %s", h.Digest, v.Digest)
 		}
 	}
-	if len(r.HumanDecisionReasons()) == 0 {
+	// A person is needed for a declared reason, or because another declared
+	// response addresses the same capability now (no priority authority).
+	competing := 0
+	for _, o := range w.profile.Responses {
+		if o.Target.Name == name && o.For == r.For && o.Action != r.Action {
+			st := state(operations.CapabilityType{Domain: o.For.Domain, Name: o.For.Name, Revision: o.For.Revision})
+			if contains(o.States, string(st)) || (len(o.States) == 0 && (st == operations.Degraded || st == operations.Unavailable)) {
+				competing++
+			}
+		}
+	}
+	if len(r.HumanDecisionReasons()) == 0 && competing == 0 {
 		if h.Approval.Kind != "policy" {
 			f.add(&f.unauthorized, "policy action without a policy approval: %+v", h.Approval)
 		}

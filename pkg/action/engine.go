@@ -209,9 +209,14 @@ func (st *step) wakeAt(t time.Time) {
 	}
 }
 
-// put persists r by compare-and-swap. On failure r is left unchanged in
-// the step and the caller must not act on the change (no send).
+// put persists r by compare-and-swap, stamped with this engine's epoch so a
+// fenced journal refuses it once a newer engine exists. On failure r is left
+// unchanged in the step and the caller must not act on the change (no send).
 func (st *step) put(r *Record, next Record) bool {
+	if next.Fence < st.e.epoch && next.Version != 0 {
+		st.e.stats.Takeovers++
+	}
+	next.Fence = st.e.epoch
 	stored, err := st.e.Journal.Put(st.ctx, next)
 	if err != nil {
 		st.e.stats.JournalFailures++
@@ -221,19 +226,11 @@ func (st *step) put(r *Record, next Record) bool {
 	return true
 }
 
-// own rewrites an in-flight record with this engine's epoch before acting
-// on it (takeover after a restart). False if another writer got there.
+// own reports whether this engine may act on a record: not when a newer
+// engine has already written it. Taking over an older engine's record
+// happens on this engine's next write, which carries the newer fence.
 func (st *step) own(r *Record) bool {
-	if r.Fence >= st.e.epoch {
-		return r.Fence == st.e.epoch
-	}
-	next := *r
-	next.Fence = st.e.epoch
-	if !st.put(r, next) {
-		return false
-	}
-	st.e.stats.Takeovers++
-	return true
+	return r.Fence <= st.e.epoch
 }
 
 func matches(r *Record, key string, fence uint64, digest string) bool {
@@ -282,7 +279,7 @@ func (st *step) advance(r *Record) {
 		}
 		next.Sends++
 		next.LastSentAt = now
-		next.SentFence = next.Fence
+		next.SentFence = st.e.epoch
 		if !st.put(r, next) {
 			return
 		}
@@ -383,6 +380,9 @@ func (st *step) gates(p Proposal, resend bool) []Reason {
 	ex := r.Execution
 	if r.Owner == "" {
 		out = append(out, Reason{Code: ReasonOwnerUndeclared})
+	}
+	if p.OwnerConflict {
+		out = append(out, Reason{Code: ReasonOwnerConflict})
 	}
 	if reg, ok := st.e.Providers[ex.Provider]; !ok {
 		out = append(out, Reason{Code: ReasonProviderUnregistered, Subject: ex.Provider})

@@ -75,6 +75,9 @@ const (
 	ReasonApprovalDeclared = "approval-declared"
 	ReasonRiskDeclared     = "risk-declared"
 	ReasonMayInterrupt     = "may-interrupt"
+	// Derived from the other declared responses (as O4 does).
+	ReasonNoPriorityAuthority = "no-priority-authority"
+	ReasonOwnerConflict       = "owner-conflict"
 
 	// Why a submitted decision was not counted.
 	ReasonApprovalUnverified     = "approval-unverified"
