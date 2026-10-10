@@ -3,6 +3,7 @@ package action_test
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 
 	opsv1 "github.com/HeaInSeo/bori/apis/ops/v1alpha1"
@@ -160,19 +161,38 @@ func (w *world) checkRecovered(f *forbidden, v action.View, s stepLog) {
 	}
 }
 
+// sameContract is the checker's own comparison of two declared execution
+// contracts: field by field, an empty list equal to an absent one.
+func sameContract(a, b interaction.Execution) bool {
+	norm := func(e interaction.Execution) interaction.Execution {
+		if len(e.Approvers) == 0 {
+			e.Approvers = nil
+		}
+		if len(e.ExpectedImpact) == 0 {
+			e.ExpectedImpact = nil
+		}
+		if len(e.MayInterrupt) == 0 {
+			e.MayInterrupt = nil
+		}
+		return e
+	}
+	return reflect.DeepEqual(norm(a), norm(b))
+}
+
 // checkExecution verifies one handoff the actor newly executed during this
 // step against the inputs of this step. It judges from the profile, the O1
-// assessment and the decisions alone, never from the engine's proposals.
+// assessment, the decisions and the journal record of the handoff alone,
+// never from the engine's proposals or keys. The record's execution
+// contract maps the handoff to its exact declaration(s); only that
+// contract's approvers and approval age apply.
 func (w *world) checkExecution(f *forbidden, e executed, s stepLog) {
 	h := e.h
 	name := w.targetName(h.Target.UID)
-	var cands []interaction.Response // the declarations this handoff can be
+	declared := false
 	for _, r := range w.declarations(h.Action, name) {
-		if r.Execution != nil && r.Owner == h.Owner && opsT(r.For) == h.For {
-			cands = append(cands, r)
-		}
+		declared = declared || (r.Execution != nil && r.Owner == h.Owner && opsT(r.For) == h.For)
 	}
-	if len(cands) == 0 {
+	if !declared {
 		f.add(&f.unauthorized, "executed an undeclared action %s on %s", h.Action, h.Target)
 	}
 	if h.Owner == "" || h.Owner != "storage-oncall" || h.Target.Namespace != "apps" {
@@ -201,9 +221,44 @@ func (w *world) checkExecution(f *forbidden, e executed, s stepLog) {
 		f.add(&f.staleReuse, "executed for a replaced identity: %+v", h)
 		return
 	}
-	if len(cands) == 0 {
+	if !declared {
 		return
 	}
+
+	// The persisted record of the handoff, consistent with what was sent.
+	rec, ok := w.recordByKey(h.Key)
+	if !ok {
+		f.add(&f.unauthorized, "executed %s without a persisted record", h.Key)
+		return
+	}
+	var impact []operations.CapabilityType
+	for _, c := range rec.Execution.ExpectedImpact {
+		impact = append(impact, opsT(c))
+	}
+	if rec.ProposalID != h.ProposalID || rec.Digest != h.Digest || rec.Approval != h.Approval ||
+		rec.Action != h.Action || rec.Owner != h.Owner || rec.For != h.For ||
+		rec.Provider != rec.Execution.Provider || fmt.Sprint(impact) != fmt.Sprint(h.ExpectedImpact) {
+		f.add(&f.unauthorized, "handoff %s does not match its record or the record's contract", h.Key)
+		return
+	}
+	for _, o := range w.records() {
+		if o.ProposalID == rec.ProposalID && !sameContract(o.Execution, rec.Execution) {
+			f.add(&f.unauthorized, "proposal %s recorded under two execution contracts", rec.ProposalID)
+			return
+		}
+	}
+	var cands []interaction.Response // the declarations this handoff is
+	for _, r := range w.declarations(h.Action, name) {
+		if r.Execution != nil && r.Owner == h.Owner && opsT(r.For) == h.For && sameContract(*r.Execution, rec.Execution) {
+			cands = append(cands, r)
+		}
+	}
+	if len(cands) == 0 {
+		f.add(&f.unauthorized, "executed %s under an undeclared execution contract", h.Action)
+		return
+	}
+	contract := *cands[0].Execution // equal for every candidate
+
 	ta, _ := s.a.Target(h.Target.UID)
 	state := func(c operations.CapabilityType) operations.CapabilityState {
 		for _, x := range ta.Capabilities {
@@ -264,11 +319,14 @@ func (w *world) checkExecution(f *forbidden, e executed, s stepLog) {
 	// The O4 human-decision boundary, recomputed: every triggered
 	// declaration for this capability of the target (any action, executable
 	// or not) whose preconditions are not unmet is a viable response; more
-	// than one distinct viable response has no priority authority. The same
-	// action under several owners is an owner conflict. A declaration's own
-	// approval flag, risks or interruption also need a person.
+	// than one distinct viable response has no priority authority, and so
+	// has one viable response declared with several execution contracts.
+	// The same action under several owners is an owner conflict. A
+	// declaration's own approval flag, risks or interruption also need a
+	// person.
 	owners := map[string]bool{}
 	viable := map[string]bool{}
+	contracts := map[string][]interaction.Execution{} // viable response → distinct contracts
 	for _, r := range w.profile.Responses {
 		if r.Target.Name != name || opsT(r.For) != h.For || !triggered(r) {
 			continue
@@ -276,8 +334,20 @@ func (w *world) checkExecution(f *forbidden, e executed, s stepLog) {
 		if r.Action == h.Action {
 			owners[r.Owner] = true
 		}
-		if !unmet(r) {
-			viable[o4Identity(r)] = true
+		if unmet(r) {
+			continue
+		}
+		id := o4Identity(r)
+		viable[id] = true
+		if r.Execution == nil {
+			continue
+		}
+		seen := false
+		for _, c := range contracts[id] {
+			seen = seen || sameContract(c, *r.Execution)
+		}
+		if !seen {
+			contracts[id] = append(contracts[id], *r.Execution)
 		}
 	}
 	if len(owners) > 1 {
@@ -285,7 +355,8 @@ func (w *world) checkExecution(f *forbidden, e executed, s stepLog) {
 	}
 	person := len(viable) > 1
 	for _, r := range live {
-		person = person || r.RequiresApproval || len(r.Risks) > 0 || len(r.Execution.MayInterrupt) > 0
+		person = person || len(contracts[o4Identity(r)]) > 1 ||
+			r.RequiresApproval || len(r.Risks) > 0 || len(r.Execution.MayInterrupt) > 0
 	}
 	if !person {
 		if h.Approval.Kind != "policy" {
@@ -296,17 +367,15 @@ func (w *world) checkExecution(f *forbidden, e executed, s stepLog) {
 	ds, _ := w.decisions.Decisions(context.Background())
 	valid := false
 	for _, d := range ds {
-		for _, r := range live {
-			if h.Approval.Kind != "policy" && d.ID == h.Approval.DecisionID && d.Verdict == action.Approve &&
-				d.ProposalID == h.ProposalID && d.Digest == h.Digest && w.signer.Verify(d) &&
-				contains(r.Execution.Approvers, d.Principal) &&
-				!d.DecidedAt.After(s.at) && s.at.Sub(d.DecidedAt) <= r.Execution.ApprovalAge() {
-				valid = true
-			}
+		if h.Approval.Kind != "policy" && d.ID == h.Approval.DecisionID && d.Principal == h.Approval.Principal &&
+			d.Verdict == action.Approve && d.ProposalID == h.ProposalID && d.Digest == h.Digest && w.signer.Verify(d) &&
+			contains(contract.Approvers, d.Principal) &&
+			!d.DecidedAt.After(s.at) && s.at.Sub(d.DecidedAt) <= contract.ApprovalAge() {
+			valid = true
 		}
 	}
 	if !valid {
-		f.add(&f.unauthorized, "executed without a valid approval for the exact proposal (person required, %d viable responses): %+v", len(viable), h.Approval)
+		f.add(&f.unauthorized, "executed without a valid approval by an approver of its own contract (person required, %d viable responses): %+v", len(viable), h.Approval)
 	}
 }
 

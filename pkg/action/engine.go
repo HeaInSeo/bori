@@ -499,7 +499,7 @@ func (st *step) decide(p Proposal) View {
 		TargetUID: p.Binding.Target.UID, Digest: p.Digest, Attempt: attempt, Phase: PhaseDispatching,
 		Fence: st.e.epoch, SentFence: st.e.epoch, Sends: 1, Approval: *approved, Binding: p.Binding,
 		Action: p.Response.Action, Provider: ex.Provider, Owner: p.Response.Owner, For: p.For,
-		Expected: p.Expected, CreatedAt: now, LastSentAt: now,
+		Expected: p.Expected, Execution: *ex, CreatedAt: now, LastSentAt: now,
 		AckTimeout: ex.AckTimeout.Duration, CompletionTimeout: ex.CompletionTimeout.Duration,
 		RecoveryWindow: ex.RecoveryWindow.Duration, Retryable: ex.Retryable,
 		MaxAttempts: ex.AttemptBudget(), MaxSends: ex.SendBudget(),

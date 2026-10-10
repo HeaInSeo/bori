@@ -1,7 +1,6 @@
 package action_test
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -351,24 +350,10 @@ func TestCheckerDetectsSameActionPolicyDispatch(t *testing.T) {
 			ready, other := policyResponse("remount"), policyResponse("remount")
 			vary(&other)
 			w.profile.Responses = []interaction.Response{ready, other} // the order 9505b98 dispatched
-			// A step whose only execution is the injected policy dispatch:
+			// A step whose only execution is the injected policy dispatch of
+			// the ready declaration, persisted under its own contract:
 			// evidence and O1 are current, the engine does not run.
-			w.observe()
-			snap := w.snapshot()
-			a, err := operations.Evaluate(snap)
-			if err != nil {
-				t.Fatal(err)
-			}
-			w.history = append(w.history, stepLog{at: w.now, snap: snap, a: a})
-			w.pending = nil
-			y := w.targets["y"]
-			h := action.Handoff{Key: "p-ready/1", Fence: 1, ProposalID: "p-ready", Digest: "d-ready",
-				Action: ready.Action, Owner: "storage-oncall", Target: y.Identity, ResolvedUID: y.ResolvedUID,
-				Contract: y.ContractRef, For: cap("persist"), Approval: action.Approval{Kind: "policy", Principal: "policy:p1"}}
-			if _, err := w.actor.Submit(context.Background(), h); err != nil {
-				t.Fatal(err)
-			}
-			w.check()
+			w.inject(ready, *ready.Execution, "p-ready", "d-ready", action.Approval{Kind: "policy", Principal: "policy:p1"})
 			if w.ck.unrelated+w.ck.unjustifiedRecovery+w.ck.staleReuse != 0 {
 				t.Fatalf("control is not isolated: %+v", w.ck)
 			}

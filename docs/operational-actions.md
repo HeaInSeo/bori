@@ -131,7 +131,7 @@ result.
    - no other execution of this target is in flight;
    - the attempt budget allows it;
    - the approval (human or policy) is valid for the exact ID and digest.
-2. **Persist before send:** a `Dispatching` record with key, fence and digest is written by compare-and-swap. If the write fails, nothing is sent.
+2. **Persist before send:** a `Dispatching` record with key, fence and digest is written by compare-and-swap. If the write fails, nothing is sent. The record also keeps a verbatim copy of the declared execution contract the attempt was derived and approved under. It stays in the journal and is never sent to the provider; it lets an independent reader map the attempt to its exact declaration.
 3. **Send:** `Submit(handoff)`. A receipt with the same key, fence and digest moves the record to `Accepted`. If that write fails, the next step polls the provider by key and adopts its answer, so nothing is sent twice.
 4. **Resend** (same key and fence, at most `maxSends`) only while unacknowledged and only after the gates of step 1 pass again. Otherwise the record becomes `Withdrawn`.
 5. **Restart and overlap:** a new engine takes a fresh epoch from the journal, and every record it writes carries that epoch. The journal **rejects any write whose fence is below the newest issued epoch**, atomically with the write. Once a newer engine exists, an older one can persist nothing, so it can send nothing; this makes the one-in-flight-per-target rule hold across overlapping engines. A resend carries the new fence. The reference actor rejects lower fences, so an older send that was already on the wire before the takeover is deduplicated by key or refused.
@@ -205,6 +205,8 @@ Every scenario runs a forbidden-outcome checker that recomputes independently:
 - unauthorized or duplicate execution;
 - stale or inapplicable reuse.
 
+The checker does not use the engine's proposals or keys. It maps each observed handoff to its exact declaration through the record's execution contract, compared field by field with the profile. Only that declaration's `approvers` and approval age apply; nothing is borrowed from another declaration of the same action. A handoff without a matching record, a record whose contract nobody declared, and one proposal recorded under two contracts are each unauthorized. It also applies the several-execution-contracts rule.
+
 Every scenario must count 0 on each.
 
 ## 6. Enabling
@@ -248,6 +250,7 @@ Each scenario runs the independent forbidden-outcome checker after every step.
 | — | Codex P1 r4234734088: competing responses and owner conflicts need a person / block | §4.2, O4 | `TestCompetingResponsesNeedAPerson` |
 | — | Codex P1 r4234734092: overlapping engines cannot both occupy a target | R2-B | `TestOverlappingEnginesCannotBothOccupyATarget` |
 | — | Guardrail P1-1 (9505b98): the same action, owner and capability declared with and without a human boundary (`requiresApproval`, risks, preconditions) needs a person in either declaration order and agrees with O4; controls: exact duplicate, unmet-precondition competitor (same/different action), display-only same-action declaration, several execution contracts, owner conflict (also with an inapplicable declaration), capability AVAILABLE; the checker flags the 9505b98 policy dispatch | §4.2, O4 | `TestSameActionDifferentBoundaryNeedsAPerson`, `TestBoundaryIsDeclarationOrderIndependent`, `TestSameActionBoundaryControls`, `TestCheckerDetectsSameActionPolicyDispatch` |
+| — | Guardrail d137 oracle P1: one action, owner and capability with two execution contracts and disjoint approvers (A: alice, B: bob), both declaration orders. bob's valid signature on A's exact ID and digest is `approver-not-allowed`, nothing is handed off; alice→A and bob→B each run once in their own world; crossed ID/digest and an undeclared principal are refused. The checker counts bob executing A, a borrowed approval age, an undeclared recorded contract, a record/handoff mismatch, a missing record, a remapped proposal and a policy dispatch under several contracts as unauthorized, and nothing else | §4.2, F8 | `TestApproversAreDeclarationScoped`, `TestCheckerAppliesTheExecutedDeclarationsApprovers` |
 | — | Determinism and zero churn; checker detects each class; no scenario/product/readiness branch; no cluster client | §2, §10 | `TestDeterministicAndZeroChurn`, `TestForbiddenCheckerDetectsViolations`, `TestActionCodeIsAppScenarioAndReadinessNeutral`, `TestActionCodeHasNoClusterClient` |
 | — | O4 linkage: fingerprints unchanged when off, escalation only on unknown outcome/non-recovery, schema at bounds | O4 | `TestFingerprintUnchangedWithoutActions`, `TestActionsEscalateOnlyOnUnknownOutcomeOrNonRecovery`, `TestActionsAtBoundsFitTheSchema`, `TestO5OffEquivalenceAndNoAddedEvidenceIO` |
 

@@ -102,5 +102,8 @@ func clone(r Record) Record {
 	r.Binding.Dependencies = append([]string(nil), r.Binding.Dependencies...)
 	r.Expected = append(r.Expected[:0:0], r.Expected...)
 	r.RecoveryDetail = append(r.RecoveryDetail[:0:0], r.RecoveryDetail...)
+	r.Execution.Approvers = append(r.Execution.Approvers[:0:0], r.Execution.Approvers...)
+	r.Execution.ExpectedImpact = append(r.Execution.ExpectedImpact[:0:0], r.Execution.ExpectedImpact...)
+	r.Execution.MayInterrupt = append(r.Execution.MayInterrupt[:0:0], r.Execution.MayInterrupt...)
 	return r
 }

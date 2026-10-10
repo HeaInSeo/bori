@@ -167,6 +167,11 @@ type Record struct {
 	Owner     string
 	For       operations.CapabilityType
 	Expected  []operations.CapabilityType
+	// Execution is the declared execution contract the attempt was derived
+	// and approved under, copied verbatim from the profile. It is journal
+	// state only, never sent to the provider: a reader can map the attempt
+	// to its exact declaration and its own approvers and approval age.
+	Execution interaction.Execution
 	// Times are BORI's own clock, never the provider's.
 	CreatedAt   time.Time
 	LastSentAt  time.Time
