@@ -108,12 +108,12 @@ func (e *Engine) Step(ctx context.Context, in Input) (Output, error) {
 		st.props[p.ID] = p
 	}
 	for _, k := range st.keys() {
-		if r := st.recs[k]; r.Phase.inFlight() {
+		if r := st.recs[k]; r.Phase.occupies() {
 			st.advance(r)
 		}
 	}
 	for _, k := range st.keys() {
-		if r := st.recs[k]; r.Phase.ended() && !r.Recovery.final() {
+		if r := st.recs[k]; !r.EndedAt.IsZero() && !r.Recovery.final() {
 			st.recover(r)
 		}
 	}
@@ -191,9 +191,13 @@ func (st *step) latestPerSubject() []*Record {
 	return out
 }
 
+// busy reports whether another proposal's attempt may still hold live
+// responsibility for the target. Only a matching definitive result or an
+// explicit refusal releases it: not a timeout, a withdrawal, an expired
+// approval, a changed proposal or a recovered capability.
 func (st *step) busy(targetUID, proposalID string) bool {
 	for _, r := range st.recs {
-		if r.TargetUID == targetUID && r.ProposalID != proposalID && r.Phase.inFlight() {
+		if r.TargetUID == targetUID && r.ProposalID != proposalID && r.Phase.occupies() {
 			return true
 		}
 	}
@@ -237,8 +241,9 @@ func matches(r *Record, key string, fence uint64, digest string) bool {
 	return key == r.Key && fence == r.SentFence && digest == r.Digest
 }
 
-// advance moves one in-flight record using only keyed provider answers and
-// BORI's clock.
+// advance moves one occupying record using only keyed provider answers and
+// BORI's clock. A timed-out or withdrawn record is still polled by key, so a
+// late definitive result ends it.
 func (st *step) advance(r *Record) {
 	if !st.own(r) {
 		return
@@ -292,6 +297,8 @@ func (st *step) advance(r *Record) {
 			return
 		}
 		st.wakeAt(r.AckedAt.Add(r.CompletionTimeout))
+	case PhaseTimedOut, PhaseWithdrawn:
+		st.wakeAt(now.Add(r.AckTimeout / time.Duration(r.MaxSends)))
 	}
 }
 
@@ -301,8 +308,8 @@ func (st *step) adopt(r *Record, res Result) bool {
 	next := *r
 	switch res.State {
 	case ResultPending:
-		if r.Phase == PhaseAccepted {
-			return false
+		if r.Phase != PhaseDispatching {
+			return false // still live; a deadline already passed stays passed
 		}
 		next.Phase, next.AckedAt = PhaseAccepted, now
 	case ResultSucceeded, ResultFailed:
@@ -313,7 +320,7 @@ func (st *step) adopt(r *Record, res Result) bool {
 		if next.AckedAt.IsZero() {
 			next.AckedAt = now
 		}
-		next.CompletedAt = now
+		next.CompletedAt, next.EndedAt = now, now
 	default:
 		return false
 	}
@@ -364,7 +371,7 @@ func (st *step) recover(r *Record) {
 	}
 	if !rec.final() {
 		r.Recovery, r.RecoveryDetail = rec, detail // shown, not persisted
-		st.wakeAt(r.CompletedAt.Add(r.RecoveryWindow))
+		st.wakeAt(r.EndedAt.Add(r.RecoveryWindow))
 		return
 	}
 	next := *r
@@ -416,20 +423,7 @@ func (st *step) approval(p Proposal) (approved *Approval, rejected bool, notes [
 		if d.ProposalID != p.ID {
 			continue
 		}
-		var code string
-		switch {
-		case st.e.Verifier == nil || !st.e.Verifier.Verify(d):
-			code = ReasonApprovalUnverified
-		case !contains(ex.Approvers, d.Principal):
-			code = ReasonApproverNotAllowed
-		case d.Digest != p.Digest:
-			code = ReasonApprovalDigestMismatch
-		case d.DecidedAt.After(st.in.Now):
-			code = ReasonApprovalFuture
-		case st.in.Now.Sub(d.DecidedAt) > ex.ApprovalAge():
-			code = ReasonApprovalExpired
-		}
-		if code != "" {
+		if code := st.invalid(p, d); code != "" {
 			// The decision's own fields are unverified input: only the code
 			// is reported, once.
 			if !containsReason(notes, code) {
@@ -452,9 +446,47 @@ func (st *step) approval(p Proposal) (approved *Approval, rejected bool, notes [
 	return approved, rejected, notes
 }
 
+// invalid returns why a submitted decision does not count for p under p's
+// own declaration now, or "" if it counts.
+func (st *step) invalid(p Proposal, d Decision) string {
+	ex := p.Response.Execution
+	switch {
+	case st.e.Verifier == nil || !st.e.Verifier.Verify(d):
+		return ReasonApprovalUnverified
+	case !contains(ex.Approvers, d.Principal):
+		return ReasonApproverNotAllowed
+	case d.Digest != p.Digest:
+		return ReasonApprovalDigestMismatch
+	case d.DecidedAt.After(st.in.Now):
+		return ReasonApprovalFuture
+	case st.in.Now.Sub(d.DecidedAt) > ex.ApprovalAge():
+		return ReasonApprovalExpired
+	}
+	return ""
+}
+
+// stillApproved revalidates the approval a record was persisted with,
+// before it is sent again: the recorded decision itself must still count,
+// and no counting rejection may exist. Another decision's validity is never
+// borrowed; a resend always carries exactly the recorded approval.
 func (st *step) stillApproved(p Proposal, a Approval) bool {
-	got, rejected, _ := st.approval(p)
-	return !rejected && got != nil && got.Kind == a.Kind && got.Principal == a.Principal
+	_, rejected, _ := st.approval(p)
+	if rejected {
+		return false
+	}
+	if a.Kind == "policy" {
+		return len(p.Human) == 0 && a.Principal == "policy:"+p.ProfileRevision
+	}
+	if a.Kind != "human" {
+		return false
+	}
+	for _, d := range st.decisions {
+		if d.ID == a.DecisionID && d.ProposalID == p.ID && d.Principal == a.Principal &&
+			d.Verdict == Approve && len(p.Human) > 0 && st.invalid(p, d) == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // decide derives the proposal's phase and, when every gate passes and the

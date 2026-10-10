@@ -120,11 +120,19 @@ func (w *world) check() {
 	}
 }
 
-// checkRecovered recomputes the recovery claim from scratch.
+// checkRecovered recomputes the recovery claim from scratch. The execution
+// and its end are the reference actor's own facts, not the record's phase
+// or times: no execution, or one still live at the actor, cannot have
+// recovered anything.
 func (w *world) checkRecovered(f *forbidden, v action.View, s stepLog) {
 	rec, ok := w.latestRecord(v.ProposalID)
-	if !ok || rec.CompletedAt.IsZero() || rec.CompletedAt.After(s.at) {
-		f.add(&f.unjustifiedRecovery, "recovered without an ended execution: %+v", v)
+	if !ok || w.actor.Executions[rec.Key] == 0 {
+		f.add(&f.unjustifiedRecovery, "recovered without an execution: %+v", v)
+		return
+	}
+	end, ended := w.ended[rec.Key]
+	if !ended || end.After(s.at) {
+		f.add(&f.unjustifiedRecovery, "recovered while %s still holds live responsibility at the actor: %+v", rec.Key, v)
 		return
 	}
 	var cur *operations.Target
@@ -140,7 +148,7 @@ func (w *world) checkRecovered(f *forbidden, v action.View, s stepLog) {
 	post := s.snap
 	post.Observations = nil
 	for _, o := range s.snap.Observations {
-		if o.ObservedAt.After(rec.CompletedAt) {
+		if o.ObservedAt.After(end) {
 			post.Observations = append(post.Observations, o)
 		}
 	}
@@ -208,6 +216,14 @@ func (w *world) checkExecution(f *forbidden, e executed, s stepLog) {
 		}
 		if rec.Phase != action.PhaseFailed {
 			f.add(&f.unauthorized, "second execution %s of proposal %s while %s is %s", h.Key, h.ProposalID, k, rec.Phase)
+		}
+	}
+	// One target, one live execution: the actor's own facts say whether an
+	// earlier execution on this target still holds live responsibility,
+	// whatever BORI shows for it (timed out, withdrawn, approval gone).
+	for _, k := range w.actor.ExecutedKeys() {
+		if k != h.Key && w.actor.Live(k) && w.handoffTarget(k) == h.Target.UID {
+			f.add(&f.unauthorized, "executed %s while %s still holds live responsibility for %s", h.Key, k, h.Target)
 		}
 	}
 
@@ -377,6 +393,16 @@ func (w *world) checkExecution(f *forbidden, e executed, s stepLog) {
 	if !valid {
 		f.add(&f.unauthorized, "executed without a valid approval by an approver of its own contract (person required, %d viable responses): %+v", len(viable), h.Approval)
 	}
+}
+
+// handoffTarget is the target UID the actor received key k for.
+func (w *world) handoffTarget(k string) string {
+	for _, h := range w.actor.Handoffs {
+		if h.Key == k {
+			return h.Target.UID
+		}
+	}
+	return ""
 }
 
 func (w *world) recordByKey(k string) (action.Record, bool) {

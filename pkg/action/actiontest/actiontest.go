@@ -150,6 +150,25 @@ func (a *Actor) Settle(key string, b Behaviour) {
 	}
 }
 
+// Live reports whether the actor still holds live responsibility for an
+// executed key: accepted and not yet ended. It is the actor's own fact,
+// independent of what BORI recorded, and is neither a poll nor forged.
+func (a *Actor) Live(key string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	j, ok := a.jobs[key]
+	return ok && j.b == AcceptOnly
+}
+
+// Ended reports whether an executed key has ended (succeeded or failed) at
+// the actor.
+func (a *Actor) Ended(key string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	j, ok := a.jobs[key]
+	return ok && (j.b == Succeed || j.b == Fail)
+}
+
 // TotalExecutions sums real executions over all keys.
 func (a *Actor) TotalExecutions() int {
 	a.mu.Lock()

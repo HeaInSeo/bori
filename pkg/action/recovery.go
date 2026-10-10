@@ -6,11 +6,13 @@ import (
 	"github.com/HeaInSeo/bori/pkg/operations"
 )
 
-// assessRecovery judges one ended execution. It re-runs O1 on the current
-// snapshot restricted to observations made strictly after BORI recorded the
-// execution's end, so neither pre-execution evidence nor the provider's
-// result can prove recovery. The target's identity and bindings must be
-// unchanged; otherwise nothing of the old identity is reused.
+// assessRecovery judges one execution that its provider definitively
+// ended. It re-runs O1 on the current snapshot restricted to observations
+// made strictly after BORI recorded that definitive result (EndedAt), so
+// neither pre-execution evidence nor the provider's result can prove
+// recovery. The target's identity and bindings must be unchanged; otherwise
+// nothing of the old identity is reused. An attempt without a definitive
+// end (refused, timed out, withdrawn) is never assessed.
 func assessRecovery(r Record, s operations.Snapshot, now time.Time) (Recovery, []CapRecovery, error) {
 	t, ok := targetOf(s, r.TargetUID)
 	if !ok || !bindingOf(t).equal(r.Binding) {
@@ -20,7 +22,7 @@ func assessRecovery(r Record, s operations.Snapshot, now time.Time) (Recovery, [
 	post.At = now
 	post.Observations = nil
 	for _, o := range s.Observations {
-		if o.ObservedAt.After(r.CompletedAt) {
+		if o.ObservedAt.After(r.EndedAt) {
 			post.Observations = append(post.Observations, o)
 		}
 	}
@@ -50,7 +52,7 @@ func assessRecovery(r Record, s operations.Snapshot, now time.Time) (Recovery, [
 	switch {
 	case recovered == len(r.Expected):
 		return RecoveryRecovered, detail, nil
-	case now.Before(r.CompletedAt.Add(r.RecoveryWindow)):
+	case now.Before(r.EndedAt.Add(r.RecoveryWindow)):
 		return RecoveryPending, detail, nil
 	case recovered > 0:
 		return RecoveryPartial, detail, nil

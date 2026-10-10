@@ -102,9 +102,21 @@ Proposal phase (derived each step, never stored on its own):
 | `Accepted` | Receipt received: durable acceptance only. |
 | `Succeeded` / `Failed` | Result from the provider for the exact key, fence and digest. |
 | `TimedOut` | No acknowledgement within `ackTimeout`, or no result within `completionTimeout`. The outcome is **unknown**, never success. |
-| `Withdrawn` | A persisted intent whose revalidation failed before any acknowledgement. It is not resent; a late result is still recorded. |
+| `Withdrawn` | A persisted intent whose revalidation failed before any acknowledgement. It is not resent. An earlier send may still have been delivered, so the outcome is unknown as for `TimedOut`. |
 
-Recovery (only after an execution reached `Succeeded`, `Failed` or `TimedOut`):
+`TimedOut` and `Withdrawn` are what is shown; they do not end the provider's
+responsibility. Until a matching definitive result (`Succeeded` or `Failed`
+for the exact key, fence and digest) or an explicit refusal is recorded, the
+attempt **keeps occupying its target**, also across restarts, and the engine
+keeps polling the provider by key. A timeout, an expired approval, a changed
+proposal or digest, or a recovered capability never releases it. A late
+definitive result ends it and releases the target.
+
+Recovery is assessed only for an execution whose provider reported a
+matching definitive result, on evidence observed after BORI recorded that
+result (`EndedAt`). A refusal, a `TimedOut` or a `Withdrawn` attempt is never
+assessed, so it never reaches `Recovered` and never advances its subject's
+episode; a deadline or withdrawal time is not an execution end.
 
 | Recovery | Meaning |
 |---|---|
@@ -128,14 +140,14 @@ result.
    - an owner is declared;
    - the provider is registered and authorised for this owner, namespace and action;
    - the journal is durable;
-   - no other execution of this target is in flight;
+   - no other attempt on this target may still hold live responsibility (`Dispatching`, `Accepted`, or `TimedOut`/`Withdrawn` without a definitive result);
    - the attempt budget allows it;
    - the approval (human or policy) is valid for the exact ID and digest.
 2. **Persist before send:** a `Dispatching` record with key, fence and digest is written by compare-and-swap. If the write fails, nothing is sent. The record also keeps a verbatim copy of the declared execution contract the attempt was derived and approved under. It stays in the journal and is never sent to the provider; it lets an independent reader map the attempt to its exact declaration.
 3. **Send:** `Submit(handoff)`. A receipt with the same key, fence and digest moves the record to `Accepted`. If that write fails, the next step polls the provider by key and adopts its answer, so nothing is sent twice.
-4. **Resend** (same key and fence, at most `maxSends`) only while unacknowledged and only after the gates of step 1 pass again. Otherwise the record becomes `Withdrawn`.
+4. **Resend** (same key and fence, at most `maxSends`) only while unacknowledged and only after the gates of step 1 pass again. A resend carries exactly the recorded approval, and that decision itself must still count: present, verified, by an approver of the proposal's declaration, for the exact ID and digest, not from the future and within the declared approval age, with no counting rejection. A newer decision never lends its validity to the recorded one, and no replacement approval is sent. Otherwise the record becomes `Withdrawn`.
 5. **Restart and overlap:** a new engine takes a fresh epoch from the journal, and every record it writes carries that epoch. The journal **rejects any write whose fence is below the newest issued epoch**, atomically with the write. Once a newer engine exists, an older one can persist nothing, so it can send nothing; this makes the one-in-flight-per-target rule hold across overlapping engines. A resend carries the new fence. The reference actor rejects lower fences, so an older send that was already on the wire before the takeover is deduplicated by key or refused.
-6. **Results:** an accepted result for the current key, fence and digest records BORI's own completion time, never the provider's clock. Duplicate results are no-ops. Results for another key, fence or digest are counted and ignored. A result never becomes an O1 observation.
+6. **Results:** an accepted result for the current key, fence and digest records BORI's own completion time, never the provider's clock. This also holds for a `TimedOut` or `Withdrawn` attempt, which is still polled by key. Duplicate results are no-ops. Results for another key, fence or digest are counted and ignored. A result never becomes an O1 observation.
 
 ## 3. OPEN decisions (§19) — options and the writer's recommendation
 
@@ -167,7 +179,7 @@ by this document.
 - a monotonic journal epoch as the fence;
 - one idempotency key per attempt;
 - poll by key after a restart before any resend;
-- `TimedOut` = unknown, with no automatic retry;
+- `TimedOut` = unknown, with no automatic retry, and it keeps the target until a definitive result;
 - a new attempt only after a definitive `Failed`, and only when declared retryable.
 
 Open questions for central: the journal technology, its retention/audit period, and whether `TimedOut` should page a person (the reference projection raises DECISION_REQUIRED).
@@ -206,6 +218,8 @@ Every scenario runs a forbidden-outcome checker that recomputes independently:
 - stale or inapplicable reuse.
 
 The checker does not use the engine's proposals or keys. It maps each observed handoff to its exact declaration through the record's execution contract, compared field by field with the profile. Only that declaration's `approvers` and approval age apply; nothing is borrowed from another declaration of the same action. A handoff without a matching record, a record whose contract nobody declared, and one proposal recorded under two contracts are each unauthorized. It also applies the several-execution-contracts rule.
+
+The checker takes execution facts from the reference actor, never from BORI's phases or times. A new execution while an earlier execution on the same target is still live at the actor is unauthorized, whatever BORI shows for the earlier one. A `Recovered` claim for an attempt the actor never executed, or one still live at the actor, is unjustified. Recovery evidence must be observed after the actor's own end of the execution.
 
 Trust limit: the checker trusts that the recorded contract is the one the proposal was derived from. A coherent wrong-contract record is invisible to it: an engine that approves under another declaration's approvers or approval age, and also records that declaration's contract, leaves an observation the checker accepts. That boundary is covered by engine regressions that run the real approval path with declaration-scoped approvers and approval ages, in both declaration orders: `TestApproversAreDeclarationScoped` and `TestApprovalAgeIsDeclarationScoped`. The journal returns and stores copies, so a reader cannot alter a stored contract (`TestJournalCopiesTheExecutionContract`).
 
@@ -254,6 +268,7 @@ Each scenario runs the independent forbidden-outcome checker after every step.
 | — | Guardrail P1-1 (9505b98): the same action, owner and capability declared with and without a human boundary (`requiresApproval`, risks, preconditions) needs a person in either declaration order and agrees with O4; controls: exact duplicate, unmet-precondition competitor (same/different action), display-only same-action declaration, several execution contracts, owner conflict (also with an inapplicable declaration), capability AVAILABLE; the checker flags the 9505b98 policy dispatch | §4.2, O4 | `TestSameActionDifferentBoundaryNeedsAPerson`, `TestBoundaryIsDeclarationOrderIndependent`, `TestSameActionBoundaryControls`, `TestCheckerDetectsSameActionPolicyDispatch` |
 | — | Guardrail d137 oracle P1: one action, owner and capability with two execution contracts and disjoint approvers (A: alice, B: bob), both declaration orders. bob's valid signature on A's exact ID and digest is `approver-not-allowed`, nothing is handed off; alice→A and bob→B each run once in their own world; crossed ID/digest and an undeclared principal are refused. The checker counts bob executing A, a borrowed approval age, an undeclared recorded contract, a record/handoff mismatch, a missing record, a remapped proposal and a policy dispatch under several contracts as unauthorized, and nothing else | §4.2, F8 | `TestApproversAreDeclarationScoped`, `TestCheckerAppliesTheExecutedDeclarationsApprovers` |
 | — | Guardrail d416 P2: the same contracts approvable by alice with approval ages 1h/3h and 3h/1h, both orders; a 2h-old approval of the 1h declaration is `approval-expired` with nothing handed off, and that of the 3h declaration runs once; the checker counts a record of another proposal as unauthorized; the journal stores and returns copies | §4.2, F8 | `TestApprovalAgeIsDeclarationScoped`, `TestCheckerAppliesTheExecutedDeclarationsApprovers`, `TestJournalCopiesTheExecutionContract` |
+| — | Codex P1 r4237539530 / r4237539535 / r4237539537 (b4ea617): a `TimedOut` (completion timeout) or possibly delivered `Withdrawn` (receipt lost, result unknown, approval expired) attempt keeps its target, both declaration orders, across a restart and an overlapping engine, so the other approved action runs 0 times; a late `Succeeded`/`Failed` releases it and the other action then runs once; a refusal releases at once; an unrelated target is not held. A resend carries only the recorded decision revalidated itself: with it expired, no later decision (valid, rejecting, wrong digest, forged, non-approver, future, expired; sorting before or after) causes a send; with it valid, the resend carries it, except after a valid rejection; also with a failed resend write and a restart. A dropped and withdrawn intent, a refusal and a still-live timed-out execution are never assessed, and the episode does not advance; after a late success only post-result fresh evidence recovers it. The checker counts an execution while another is live at the actor as unauthorized, and a recovery without an execution or while live as unjustified, and nothing else | R2-B, S10, S11 | `TestUnknownOutcomeKeepsTheTargetOccupied`, `TestLateDefinitiveResultReleasesTheTarget`, `TestOccupancyControls`, `TestResendCarriesOnlyTheRecordedDecision`, `TestResendRevalidationSurvivesFaults`, `TestOnlyADefinitivelyEndedExecutionIsAssessed`, `TestCheckerSeesLiveResponsibilityAndUnexecutedRecovery` |
 | — | Determinism and zero churn; checker detects each class; no scenario/product/readiness branch; no cluster client | §2, §10 | `TestDeterministicAndZeroChurn`, `TestForbiddenCheckerDetectsViolations`, `TestActionCodeIsAppScenarioAndReadinessNeutral`, `TestActionCodeHasNoClusterClient` |
 | — | O4 linkage: fingerprints unchanged when off, escalation only on unknown outcome/non-recovery, schema at bounds | O4 | `TestFingerprintUnchangedWithoutActions`, `TestActionsEscalateOnlyOnUnknownOutcomeOrNonRecovery`, `TestActionsAtBoundsFitTheSchema`, `TestO5OffEquivalenceAndNoAddedEvidenceIO` |
 

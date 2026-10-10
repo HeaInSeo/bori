@@ -58,6 +58,9 @@ type world struct {
 	history []stepLog
 	pending []executed // handoffs newly executed during the current step
 	ck      forbidden
+	// ended is when the world first saw each executed key ended at the
+	// actor: the checker's own end of an execution, never BORI's record.
+	ended map[string]time.Time
 	// effect is what the authoritative actor's execution does to the world.
 	effect func(h action.Handoff)
 }
@@ -97,6 +100,7 @@ func newWorld(t *testing.T) *world {
 		truth:   map[string]map[string]operations.Value{},
 		obs:     map[string]operations.Observation{},
 		frozen:  map[string]bool{},
+		ended:   map[string]time.Time{},
 	}
 	for _, n := range []string{"a", "y"} {
 		w.targets[n] = &operations.Target{
@@ -206,13 +210,23 @@ func (w *world) step() action.Output {
 		w.t.Fatal(err)
 	}
 	w.pending = nil
+	w.noteEnded()
 	out, err := w.eng.Step(context.Background(), action.Input{Snapshot: s, Assessment: a, Profile: w.profile, Now: w.now})
 	if err != nil {
 		w.t.Fatal(err)
 	}
+	w.noteEnded()
 	w.history = append(w.history, stepLog{at: w.now, snap: s, a: a, out: out})
 	w.check()
 	return out
+}
+
+func (w *world) noteEnded() {
+	for _, k := range w.actor.ExecutedKeys() {
+		if _, seen := w.ended[k]; !seen && w.actor.Ended(k) {
+			w.ended[k] = w.now
+		}
+	}
 }
 
 func (w *world) advance(d time.Duration) action.Output {

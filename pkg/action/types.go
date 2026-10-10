@@ -28,14 +28,20 @@ const (
 	// is unknown and is never treated as success.
 	PhaseTimedOut Phase = "TimedOut"
 	// PhaseWithdrawn: an unacknowledged handoff whose revalidation failed;
-	// it is not sent again.
+	// it is not sent again. An earlier send may still have been delivered,
+	// so the outcome is unknown as for TimedOut.
 	PhaseWithdrawn Phase = "Withdrawn"
 )
 
 func (p Phase) inFlight() bool { return p == PhaseDispatching || p == PhaseAccepted }
 
-func (p Phase) ended() bool {
-	return p == PhaseSucceeded || p == PhaseFailed || p == PhaseTimedOut || p == PhaseWithdrawn
+// occupies reports whether the attempt may still hold live mutation
+// responsibility at its provider: it was persisted for sending and neither
+// a matching definitive result nor an explicit refusal is recorded. A
+// timeout or a withdrawal changes only what is shown; the attempt keeps its
+// target and is still polled by key until its provider answers definitively.
+func (p Phase) occupies() bool {
+	return p == PhaseDispatching || p == PhaseAccepted || p == PhaseTimedOut || p == PhaseWithdrawn
 }
 
 // Recovery is the RecoveryAssessment of one execution: whether the expected
@@ -172,11 +178,15 @@ type Record struct {
 	// state only, never sent to the provider: a reader can map the attempt
 	// to its exact declaration and its own approvers and approval age.
 	Execution interaction.Execution
-	// Times are BORI's own clock, never the provider's.
+	// Times are BORI's own clock, never the provider's. CompletedAt closes
+	// the shown phase (a result, a refusal, a timeout or a withdrawal);
+	// EndedAt is set only when a matching definitive result of the provider
+	// ends the execution, and is the only end recovery is assessed from.
 	CreatedAt   time.Time
 	LastSentAt  time.Time
 	AckedAt     time.Time
 	CompletedAt time.Time
+	EndedAt     time.Time
 	ProviderRef string
 
 	AckTimeout        time.Duration
