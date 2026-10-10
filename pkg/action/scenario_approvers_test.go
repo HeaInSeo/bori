@@ -159,6 +159,70 @@ func TestApproversAreDeclarationScoped(t *testing.T) {
 	}
 }
 
+// ages returns one action/capability/owner declared with two execution
+// contracts, both approvable by alice, that differ only in approval age.
+func ages(a, b time.Duration) (ra, rb interaction.Response) {
+	ra, rb = remount(), remount()
+	ra.Execution.ApprovalTTL.Duration = a
+	rb.Execution.ApprovalTTL.Duration = b
+	return ra, rb
+}
+
+// An approval is judged by the age its own declaration allows, never by a
+// longer (or shorter) age of another declaration of the same action. This
+// runs the real engine; the checker's injected counterpart is in
+// TestCheckerAppliesTheExecutedDeclarationsApprovers.
+func TestApprovalAgeIsDeclarationScoped(t *testing.T) {
+	const old = 2 * time.Hour // alice decided this long ago
+	cases := []struct {
+		name   string
+		ageA   time.Duration
+		ageB   time.Duration
+		target string // whose exact ID and digest alice approved
+		runs   bool
+	}{
+		{"A 1h, B 3h: approval of A expired", time.Hour, 3 * time.Hour, "A", false},
+		{"A 1h, B 3h: approval of B within its own age", time.Hour, 3 * time.Hour, "B", true},
+		{"A 3h, B 1h: approval of A within its own age", 3 * time.Hour, time.Hour, "A", true},
+		{"A 3h, B 1h: approval of B expired", 3 * time.Hour, time.Hour, "B", false},
+	}
+	for _, order := range orders {
+		for _, c := range cases {
+			t.Run(c.name+"/"+order, func(t *testing.T) {
+				a, b := ages(c.ageA, c.ageB)
+				w, va, vb := pair(t, a, b, order)
+				v := va
+				if c.target == "B" {
+					v = vb
+				}
+				w.decide(v, "alice", keys["alice"], action.Approve, w.now.Add(-old))
+				var vs []action.View
+				for i := 0; i < 3; i++ {
+					vs = append(vs, w.viewOf(w.advance(time.Second), v.ProposalID))
+				}
+				// The independent checker first, then the engine's own outcome.
+				t.Logf("handoffs=%d", len(w.actor.Handoffs))
+				w.assertSafe()
+				if !c.runs {
+					if len(w.actor.Handoffs) != 0 {
+						t.Fatalf("expired approval executed: %+v", w.actor.Handoffs)
+					}
+					for _, v := range vs {
+						if v.Phase != action.PhaseAwaitingApproval || !hasReason(v, action.ReasonApprovalExpired) {
+							t.Fatalf("%+v", v)
+						}
+					}
+					return
+				}
+				if w.actor.TotalExecutions() != 1 || w.actor.Handoffs[0].ProposalID != v.ProposalID ||
+					w.actor.Handoffs[0].Approval.Principal != "alice" {
+					t.Fatalf("executions %d: %+v", w.actor.TotalExecutions(), w.actor.Handoffs)
+				}
+			})
+		}
+	}
+}
+
 // inject records and hands off an execution of decl the engine did not
 // make, as of a fresh step on current evidence: the observation a faulty
 // engine would leave behind. contract is what the record claims.
@@ -265,6 +329,16 @@ func TestCheckerAppliesTheExecutedDeclarationsApprovers(t *testing.T) {
 			w, va, _ := pair(t, a, b, order)
 			alice, bob := w.sign(va, "alice", w.now), w.sign(va, "bob", w.now)
 			w.inject(a, *a.Execution, va.ProposalID, va.Digest, alice, func(r *action.Record, _ *action.Handoff) { r.Approval = bob })
+			wantOnlyUnauthorized(t, w, 1)
+		})
+
+		// The record belongs to B's proposal; the handoff claims A's.
+		t.Run("record of another proposal/"+order, func(t *testing.T) {
+			a, b := disjoint()
+			w, va, vb := pair(t, a, b, order)
+			w.inject(a, *a.Execution, va.ProposalID, va.Digest, w.sign(va, "alice", w.now), func(r *action.Record, _ *action.Handoff) {
+				r.ProposalID = vb.ProposalID
+			})
 			wantOnlyUnauthorized(t, w, 1)
 		})
 
