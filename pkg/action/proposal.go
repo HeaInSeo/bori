@@ -30,9 +30,11 @@ type Proposal struct {
 	// Preconditions carry the proof state as Code (proven, unproven, unmet).
 	Preconditions []Reason
 	// Human are the reasons a person must decide: the response's declared
-	// ones plus no-priority-authority when another declared response
-	// (executable or not) addresses the same capability of the target now.
-	// Empty means the declared profile is the policy approval.
+	// ones plus no-priority-authority when another viable declared response
+	// (executable or not, the same action or another) addresses the same
+	// capability of the target now, or when one response is declared with
+	// several execution contracts. Empty means the declared profile is the
+	// policy approval.
 	Human []string
 	// OwnerConflict: the same action is declared for this capability with
 	// different owners; execution authority is ambiguous.
@@ -62,6 +64,40 @@ type subject struct {
 	Action      interaction.ActionRef
 	For         operations.CapabilityType
 	Profile     string
+	// Declaration is the declared response's identity (declarationKey):
+	// two declarations of one action that differ in anything but their
+	// trigger states are two proposals, never one.
+	Declaration string
+}
+
+// response is the O4 projected-response identity of a declaration
+// (interaction.declared/dedupResponses): what the O4 display keeps apart.
+// Precondition proof states are left out: they are the same evidence for
+// every declaration of the target.
+type response struct {
+	Action           interaction.ActionRef
+	For              operations.CapabilityType
+	Owner            string
+	RequiresApproval bool
+	Risks            []string
+	Preconditions    []string
+}
+
+func responseKey(r interaction.Response) string {
+	k := response{Action: r.Action, For: capType(r.For), Owner: r.Owner, RequiresApproval: r.RequiresApproval, Risks: sortedCopy(r.Risks)}
+	for _, pc := range r.Preconditions {
+		k.Preconditions = append(k.Preconditions, capType(pc).String())
+	}
+	sort.Strings(k.Preconditions)
+	return digestOf(k)
+}
+
+// declarationKey adds the execution contract to the O4 identity.
+func declarationKey(r interaction.Response) string {
+	return digestOf(struct {
+		Response  string
+		Execution *interaction.Execution
+	}{responseKey(r), r.Execution})
 }
 
 func digestOf(v any) string {
@@ -113,17 +149,23 @@ func capState(ta operations.TargetAssessment, c operations.CapabilityType) (oper
 func subjectKey(t operations.Target, r interaction.Response, profile string) string {
 	return digestOf(subject{
 		Target: t.Identity, ResolvedUID: t.ResolvedUID, Contract: t.ContractRef,
-		Action: r.Action, For: capType(r.For), Profile: profile,
+		Action: r.Action, For: capType(r.For), Profile: profile, Declaration: declarationKey(r),
 	})
 }
 
 // derive returns the proposals of every valid target, ordered by target UID
 // then proposal ID. episodes maps a subject key to its current episode.
 //
-// The human-decision boundary is the one O4 shows: several declared
-// responses for the same capability of the same target have no priority
-// authority, so none of them is approved by policy; the same action
-// declared with different owners has ambiguous authority and is blocked.
+// The human-decision boundary is the one O4 shows (interaction.declared and
+// decideCapability), independent of declaration order. Declarations are
+// told apart by their full O4 projected-response identity, not by action
+// name: several viable ones for the same capability of the same target have
+// no priority authority, so none of them is approved by policy. A
+// declaration whose precondition is unmet is Inapplicable there and does
+// not compete. The same action declared with different owners has
+// ambiguous authority and is blocked. One O4 response declared with
+// several execution contracts has no priority either. Only an exact
+// duplicate (equal but for its trigger states) is one proposal.
 func derive(s operations.Snapshot, a operations.Assessment, p *interaction.Profile, episodes func(string) int) []Proposal {
 	if p == nil {
 		return nil
@@ -137,9 +179,10 @@ func derive(s operations.Snapshot, a operations.Assessment, p *interaction.Profi
 		if !ok {
 			continue
 		}
-		actions := map[operations.CapabilityType]map[string]bool{} // capability → declared actions
-		owners := map[string]map[string]bool{}                     // capability|action → owners
-		var matching []interaction.Response
+		viable := map[operations.CapabilityType]map[string]bool{} // capability → applicable O4 responses
+		contracts := map[string]map[string]bool{}                 // O4 response → applicable execution contracts
+		owners := map[string]map[string]bool{}                    // capability|action → owners
+		decls := map[string]interaction.Response{}                // declaration → canonical declaration
 		for _, r := range p.Responses {
 			if r.Target.Namespace != t.Identity.Namespace || r.Target.Name != t.Identity.Name ||
 				(r.Target.UID != "" && r.Target.UID != t.Identity.UID) {
@@ -150,29 +193,44 @@ func derive(s operations.Snapshot, a operations.Assessment, p *interaction.Profi
 				continue
 			}
 			k := capType(r.For)
-			if actions[k] == nil {
-				actions[k] = map[string]bool{}
-			}
-			actions[k][r.Action.String()] = true
 			ok2 := k.String() + "|" + r.Action.String()
 			if owners[ok2] == nil {
 				owners[ok2] = map[string]bool{}
 			}
 			owners[ok2][r.Owner] = true
-			matching = append(matching, r)
-		}
-		seen := map[string]bool{}
-		for _, r := range matching {
-			if r.Execution == nil {
+			if !applicable(ta, r) {
 				continue
 			}
+			rk := responseKey(r)
+			if viable[k] == nil {
+				viable[k] = map[string]bool{}
+			}
+			viable[k][rk] = true
+			if r.Execution != nil {
+				if contracts[rk] == nil {
+					contracts[rk] = map[string]bool{}
+				}
+				contracts[rk][declarationKey(r)] = true
+			}
+		}
+		for _, r := range p.Responses {
+			if r.Execution == nil || r.Target.Namespace != t.Identity.Namespace || r.Target.Name != t.Identity.Name ||
+				(r.Target.UID != "" && r.Target.UID != t.Identity.UID) {
+				continue
+			}
+			if c, ok := capState(ta, capType(r.For)); !ok || !triggers(r, c.State) {
+				continue
+			}
+			dk := declarationKey(r)
+			if cur, ok := decls[dk]; !ok || digestOf(r) < digestOf(cur) {
+				decls[dk] = r // exact duplicates: one canonical declaration
+			}
+		}
+		for _, r := range decls {
 			k := capType(r.For)
 			c, _ := capState(ta, k)
-			pr := proposalOf(t, ta, r, p.Revision, c, episodes, len(actions[k]) > 1, len(owners[k.String()+"|"+r.Action.String()]) > 1)
-			if seen[pr.ID] { // the same action declared twice: one proposal
-				continue
-			}
-			seen[pr.ID] = true
+			competing := len(viable[k]) > 1 || len(contracts[responseKey(r)]) > 1
+			pr := proposalOf(t, ta, r, p.Revision, c, episodes, competing, len(owners[k.String()+"|"+r.Action.String()]) > 1)
 			out = append(out, pr)
 		}
 	}
@@ -183,6 +241,17 @@ func derive(s operations.Snapshot, a operations.Assessment, p *interaction.Profi
 		return out[i].ID < out[j].ID
 	})
 	return out
+}
+
+// applicable mirrors O4's Inapplicable: no precondition is DEGRADED or
+// UNAVAILABLE on current evidence (an unproven one still applies).
+func applicable(ta operations.TargetAssessment, r interaction.Response) bool {
+	for _, pc := range r.Preconditions {
+		if res, ok := capState(ta, capType(pc)); ok && (res.State == operations.Degraded || res.State == operations.Unavailable) {
+			return false
+		}
+	}
+	return true
 }
 
 func triggers(r interaction.Response, s operations.CapabilityState) bool {

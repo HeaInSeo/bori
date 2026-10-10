@@ -3,6 +3,9 @@ package action_test
 import (
 	"context"
 	"fmt"
+	"sort"
+
+	opsv1 "github.com/HeaInSeo/bori/apis/ops/v1alpha1"
 
 	"github.com/HeaInSeo/bori/pkg/action"
 	"github.com/HeaInSeo/bori/pkg/interaction"
@@ -28,13 +31,35 @@ func (f forbidden) zero() bool {
 	return f.unrelated+f.unjustifiedRecovery+f.unauthorized+f.staleReuse == 0
 }
 
-func (w *world) response(a interaction.ActionRef, target string) (interaction.Response, bool) {
+// declarations returns every response declared for the named target and
+// action, in profile order.
+func (w *world) declarations(a interaction.ActionRef, target string) []interaction.Response {
+	var out []interaction.Response
 	for _, r := range w.profile.Responses {
 		if r.Action == a && r.Target.Name == target {
-			return r, true
+			out = append(out, r)
 		}
 	}
-	return interaction.Response{}, false
+	return out
+}
+
+func opsT(c opsv1.CapabilityType) operations.CapabilityType {
+	return operations.CapabilityType{Domain: c.Domain, Name: c.Name, Revision: c.Revision}
+}
+
+// o4Identity is the checker's own statement of what the O4 display keeps
+// apart (API §18 O4 response boundary): action, capability, owner, approval
+// flag, risks and precondition set. It deliberately does not reuse the
+// engine's keys.
+func o4Identity(r interaction.Response) string {
+	risks := append([]string(nil), r.Risks...)
+	sort.Strings(risks)
+	var pcs []string
+	for _, pc := range r.Preconditions {
+		pcs = append(pcs, opsT(pc).String())
+	}
+	sort.Strings(pcs)
+	return fmt.Sprintf("%s|%s|%s|%t|%v|%v", r.Action, opsT(r.For), r.Owner, r.RequiresApproval, risks, pcs)
 }
 
 func (w *world) targetName(uid string) string {
@@ -64,14 +89,20 @@ func (w *world) check() {
 	for uid, vs := range s.out.Views {
 		name := w.targetName(uid)
 		for _, v := range vs {
-			r, ok := w.response(v.Action, name)
-			if !ok {
-				f.add(&f.unrelated, "view on %s without a declared response: %+v", uid, v)
-				continue
-			}
 			want := map[operations.CapabilityType]bool{}
-			for _, c := range r.Execution.ExpectedImpact {
-				want[operations.CapabilityType{Domain: c.Domain, Name: c.Name, Revision: c.Revision}] = true
+			declared := false
+			for _, r := range w.declarations(v.Action, name) {
+				if r.Execution == nil {
+					continue
+				}
+				declared = true
+				for _, c := range r.Execution.ExpectedImpact {
+					want[opsT(c)] = true
+				}
+			}
+			if !declared {
+				f.add(&f.unrelated, "view on %s without a declared executable response: %+v", uid, v)
+				continue
 			}
 			for _, d := range v.Detail {
 				if !want[d.Type] {
@@ -130,16 +161,21 @@ func (w *world) checkRecovered(f *forbidden, v action.View, s stepLog) {
 }
 
 // checkExecution verifies one handoff the actor newly executed during this
-// step against the inputs of this step.
+// step against the inputs of this step. It judges from the profile, the O1
+// assessment and the decisions alone, never from the engine's proposals.
 func (w *world) checkExecution(f *forbidden, e executed, s stepLog) {
 	h := e.h
 	name := w.targetName(h.Target.UID)
-	r, ok := w.response(h.Action, name)
-	if !ok {
-		f.add(&f.unauthorized, "executed an undeclared action %s on %s", h.Action, h.Target)
-		return
+	var cands []interaction.Response // the declarations this handoff can be
+	for _, r := range w.declarations(h.Action, name) {
+		if r.Execution != nil && r.Owner == h.Owner && opsT(r.For) == h.For {
+			cands = append(cands, r)
+		}
 	}
-	if r.Owner == "" || h.Owner != r.Owner || h.Owner != "storage-oncall" || h.Target.Namespace != "apps" {
+	if len(cands) == 0 {
+		f.add(&f.unauthorized, "executed an undeclared action %s on %s", h.Action, h.Target)
+	}
+	if h.Owner == "" || h.Owner != "storage-oncall" || h.Target.Namespace != "apps" {
 		f.add(&f.unauthorized, "executed without the declared owner/authority: %+v", h)
 	}
 	if n := w.actor.Executions[h.Key]; n > 1 {
@@ -165,6 +201,9 @@ func (w *world) checkExecution(f *forbidden, e executed, s stepLog) {
 		f.add(&f.staleReuse, "executed for a replaced identity: %+v", h)
 		return
 	}
+	if len(cands) == 0 {
+		return
+	}
 	ta, _ := s.a.Target(h.Target.UID)
 	state := func(c operations.CapabilityType) operations.CapabilityState {
 		for _, x := range ta.Capabilities {
@@ -174,32 +213,81 @@ func (w *world) checkExecution(f *forbidden, e executed, s stepLog) {
 		}
 		return operations.Unknown
 	}
-	trig := state(operations.CapabilityType{Domain: r.For.Domain, Name: r.For.Name, Revision: r.For.Revision})
-	if trig != operations.Degraded && trig != operations.Unavailable && !contains(r.States, string(trig)) {
-		f.add(&f.staleReuse, "executed while the trigger capability is %s on current evidence", trig)
-	}
-	for _, pc := range r.Preconditions {
-		if st := state(operations.CapabilityType{Domain: pc.Domain, Name: pc.Name, Revision: pc.Revision}); st != operations.Available {
-			f.add(&f.unauthorized, "executed with precondition %s %s", pc.Name, st)
+	triggered := func(r interaction.Response) bool {
+		st := state(opsT(r.For))
+		if len(r.States) == 0 {
+			return st == operations.Degraded || st == operations.Unavailable
 		}
+		return contains(r.States, string(st))
+	}
+	unmet := func(r interaction.Response) bool {
+		for _, pc := range r.Preconditions {
+			if st := state(opsT(pc)); st == operations.Degraded || st == operations.Unavailable {
+				return true
+			}
+		}
+		return false
+	}
+	proven := func(r interaction.Response) bool {
+		for _, pc := range r.Preconditions {
+			if state(opsT(pc)) != operations.Available {
+				return false
+			}
+		}
+		return true
+	}
+	var live []interaction.Response // triggered, all preconditions proven
+	for _, r := range cands {
+		if triggered(r) && proven(r) {
+			live = append(live, r)
+		}
+	}
+	if len(live) == 0 {
+		trig := state(h.For)
+		triggeredAny := false
+		for _, r := range cands {
+			triggeredAny = triggeredAny || triggered(r)
+		}
+		if !triggeredAny {
+			f.add(&f.staleReuse, "executed while the trigger capability is %s on current evidence", trig)
+		} else {
+			f.add(&f.unauthorized, "executed without proven preconditions on current evidence")
+		}
+		return
 	}
 	for _, v := range s.out.Views[h.Target.UID] {
 		if v.ProposalID == h.ProposalID && v.Digest != h.Digest {
 			f.add(&f.staleReuse, "executed digest %s but the current proposal digest is %s", h.Digest, v.Digest)
 		}
 	}
-	// A person is needed for a declared reason, or because another declared
-	// response addresses the same capability now (no priority authority).
-	competing := 0
-	for _, o := range w.profile.Responses {
-		if o.Target.Name == name && o.For == r.For && o.Action != r.Action {
-			st := state(operations.CapabilityType{Domain: o.For.Domain, Name: o.For.Name, Revision: o.For.Revision})
-			if contains(o.States, string(st)) || (len(o.States) == 0 && (st == operations.Degraded || st == operations.Unavailable)) {
-				competing++
-			}
+
+	// The O4 human-decision boundary, recomputed: every triggered
+	// declaration for this capability of the target (any action, executable
+	// or not) whose preconditions are not unmet is a viable response; more
+	// than one distinct viable response has no priority authority. The same
+	// action under several owners is an owner conflict. A declaration's own
+	// approval flag, risks or interruption also need a person.
+	owners := map[string]bool{}
+	viable := map[string]bool{}
+	for _, r := range w.profile.Responses {
+		if r.Target.Name != name || opsT(r.For) != h.For || !triggered(r) {
+			continue
+		}
+		if r.Action == h.Action {
+			owners[r.Owner] = true
+		}
+		if !unmet(r) {
+			viable[o4Identity(r)] = true
 		}
 	}
-	if len(r.HumanDecisionReasons()) == 0 && competing == 0 {
+	if len(owners) > 1 {
+		f.add(&f.unauthorized, "executed %s under an owner conflict %v", h.Action, owners)
+	}
+	person := len(viable) > 1
+	for _, r := range live {
+		person = person || r.RequiresApproval || len(r.Risks) > 0 || len(r.Execution.MayInterrupt) > 0
+	}
+	if !person {
 		if h.Approval.Kind != "policy" {
 			f.add(&f.unauthorized, "policy action without a policy approval: %+v", h.Approval)
 		}
@@ -208,14 +296,17 @@ func (w *world) checkExecution(f *forbidden, e executed, s stepLog) {
 	ds, _ := w.decisions.Decisions(context.Background())
 	valid := false
 	for _, d := range ds {
-		if d.ID == h.Approval.DecisionID && d.Verdict == action.Approve && d.ProposalID == h.ProposalID &&
-			d.Digest == h.Digest && w.signer.Verify(d) && contains(r.Execution.Approvers, d.Principal) &&
-			!d.DecidedAt.After(s.at) && s.at.Sub(d.DecidedAt) <= r.Execution.ApprovalAge() {
-			valid = true
+		for _, r := range live {
+			if h.Approval.Kind != "policy" && d.ID == h.Approval.DecisionID && d.Verdict == action.Approve &&
+				d.ProposalID == h.ProposalID && d.Digest == h.Digest && w.signer.Verify(d) &&
+				contains(r.Execution.Approvers, d.Principal) &&
+				!d.DecidedAt.After(s.at) && s.at.Sub(d.DecidedAt) <= r.Execution.ApprovalAge() {
+				valid = true
+			}
 		}
 	}
 	if !valid {
-		f.add(&f.unauthorized, "executed without a valid approval for the exact proposal: %+v", h.Approval)
+		f.add(&f.unauthorized, "executed without a valid approval for the exact proposal (person required, %d viable responses): %+v", len(viable), h.Approval)
 	}
 }
 
@@ -239,6 +330,8 @@ func contains(xs []string, s string) bool {
 
 func (w *world) assertSafe() {
 	w.t.Helper()
+	w.t.Logf("forbidden4 unrelated=%d unjustifiedRecovery=%d unauthorized=%d staleReuse=%d steps=%d executions=%d",
+		w.ck.unrelated, w.ck.unjustifiedRecovery, w.ck.unauthorized, w.ck.staleReuse, len(w.history), w.actor.TotalExecutions())
 	if !w.ck.zero() {
 		w.t.Fatalf("forbidden outcomes: unrelated=%d unjustifiedRecovery=%d unauthorized=%d staleReuse=%d\n%v",
 			w.ck.unrelated, w.ck.unjustifiedRecovery, w.ck.unauthorized, w.ck.staleReuse, w.ck.notes)

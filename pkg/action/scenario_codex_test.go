@@ -61,13 +61,22 @@ func TestCompetingResponsesNeedAPerson(t *testing.T) {
 		a, b := remount(), remount()
 		b.Owner = "platform-oncall"
 		w.profile.Responses = []interaction.Response{a, b}
-		v := w.view(w.step())
-		w.approve(v)
-		for i := 0; i < 3; i++ {
-			v = w.view(w.advance(time.Second))
+		// Both declarations stay (different owners are different O4
+		// responses); neither may run, even when approved.
+		for _, v := range w.view2(w.step()) {
+			w.approve(v)
 		}
-		if v.Phase != action.PhaseBlocked || !hasReason(v, action.ReasonOwnerConflict) || len(w.actor.Handoffs) != 0 {
-			t.Fatalf("%+v", v)
+		var vs []action.View
+		for i := 0; i < 3; i++ {
+			vs = w.view2(w.advance(time.Second))
+		}
+		for _, v := range vs {
+			if v.Phase != action.PhaseBlocked || !hasReason(v, action.ReasonOwnerConflict) {
+				t.Fatalf("%+v", v)
+			}
+		}
+		if len(vs) != 2 || len(w.actor.Handoffs) != 0 {
+			t.Fatalf("%+v %+v", vs, w.actor.Handoffs)
 		}
 		w.assertSafe()
 	})

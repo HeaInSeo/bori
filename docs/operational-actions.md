@@ -60,7 +60,7 @@ block. Without it the response stays display-only, exactly as in O4.
 | Expected capability impact | `execution.expectedImpact` (must include `for`): the capabilities the action is expected to restore. Recovery is judged on exactly these. |
 | Blast radius | Same target only (v0.1 has no cross-namespace action). `execution.mayInterrupt` lists the capabilities of this target the action may interrupt. |
 | Execution owner and authority | `owner` (O4) is the accountable owner. `execution.provider` names the registered ActionProvider. The registry entry declares the owner it acts for and the namespaces and actions it is authorised for. |
-| Human approval and why | Required when `requiresApproval`, any declared `risks`, or a non-empty `mayInterrupt`. It is also required when another declared response (executable or display-only) addresses the same capability of the target now: `no-priority-authority`, the same boundary O4 shows. The same action declared with different owners is `owner-conflict` and is blocked. The reasons are reported as codes. `execution.approvers` are the principals that may approve. Otherwise the declared profile itself is the policy approval. |
+| Human approval and why | Required when `requiresApproval`, any declared `risks`, or a non-empty `mayInterrupt`. It is also required when another viable declared response addresses the same capability of the target now: `no-priority-authority`, the same boundary O4 shows. The other response may be executable or display-only, the same action or another. Responses are told apart by O4's full projected-response identity (action, `for`, owner, `requiresApproval`, risks, precondition set), not by action name, and the result does not depend on declaration order. A response whose precondition is unmet is Inapplicable, as in O4, and does not compete. One O4 response declared with several different execution contracts also needs a person, since none has priority (stricter than O4's display, which does not show execution contracts). The same action declared with different owners is `owner-conflict` and is blocked; owners are counted over every triggered declaration, applicable or not, as in O4. The reasons are reported as codes. `execution.approvers` are the principals that may approve. Otherwise the declared profile itself is the policy approval. |
 | Approval binding | A decision names the proposal ID **and** digest. TTL is `execution.approvalTTL` (default 1h). |
 | Idempotency, retry, timeout, budget | Idempotency key = `<proposal ID>/<attempt>`. Fence = journal epoch. `ackTimeout`, `completionTimeout`, `maxSends` (resends of one attempt with the same key), `maxAttempts` + `retryable` (a new attempt with a new key only after a definitive Failed result). |
 | Receipt/result linkage | A receipt or result is accepted only when key, fence and proposal digest all equal the current attempt's. Anything else is counted and ignored. |
@@ -69,7 +69,11 @@ block. Without it the response stays display-only, exactly as in O4.
 ### 2.2 Proposal identity
 
 - **Subject** = OperationalTarget namespace/name/UID, resolved workload UID,
-  ContractIdentity, action name@revision, `for`, profile revision.
+  ContractIdentity, action name@revision, `for`, profile revision, and the
+  declaration: O4's projected-response identity plus the execution contract.
+  Two declarations of one action that differ in anything but their trigger
+  states are two proposals, each approved on its own. Only an exact
+  duplicate is one proposal. No differing declaration is dropped.
 - **Episode** = the number of earlier executions of this subject that ended
   Recovered, plus one. A recurrence after a confirmed recovery is a new
   proposal, so an approval for an earlier episode never applies to it.
@@ -243,6 +247,7 @@ Each scenario runs the independent forbidden-outcome checker after every step.
 | 10 | Unrelated failure/recovery does not contaminate | S03, S12 | `TestUnrelatedFailureAndRecoveryDoNotContaminate` |
 | — | Codex P1 r4234734088: competing responses and owner conflicts need a person / block | §4.2, O4 | `TestCompetingResponsesNeedAPerson` |
 | — | Codex P1 r4234734092: overlapping engines cannot both occupy a target | R2-B | `TestOverlappingEnginesCannotBothOccupyATarget` |
+| — | Guardrail P1-1 (9505b98): the same action, owner and capability declared with and without a human boundary (`requiresApproval`, risks, preconditions) needs a person in either declaration order and agrees with O4; controls: exact duplicate, unmet-precondition competitor (same/different action), display-only same-action declaration, several execution contracts, owner conflict (also with an inapplicable declaration), capability AVAILABLE; the checker flags the 9505b98 policy dispatch | §4.2, O4 | `TestSameActionDifferentBoundaryNeedsAPerson`, `TestBoundaryIsDeclarationOrderIndependent`, `TestSameActionBoundaryControls`, `TestCheckerDetectsSameActionPolicyDispatch` |
 | — | Determinism and zero churn; checker detects each class; no scenario/product/readiness branch; no cluster client | §2, §10 | `TestDeterministicAndZeroChurn`, `TestForbiddenCheckerDetectsViolations`, `TestActionCodeIsAppScenarioAndReadinessNeutral`, `TestActionCodeHasNoClusterClient` |
 | — | O4 linkage: fingerprints unchanged when off, escalation only on unknown outcome/non-recovery, schema at bounds | O4 | `TestFingerprintUnchangedWithoutActions`, `TestActionsEscalateOnlyOnUnknownOutcomeOrNonRecovery`, `TestActionsAtBoundsFitTheSchema`, `TestO5OffEquivalenceAndNoAddedEvidenceIO` |
 
