@@ -147,16 +147,58 @@ func TestTargetContractRefIsSameNamespace(t *testing.T) {
 }
 
 func TestNoSecretOrActionReferences(t *testing.T) {
+	// The single exemption is the O5 display projection at exactly this
+	// path; it is checked below to carry no reference of any kind.
+	const projection = "operationaltargets:status.interaction.actions"
 	for _, plural := range []string{"operationalcontracts", "operationaltargets", "operationalreferencegrants"} {
-		props := propertyNames(schemaOf(t, plural))
-		for _, p := range props {
+		for _, p := range propertyPaths(schemaOf(t, plural), "") {
+			if plural+":"+p == projection || strings.HasPrefix(plural+":"+p, projection+".") {
+				continue
+			}
 			// "interaction" (the O4 status summary) is not an action reference.
-			l := strings.ReplaceAll(strings.ToLower(p), "interaction", "")
+			l := strings.ReplaceAll(strings.ToLower(p[strings.LastIndex(p, ".")+1:]), "interaction", "")
 			if strings.Contains(l, "secret") || strings.Contains(l, "action") || strings.Contains(l, "credential") {
 				t.Errorf("%s: property %q", plural, p)
 			}
+			if strings.HasPrefix(p, "spec.") && strings.Contains(strings.ToLower(p), "action") {
+				t.Errorf("%s: spec property %q", plural, p)
+			}
 		}
 	}
+	// The O5 projection names nothing that could be resolved or used: no
+	// object reference, namespace, UID, URL, endpoint, secret or credential.
+	acts := at(t, schemaOf(t, "operationaltargets"), "properties", "status", "properties", "interaction", "properties", "actions")
+	for _, p := range propertyPaths(acts, "actions") {
+		l := strings.ToLower(p[strings.LastIndex(p, ".")+1:])
+		for _, bad := range []string{"ref", "namespace", "uid", "url", "endpoint", "secret", "credential", "token", "target", "provider", "approver", "principal"} {
+			if strings.Contains(l, bad) {
+				t.Errorf("O5 projection carries %q", p)
+			}
+		}
+	}
+}
+
+// propertyPaths returns every property path under n, dot-separated.
+func propertyPaths(n any, prefix string) []string {
+	var out []string
+	v, ok := n.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if props, ok := v["properties"].(map[string]any); ok {
+		for k, sub := range props {
+			p := k
+			if prefix != "" {
+				p = prefix + "." + k
+			}
+			out = append(out, p)
+			out = append(out, propertyPaths(sub, p)...)
+		}
+	}
+	if items, ok := v["items"]; ok {
+		out = append(out, propertyPaths(items, prefix)...)
+	}
+	return out
 }
 
 func propertyNames(n any) []string {

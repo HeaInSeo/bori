@@ -85,6 +85,14 @@ type InteractionStatus struct {
 	// +optional
 	PendingPostConditions []StatusReason `json:"pendingPostConditions,omitempty"`
 
+	// Actions are the O5 proposals and executions of this target (opt-in).
+	// This is a bounded, non-authoritative projection of the derived
+	// proposals and the execution journal. It is not proposal storage, and
+	// nothing written here is an approval or a trigger.
+	// +kubebuilder:validation:MaxItems=8
+	// +optional
+	Actions []InteractionAction `json:"actions,omitempty"`
+
 	// IdentityDigest identifies the exact target, workload, contract and
 	// provider bindings this summary is for.
 	// +kubebuilder:validation:MaxLength=64
@@ -185,4 +193,44 @@ type InteractionResponse struct {
 	// OwnerConflict or Inapplicable.
 	// +kubebuilder:validation:MaxLength=32
 	Status string `json:"status"`
+}
+
+// InteractionAction is one O5 proposal or execution. An approver names
+// Proposal and Digest exactly; a change of meaning changes Digest and voids
+// earlier approvals.
+type InteractionAction struct {
+	// Proposal is the proposal identity (subject and episode).
+	// +kubebuilder:validation:MaxLength=32
+	Proposal string `json:"proposal"`
+	// Digest is the exact meaning an approval must name.
+	// +kubebuilder:validation:MaxLength=64
+	Digest string `json:"digest"`
+	// Name is the declared action identity, name@revision.
+	// +kubebuilder:validation:MaxLength=128
+	Name string `json:"name"`
+	// For is the capability the action addresses.
+	For CapabilityType `json:"for"`
+	// Phase separates proposal (Blocked, AwaitingApproval, Rejected) from
+	// handoff (Dispatching), acceptance (Accepted) and result (Succeeded,
+	// Failed, TimedOut, Withdrawn).
+	// +kubebuilder:validation:Enum=Blocked;AwaitingApproval;Rejected;Dispatching;Accepted;Succeeded;Failed;TimedOut;Withdrawn
+	Phase string `json:"phase"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=3
+	Attempt int32 `json:"attempt"`
+	// Reasons say why the proposal waits or is blocked, or why an
+	// execution needs attention.
+	// +kubebuilder:validation:MaxItems=16
+	// +optional
+	Reasons []StatusReason `json:"reasons,omitempty"`
+	// Recovery is the RecoveryAssessment of an ended execution, judged only
+	// on evidence observed after it ended. An execution result never sets it.
+	// +kubebuilder:validation:Enum=Pending;Recovered;Partial;NotRecovered;Unconfirmed;Inapplicable
+	// +optional
+	Recovery string `json:"recovery,omitempty"`
+	// RecoveryDetail is the post-execution state (Code) of each expected
+	// capability (Subject).
+	// +kubebuilder:validation:MaxItems=8
+	// +optional
+	RecoveryDetail []StatusReason `json:"recoveryDetail,omitempty"`
 }
