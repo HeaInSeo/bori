@@ -42,6 +42,10 @@ const (
 	ReasonNoSafePath            = "no-safe-path"
 	ReasonAllAvailable          = "all-capabilities-available"
 	ReasonSpecCorrection        = "spec-correction-required"
+	// O5: an execution whose outcome is unknown, or that ended without
+	// recovery on post-execution evidence, needs a person.
+	ReasonActionOutcomeUnknown = "action-outcome-unknown"
+	ReasonActionNotRecovered   = "action-not-recovered"
 )
 
 // Response statuses.
@@ -70,6 +74,7 @@ const (
 	maxFacts      = 64
 	maxCandidates = 16
 	maxResponses  = 8
+	maxActions    = 8
 	maxReasons    = 8
 	maxCapReasons = 4
 	maxPost       = 16
@@ -104,6 +109,10 @@ type Input struct {
 	Investigation *Investigation
 	// Profile is nil when no reference profile is configured.
 	Profile *Profile
+	// Actions are all of the target's O5 proposals and executions (nil when
+	// O5 is off), each already bounded. Escalation is judged on all of them;
+	// the summary shows the first maxActions by proposal.
+	Actions []opsv1.InteractionAction
 }
 
 var rank = map[opsv1.InteractionLevel]int{
@@ -149,6 +158,7 @@ func Project(in Input, prev *opsv1.InteractionStatus) *opsv1.InteractionStatus {
 		out.MissingEvidence = missing(st)
 		out.Investigation = investigationOf(nil, nil)
 		out.Summary = clip("not assessed (" + joinCodes(st.InvalidReasons, 3) + "); no capability result is reported")
+		actionsOf(in, out, d, nil)
 		return finish(out, d, prev)
 	}
 
@@ -207,6 +217,7 @@ func Project(in Input, prev *opsv1.InteractionStatus) *opsv1.InteractionStatus {
 	if len(out.Responses) > maxResponses {
 		out.Responses = out.Responses[:maxResponses]
 	}
+	actionsOf(in, out, d, caps)
 	if d.level == opsv1.LevelNoAction {
 		d.reasons = append(d.reasons, opsv1.StatusReason{Code: ReasonAllAvailable})
 	}
@@ -225,6 +236,54 @@ func Project(in Input, prev *opsv1.InteractionStatus) *opsv1.InteractionStatus {
 	out.Unknown = limitCaps(out.Unknown)
 	out.Summary = clip(summaryLine(out, len(st.Capabilities)))
 	return finish(out, d, prev)
+}
+
+// actionsOf attaches the O5 projection and adds the two human reasons it
+// can carry: an execution whose outcome is unknown, and one that ended
+// without recovery. Both are judged on every action before the display is
+// bounded, and each is raised once, naming the first such action, so no
+// safety reason depends on an action's position or on how many there are. They apply only while the action's capability is not
+// AVAILABLE on current evidence: history never escalates a capability that
+// is proven available now, and a recovery never lowers the level (the level
+// follows the current capability states). caps is nil for a target that is
+// not assessed; its actions are shown without escalation (it is already a
+// decision).
+func actionsOf(in Input, out *opsv1.InteractionStatus, d *decision, caps map[string]opsv1.CapabilityStatus) {
+	if len(in.Actions) == 0 {
+		return
+	}
+	all := append([]opsv1.InteractionAction(nil), in.Actions...)
+	sort.SliceStable(all, func(i, j int) bool { return all[i].Proposal < all[j].Proposal })
+	out.Actions = all
+	if len(out.Actions) > maxActions {
+		out.Actions = out.Actions[:maxActions:maxActions]
+	}
+	if caps == nil {
+		return
+	}
+	first := map[string]string{} // reason code → first action name
+	for _, a := range all {
+		if c, ok := caps[typeKey(a.For)]; ok && c.State == "AVAILABLE" {
+			continue
+		}
+		code := ""
+		switch {
+		case a.Recovery == "Recovered" || a.Recovery == "Inapplicable":
+		case a.Phase == "TimedOut" || a.Phase == "Withdrawn":
+			code = ReasonActionOutcomeUnknown
+		case a.Recovery == "NotRecovered" || a.Recovery == "Partial" || a.Recovery == "Unconfirmed":
+			code = ReasonActionNotRecovered
+		}
+		if n, seen := first[code]; code != "" && (!seen || a.Name < n) {
+			first[code] = a.Name
+		}
+	}
+	for _, code := range []string{ReasonActionNotRecovered, ReasonActionOutcomeUnknown} {
+		if n, ok := first[code]; ok {
+			d.raise(opsv1.LevelDecisionRequired, code, n)
+			d.needHuman(code, n)
+		}
+	}
 }
 
 // decideCapability applies the declared response boundary to one affected or
@@ -593,6 +652,8 @@ func fingerprint(out *opsv1.InteractionStatus) string {
 		Missing  []opsv1.EvidenceStatus
 		Response []string
 		Human    []opsv1.StatusReason
+		// omitempty: with O5 off the fingerprint is exactly the O4 one.
+		Actions []string `json:",omitempty"`
 	}{ID: out.IdentityDigest, Level: out.Level, Reasons: out.LevelReasons, Missing: out.MissingEvidence, Human: out.HumanReasons}
 	for _, l := range [][]opsv1.InteractionCapability{out.Affected, out.Unknown, out.Unaffected} {
 		for _, c := range l {
@@ -601,6 +662,9 @@ func fingerprint(out *opsv1.InteractionStatus) string {
 	}
 	for _, r := range out.Responses {
 		m.Response = append(m.Response, typeKey(r.For)+"|"+r.Name+"|"+r.Owner+"|"+r.Status)
+	}
+	for _, a := range out.Actions {
+		m.Actions = append(m.Actions, a.Proposal+"|"+a.Digest+"|"+a.Phase+"|"+a.Recovery)
 	}
 	b, _ := json.Marshal(m)
 	sum := sha256.Sum256(b)

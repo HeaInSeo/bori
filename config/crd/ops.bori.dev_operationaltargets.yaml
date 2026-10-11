@@ -339,6 +339,107 @@ spec:
                 type: object
               interaction:
                 properties:
+                  actions:
+                    items:
+                      properties:
+                        attempt:
+                          format: int32
+                          maximum: 3
+                          minimum: 1
+                          type: integer
+                        digest:
+                          maxLength: 64
+                          type: string
+                        for:
+                          properties:
+                            domain:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            name:
+                              maxLength: 63
+                              minLength: 1
+                              type: string
+                            revision:
+                              maxLength: 63
+                              minLength: 1
+                              type: string
+                          required:
+                          - domain
+                          - name
+                          - revision
+                          type: object
+                        name:
+                          maxLength: 128
+                          type: string
+                        phase:
+                          enum:
+                          - Blocked
+                          - AwaitingApproval
+                          - Rejected
+                          - Dispatching
+                          - Accepted
+                          - Succeeded
+                          - Failed
+                          - TimedOut
+                          - Withdrawn
+                          type: string
+                        proposal:
+                          maxLength: 32
+                          type: string
+                        reasons:
+                          items:
+                            properties:
+                              code:
+                                maxLength: 128
+                                type: string
+                              detail:
+                                maxLength: 256
+                                type: string
+                              subject:
+                                maxLength: 512
+                                type: string
+                            required:
+                            - code
+                            type: object
+                          maxItems: 16
+                          type: array
+                        recovery:
+                          enum:
+                          - Pending
+                          - Recovered
+                          - Partial
+                          - NotRecovered
+                          - Unconfirmed
+                          - Inapplicable
+                          type: string
+                        recoveryDetail:
+                          items:
+                            properties:
+                              code:
+                                maxLength: 128
+                                type: string
+                              detail:
+                                maxLength: 256
+                                type: string
+                              subject:
+                                maxLength: 512
+                                type: string
+                            required:
+                            - code
+                            type: object
+                          maxItems: 8
+                          type: array
+                      required:
+                      - attempt
+                      - digest
+                      - for
+                      - name
+                      - phase
+                      - proposal
+                      type: object
+                    maxItems: 8
+                    type: array
                   affected:
                     items:
                       properties:

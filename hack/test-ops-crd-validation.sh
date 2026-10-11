@@ -17,6 +17,11 @@
 #     human-readable query, zero churn across refreshes, a declared approval
 #     boundary → DECISION_REQUIRED (display only), outage ≠ app failure,
 #     no workload mutation
+#   - O5 action proposals (shipped wiring: no provider, non-durable journal,
+#     no verifier): proposal and its blocking reasons in status, accepted by
+#     the schema at maximum-length names, nothing handed off, no workload
+#     mutation, zero churn, the proposal disappears on recovery without any
+#     recovery claim, and the flag guard
 #
 # Usage: hack/test-ops-crd-validation.sh [--keep]
 set -euo pipefail
@@ -460,10 +465,80 @@ managers="$(kubectl get deployment web4 -n apps -o jsonpath='{.metadata.managedF
 check "no bori field manager on the O4 workload ($managers)" eq "${managers//bori/}" "$managers"
 check "O4 workload generation unchanged" eq "$(kubectl get deployment web4 -n apps -o jsonpath='{.metadata.generation}')" "$web4_gen"
 
+echo "── O5 action proposals (shipped wiring: display and gating only)"
+kill "$OP_PID" 2>/dev/null || true
+wait "$OP_PID" 2>/dev/null || true
+OP_PID=""
+
+if "$WORK/bori-operator" --bori-root "$WORK/root" --bori-dir "$WORK/root/.bori" \
+  --metrics-bind-address 0 --health-probe-bind-address 0 \
+  --enable-operational-assessment --enable-operational-actions >"$WORK/operator-guard.log" 2>&1; then
+  fail "--enable-operational-actions without interaction must refuse to start"
+else
+  check "--enable-operational-actions requires interaction" grep -q "requires --enable-operational-interaction" "$WORK/operator-guard.log"
+fi
+
+cat >"$WORK/profile5.json" <<JSON
+{"revision": "p5", "responses": [
+ {"action": {"name": "restart", "revision": "r1"},
+  "target": {"namespace": "apps", "name": "web4"},
+  "for": {"domain": "example.io", "name": "provide", "revision": "v1"},
+  "owner": "app-oncall", "requiresApproval": true, "risks": ["service-interruption"],
+  "execution": {"provider": "deployment-actor", "approvers": ["alice"],
+    "expectedImpact": [{"domain": "example.io", "name": "provide", "revision": "v1"}],
+    "ackTimeout": "30s", "completionTimeout": "5m", "recoveryWindow": "2m"}},
+ {"action": {"name": "$(printf 'm%.0s' $(seq 63))", "revision": "$(printf 'v%.0s' $(seq 63))"},
+  "target": {"namespace": "apps", "name": "max4"},
+  "for": {"domain": "$MAXDOM", "name": "$MAXCAP", "revision": "$MAXREV"},
+  "owner": "app-oncall", "states": ["DEGRADED"],
+  "preconditions": [{"domain": "$MAXDOM", "name": "$MAXCAP", "revision": "$MAXREV"}],
+  "execution": {"provider": "deployment-actor",
+    "expectedImpact": [{"domain": "$MAXDOM", "name": "$MAXCAP", "revision": "$MAXREV"}],
+    "ackTimeout": "30s", "completionTimeout": "5m", "recoveryWindow": "2m"}}]}
+JSON
+objects_before="$(kubectl get deployments,replicasets,pods,jobs,configmaps,leases -n apps -o name | sort | sha256sum)"
+"$WORK/bori-operator" --bori-root "$WORK/root" --bori-dir "$WORK/root/.bori" \
+  --metrics-bind-address 0 --health-probe-bind-address 0 \
+  --enable-operational-assessment --operational-requeue-interval 2s \
+  --operational-provider-config "$WORK/providers4.yaml" \
+  --enable-operational-interaction --operational-interaction-profile "$WORK/profile5.json" \
+  --enable-operational-actions >"$WORK/operator-o5.log" 2>&1 &
+OP_PID=$!
+
+act() { kubectl get operationaltarget "$1" -n apps -o jsonpath="{.status.interaction.actions[0].$2}"; }
+acodes() { kubectl get operationaltarget "$1" -n apps -o jsonpath='{.status.interaction.actions[0].reasons[*].code}'; }
+wait_eq "web4 proposal shown and Blocked" Blocked 60 act web4 phase
+codes="$(acodes web4)"
+check "blocked: journal not durable ($codes)" grep -qw journal-not-durable <<<"$codes"
+check "blocked: no provider registered ($codes)" grep -qw provider-unregistered <<<"$codes"
+check "a person must decide: approval and risk declared ($codes)" bash -c "grep -qw approval-declared <<<'$codes' && grep -qw risk-declared <<<'$codes'"
+check "proposal identity and digest exposed for an approver" eq "$(act web4 proposal | tr -d "\n" | wc -c)/$(act web4 digest | tr -d "\n" | wc -c)" "32/64"
+check "no recovery claimed for a proposal ($(act web4 recovery))" eq "$(act web4 recovery)" ""
+check "level stays DECISION_REQUIRED" eq "$(itr web4 level)" "DECISION_REQUIRED"
+wait_eq "max-length proposal accepted by the API server" Blocked 60 act max4 phase
+check "max-length proposal names the 253-character domain" eq "$(act max4 for.domain | tr -d "\n" | wc -c)" "253"
+check "operator log states no handoff" grep -q "no handoff" "$WORK/operator-o5.log"
+kubectl get operationaltargets -n apps -o json >"$WORK/targets5.json"
+check "bori ops interaction renders the proposal" grep -q "actions:    restart@r1 for provide: Blocked" <("$WORK/bori" ops interaction -f "$WORK/targets5.json")
+
+rv5="$(kubectl get operationaltarget web4 -n apps -o jsonpath='{.metadata.resourceVersion}')"
+sleep 12
+check "steady blocked proposal writes nothing ($rv5)" eq "$(kubectl get operationaltarget web4 -n apps -o jsonpath='{.metadata.resourceVersion}')" "$rv5"
+
+echo true >"$WORK/value4"
+wait_eq "recovered on current evidence → NO_ACTION" NO_ACTION 60 itr web4 level
+check "proposal withdrawn with the trigger, nothing executed or claimed" eq "$(itr web4 actions)" ""
+
+check "no new object in the namespace" eq "$(kubectl get deployments,replicasets,pods,jobs,configmaps,leases -n apps -o name | sort | sha256sum)" "$objects_before"
+managers="$(kubectl get deployment web4 -n apps -o jsonpath='{.metadata.managedFields[*].manager}')"
+check "no bori field manager on the O5 workload ($managers)" eq "${managers//bori/}" "$managers"
+check "O5 workload generation unchanged" eq "$(kubectl get deployment web4 -n apps -o jsonpath='{.metadata.generation}')" "$web4_gen"
+
 if ((FAILURES > 0)); then
   echo "── operator log (tail)"; tail -50 "$WORK/operator.log"
   echo "── O3 operator log (tail)"; tail -50 "$WORK/operator-o3.log" 2>/dev/null || true
   echo "── O4 operator log (tail)"; tail -50 "$WORK/operator-o4.log" 2>/dev/null || true
+  echo "── O5 operator log (tail)"; tail -50 "$WORK/operator-o5.log" 2>/dev/null || true
   echo "$FAILURES check(s) failed"; exit 1
 fi
 echo "all checks passed"

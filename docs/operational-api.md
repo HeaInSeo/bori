@@ -102,6 +102,13 @@ With `--enable-operational-interaction` the status also carries the O4
 checked, declared responses shown only). See
 [operational-interaction.md](operational-interaction.md).
 
+With `--enable-operational-actions` (requires the interaction summary) the
+summary also carries the O5 `actions` projection: derived ActionProposals,
+why they wait or are blocked, and, for an execution, its result and its
+RecoveryAssessment. The shipped operator registers no ActionProvider and has
+only a non-durable journal, so nothing is ever handed off. See
+[operational-actions.md](operational-actions.md).
+
 ## Enabling
 
 Evidence providers (O3 reference profile, opt-in via

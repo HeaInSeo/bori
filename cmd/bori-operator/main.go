@@ -36,6 +36,7 @@ import (
 	v1alpha1 "github.com/HeaInSeo/bori/apis/bori/v1alpha1"
 	opsv1alpha1 "github.com/HeaInSeo/bori/apis/ops/v1alpha1"
 	"github.com/HeaInSeo/bori/controllers"
+	"github.com/HeaInSeo/bori/pkg/action"
 	"github.com/HeaInSeo/bori/pkg/adapter"
 	"github.com/HeaInSeo/bori/pkg/interaction"
 	"github.com/HeaInSeo/bori/pkg/investigate"
@@ -59,6 +60,7 @@ func main() {
 		providerConfigPath  string
 		enableInteraction   bool
 		interactionProfile  string
+		enableActions       bool
 	)
 
 	flag.StringVar(&boriRoot, "bori-root", "/bori",
@@ -91,6 +93,9 @@ func main() {
 	flag.StringVar(&interactionProfile, "operational-interaction-profile", "",
 		"O4 reference profile: declared response candidates and their human-decision boundary (display only). "+
 			"Empty = no response is declared; the lack is reported")
+	flag.BoolVar(&enableActions, "enable-operational-actions", false,
+		"O5 candidate: show ActionProposals, their approval state and why they wait in status.interaction.actions. "+
+			"This build has no ActionProvider, no approval verifier and only a non-durable journal, so nothing is ever handed off")
 
 	zapOpts := zap.Options{Development: true}
 	zapOpts.BindFlags(flag.CommandLine)
@@ -188,6 +193,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	if enableActions && !enableInteraction {
+		setupLog.Error(nil, "--enable-operational-actions requires --enable-operational-interaction")
+		os.Exit(1)
+	}
 	if (enableInteraction || interactionProfile != "") && !enableOperational {
 		setupLog.Error(nil, "--enable-operational-interaction requires --enable-operational-assessment")
 		os.Exit(1)
@@ -235,6 +244,14 @@ func main() {
 				rec.InteractionProfile = p
 			}
 			setupLog.Info("operator interaction summary enabled (O4)", "profile", interactionProfile)
+		}
+		if enableActions {
+			// The storage, approval identity and provider transport of O5 are
+			// OPEN (API v0.1 §19): no provider is registered and the journal
+			// is not durable, so every proposal is shown as Blocked or
+			// AwaitingApproval and nothing is handed off.
+			rec.Actions = &action.Engine{Journal: action.NewMemJournal(), Providers: action.Registry{}}
+			setupLog.Info("action proposals enabled (O5 candidate, display and gating only; no handoff)")
 		}
 		if err := rec.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "setup OperationalReconciler")
