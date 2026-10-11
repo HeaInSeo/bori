@@ -1,6 +1,7 @@
 package action
 
 import (
+	"bytes"
 	"context"
 	"time"
 )
@@ -37,4 +38,18 @@ type Verifier interface {
 // object model.
 type DecisionSource interface {
 	Decisions(ctx context.Context) ([]Decision, error)
+}
+
+// copy returns d with its own Proof, so a stored copy never shares memory
+// with the source or a reader.
+func (d Decision) copy() Decision {
+	d.Proof = append(d.Proof[:0:0], d.Proof...)
+	return d
+}
+
+// same reports whether two decisions are identical in every signed field
+// and in their proof.
+func (d Decision) same(o Decision) bool {
+	return d.ID == o.ID && d.ProposalID == o.ProposalID && d.Digest == o.Digest && d.Principal == o.Principal &&
+		d.Verdict == o.Verdict && d.DecidedAt.Equal(o.DecidedAt) && bytes.Equal(d.Proof, o.Proof)
 }

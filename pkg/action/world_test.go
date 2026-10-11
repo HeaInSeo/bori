@@ -61,6 +61,11 @@ type world struct {
 	// ended is when the world first saw each executed key ended at the
 	// actor: the checker's own end of an execution, never BORI's record.
 	ended map[string]time.Time
+	// approvedWith is, per attempt key, every decision the source presented
+	// under the attempt's approval ID when the checker first saw the
+	// attempt persisted: the checker's own immutable fact of what approved
+	// it, never a later decision reusing the ID.
+	approvedWith map[string][]action.Decision
 	// effect is what the authoritative actor's execution does to the world.
 	effect func(h action.Handoff)
 }
@@ -101,6 +106,8 @@ func newWorld(t *testing.T) *world {
 		obs:     map[string]operations.Observation{},
 		frozen:  map[string]bool{},
 		ended:   map[string]time.Time{},
+
+		approvedWith: map[string][]action.Decision{},
 	}
 	for _, n := range []string{"a", "y"} {
 		w.targets[n] = &operations.Target{

@@ -31,7 +31,8 @@ const (
 	Fail
 	// AcceptOnly: accept and stay Pending forever.
 	AcceptOnly
-	// Refuse: answer Accepted=false; nothing is executed.
+	// Refuse: answer Accepted=false and report Refused; nothing is
+	// executed.
 	Refuse
 	// Silent: record nothing and return a transport error.
 	Silent
@@ -132,8 +133,10 @@ func (a *Actor) Result(_ context.Context, key string) (action.Result, error) {
 	switch j.b {
 	case Succeed:
 		r.State = action.ResultSucceeded
-	case Fail, Refuse:
+	case Fail:
 		r.State = action.ResultFailed
+	case Refuse:
+		r.State = action.ResultRefused
 	default:
 		r.State = action.ResultPending
 	}
@@ -239,6 +242,19 @@ func (s *Decisions) Add(d action.Decision) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ds = append(s.ds, d)
+}
+
+// Remove withdraws every decision for which match is true.
+func (s *Decisions) Remove(match func(action.Decision) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.ds[:0]
+	for _, d := range s.ds {
+		if !match(d) {
+			kept = append(kept, d)
+		}
+	}
+	s.ds = kept
 }
 
 // Decisions implements action.DecisionSource.

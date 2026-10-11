@@ -167,12 +167,25 @@ type Record struct {
 	SentFence uint64
 	Sends     int
 	Approval  Approval
-	Binding   Binding
-	Action    interaction.ActionRef
-	Provider  string
-	Owner     string
-	For       operations.CapabilityType
-	Expected  []operations.CapabilityType
+	// Decision is a complete copy of the verified decision the attempt was
+	// approved with (zero for a policy approval), taken when the attempt was
+	// first persisted. A resend is judged on this copy alone: its own
+	// signature, proposal, digest, verdict and time under the declaration's
+	// approval age, and the source must still present it unchanged. No later
+	// decision stands in for it, not even one reusing its ID. It is journal
+	// state only: never sent to the provider and never shown.
+	Decision Decision
+	// Refused records that the provider explicitly refused the attempt and
+	// executed nothing. The phase is Failed (the attempt is over and may be
+	// retried as declared), but there is no execution end and the attempt
+	// is never assessed for recovery.
+	Refused  bool
+	Binding  Binding
+	Action   interaction.ActionRef
+	Provider string
+	Owner    string
+	For      operations.CapabilityType
+	Expected []operations.CapabilityType
 	// Execution is the declared execution contract the attempt was derived
 	// and approved under, copied verbatim from the profile. It is journal
 	// state only, never sent to the provider: a reader can map the attempt
@@ -181,7 +194,8 @@ type Record struct {
 	// Times are BORI's own clock, never the provider's. CompletedAt closes
 	// the shown phase (a result, a refusal, a timeout or a withdrawal);
 	// EndedAt is set only when a matching definitive result of the provider
-	// ends the execution, and is the only end recovery is assessed from.
+	// (Succeeded or Failed, never Refused) ends the execution, and is the
+	// only end recovery is assessed from.
 	CreatedAt   time.Time
 	LastSentAt  time.Time
 	AckedAt     time.Time

@@ -277,7 +277,7 @@ func (st *step) advance(r *Record) {
 			return
 		}
 		p, ok := st.props[r.ProposalID]
-		if !ok || p.Digest != r.Digest || !registered || len(st.gates(p, true)) > 0 || !st.stillApproved(p, r.Approval) {
+		if !ok || p.Digest != r.Digest || !registered || len(st.gates(p, true)) > 0 || !st.stillApproved(p, r) {
 			next.Phase, next.CompletedAt = PhaseWithdrawn, now
 			st.put(r, next)
 			return
@@ -302,7 +302,8 @@ func (st *step) advance(r *Record) {
 	}
 }
 
-// adopt applies a matching provider answer; Pending acknowledges.
+// adopt applies a matching provider answer; Pending acknowledges. A refusal
+// releases the target but is not an execution end.
 func (st *step) adopt(r *Record, res Result) bool {
 	now := st.in.Now
 	next := *r
@@ -312,6 +313,14 @@ func (st *step) adopt(r *Record, res Result) bool {
 			return false // still live; a deadline already passed stays passed
 		}
 		next.Phase, next.AckedAt = PhaseAccepted, now
+	case ResultRefused:
+		if !r.AckedAt.IsZero() {
+			// Accepted responsibility cannot be refused afterwards; the
+			// answer proves nothing about what ran, so the target stays held.
+			st.e.stats.IgnoredResponses++
+			return false
+		}
+		next.Phase, next.Refused, next.AckedAt, next.CompletedAt = PhaseFailed, true, now, now
 	case ResultSucceeded, ResultFailed:
 		next.Phase = PhaseSucceeded
 		if res.State == ResultFailed {
@@ -356,8 +365,9 @@ func (st *step) send(r *Record, reg Registration) {
 	if rc.Accepted {
 		next.Phase, next.AckedAt, next.ProviderRef = PhaseAccepted, now, rc.Ref
 	} else {
-		// An explicit refusal is definitive: nothing was accepted.
-		next.Phase, next.AckedAt, next.CompletedAt, next.ProviderRef = PhaseFailed, now, now, rc.Ref
+		// An explicit refusal is definitive: nothing was accepted or
+		// executed, so there is no execution end.
+		next.Phase, next.Refused, next.AckedAt, next.CompletedAt, next.ProviderRef = PhaseFailed, true, now, now, rc.Ref
 	}
 	if st.put(r, next) && r.Phase == PhaseAccepted {
 		st.wakeAt(now.Add(r.CompletionTimeout))
@@ -413,10 +423,11 @@ func (st *step) gates(p Proposal, resend bool) []Reason {
 	return out
 }
 
-// approval evaluates submitted decisions for exactly this proposal.
-func (st *step) approval(p Proposal) (approved *Approval, rejected bool, notes []Reason) {
+// approval evaluates submitted decisions for exactly this proposal. by is a
+// copy of the counted human decision.
+func (st *step) approval(p Proposal) (approved *Approval, by Decision, rejected bool, notes []Reason) {
 	if len(p.Human) == 0 {
-		return &Approval{Kind: "policy", Principal: "policy:" + p.ProfileRevision}, false, nil
+		return &Approval{Kind: "policy", Principal: "policy:" + p.ProfileRevision}, Decision{}, false, nil
 	}
 	ex := p.Response.Execution
 	for _, d := range st.decisions {
@@ -436,14 +447,14 @@ func (st *step) approval(p Proposal) (approved *Approval, rejected bool, notes [
 			continue
 		}
 		if d.Verdict == Approve && approved == nil {
-			approved = &Approval{Kind: "human", Principal: d.Principal, DecisionID: d.ID}
+			approved, by = &Approval{Kind: "human", Principal: d.Principal, DecisionID: d.ID}, d.copy()
 			st.wakeAt(d.DecidedAt.Add(ex.ApprovalAge()))
 		}
 	}
 	if rejected {
-		approved = nil
+		approved, by = nil, Decision{}
 	}
-	return approved, rejected, notes
+	return approved, by, rejected, notes
 }
 
 // invalid returns why a submitted decision does not count for p under p's
@@ -466,23 +477,27 @@ func (st *step) invalid(p Proposal, d Decision) string {
 }
 
 // stillApproved revalidates the approval a record was persisted with,
-// before it is sent again: the recorded decision itself must still count,
-// and no counting rejection may exist. Another decision's validity is never
-// borrowed; a resend always carries exactly the recorded approval.
-func (st *step) stillApproved(p Proposal, a Approval) bool {
-	_, rejected, _ := st.approval(p)
+// before it is sent again. The recorded copy of the decision is judged
+// itself (signature, approver, proposal, digest, verdict and its own time
+// under the declaration's approval age), the source must still present it
+// unchanged, and no counting rejection may exist. Another decision's
+// validity is never borrowed, not even from one that reuses the recorded
+// ID; a resend always carries exactly the recorded approval.
+func (st *step) stillApproved(p Proposal, r *Record) bool {
+	_, _, rejected, _ := st.approval(p)
 	if rejected {
 		return false
 	}
+	a, d := r.Approval, r.Decision
 	if a.Kind == "policy" {
 		return len(p.Human) == 0 && a.Principal == "policy:"+p.ProfileRevision
 	}
-	if a.Kind != "human" {
+	if a.Kind != "human" || len(p.Human) == 0 || d.ID != a.DecisionID || d.Principal != a.Principal ||
+		d.ProposalID != p.ID || d.Verdict != Approve || st.invalid(p, d) != "" {
 		return false
 	}
-	for _, d := range st.decisions {
-		if d.ID == a.DecisionID && d.ProposalID == p.ID && d.Principal == a.Principal &&
-			d.Verdict == Approve && len(p.Human) > 0 && st.invalid(p, d) == "" {
+	for _, s := range st.decisions {
+		if s.same(d) {
 			return true
 		}
 	}
@@ -504,7 +519,7 @@ func (st *step) decide(p Proposal) View {
 		v.Attempt = attempt
 	}
 	gates := st.gates(p, false)
-	approved, rejected, notes := st.approval(p)
+	approved, by, rejected, notes := st.approval(p)
 	human := make([]Reason, 0, len(p.Human))
 	for _, h := range p.Human {
 		human = append(human, Reason{Code: h})
@@ -529,7 +544,7 @@ func (st *step) decide(p Proposal) View {
 	r := Record{
 		Key: fmt.Sprintf("%s/%d", p.ID, attempt), ProposalID: p.ID, Subject: p.Subject,
 		TargetUID: p.Binding.Target.UID, Digest: p.Digest, Attempt: attempt, Phase: PhaseDispatching,
-		Fence: st.e.epoch, SentFence: st.e.epoch, Sends: 1, Approval: *approved, Binding: p.Binding,
+		Fence: st.e.epoch, SentFence: st.e.epoch, Sends: 1, Approval: *approved, Decision: by, Binding: p.Binding,
 		Action: p.Response.Action, Provider: ex.Provider, Owner: p.Response.Owner, For: p.For,
 		Expected: p.Expected, Execution: *ex, CreatedAt: now, LastSentAt: now,
 		AckTimeout: ex.AckTimeout.Duration, CompletionTimeout: ex.CompletionTimeout.Duration,

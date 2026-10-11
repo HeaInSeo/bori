@@ -5,9 +5,10 @@ import (
 	"github.com/HeaInSeo/bori/pkg/operations"
 )
 
-// Status bounds (mirrored by the CRD schema).
+// Status bounds per action (mirrored by the CRD schema). The number of
+// actions shown is bounded by the interaction projection, after it has
+// judged escalation on all of them.
 const (
-	maxStatusActions = 8
 	maxStatusReasons = 16
 	maxStatusDetail  = 8
 )
@@ -16,14 +17,13 @@ func opsType(c operations.CapabilityType) opsv1.CapabilityType {
 	return opsv1.CapabilityType{Domain: c.Domain, Name: c.Name, Revision: c.Revision}
 }
 
-// Status projects one target's views into the bounded, non-authoritative
-// status form. Views keep their deterministic order.
+// Status projects every view of one target into the non-authoritative
+// status form, each action bounded. Views keep their deterministic order.
+// It does not drop actions: interaction.Project needs all of them to decide
+// escalation and shows only the first eight.
 func Status(vs []View) []opsv1.InteractionAction {
 	var out []opsv1.InteractionAction
 	for _, v := range vs {
-		if len(out) == maxStatusActions {
-			break
-		}
 		a := opsv1.InteractionAction{
 			Proposal: v.ProposalID, Digest: v.Digest, Name: v.Action.String(), For: opsType(v.For),
 			Phase: string(v.Phase), Attempt: int32(v.Attempt), Recovery: string(v.Recovery),

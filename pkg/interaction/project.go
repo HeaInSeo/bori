@@ -74,6 +74,7 @@ const (
 	maxFacts      = 64
 	maxCandidates = 16
 	maxResponses  = 8
+	maxActions    = 8
 	maxReasons    = 8
 	maxCapReasons = 4
 	maxPost       = 16
@@ -108,8 +109,9 @@ type Input struct {
 	Investigation *Investigation
 	// Profile is nil when no reference profile is configured.
 	Profile *Profile
-	// Actions are the target's O5 proposals and executions (nil when O5 is
-	// off), already bounded.
+	// Actions are all of the target's O5 proposals and executions (nil when
+	// O5 is off), each already bounded. Escalation is judged on all of them;
+	// the summary shows the first maxActions by proposal.
 	Actions []opsv1.InteractionAction
 }
 
@@ -238,7 +240,9 @@ func Project(in Input, prev *opsv1.InteractionStatus) *opsv1.InteractionStatus {
 
 // actionsOf attaches the O5 projection and adds the two human reasons it
 // can carry: an execution whose outcome is unknown, and one that ended
-// without recovery. They apply only while the action's capability is not
+// without recovery. Both are judged on every action before the display is
+// bounded, and each is raised once, naming the first such action, so no
+// safety reason depends on an action's position or on how many there are. They apply only while the action's capability is not
 // AVAILABLE on current evidence: history never escalates a capability that
 // is proven available now, and a recovery never lowers the level (the level
 // follows the current capability states). caps is nil for a target that is
@@ -248,22 +252,36 @@ func actionsOf(in Input, out *opsv1.InteractionStatus, d *decision, caps map[str
 	if len(in.Actions) == 0 {
 		return
 	}
-	out.Actions = append([]opsv1.InteractionAction(nil), in.Actions...)
+	all := append([]opsv1.InteractionAction(nil), in.Actions...)
+	sort.SliceStable(all, func(i, j int) bool { return all[i].Proposal < all[j].Proposal })
+	out.Actions = all
+	if len(out.Actions) > maxActions {
+		out.Actions = out.Actions[:maxActions:maxActions]
+	}
 	if caps == nil {
 		return
 	}
-	for _, a := range out.Actions {
+	first := map[string]string{} // reason code → first action name
+	for _, a := range all {
 		if c, ok := caps[typeKey(a.For)]; ok && c.State == "AVAILABLE" {
 			continue
 		}
+		code := ""
 		switch {
 		case a.Recovery == "Recovered" || a.Recovery == "Inapplicable":
 		case a.Phase == "TimedOut" || a.Phase == "Withdrawn":
-			d.raise(opsv1.LevelDecisionRequired, ReasonActionOutcomeUnknown, a.Name)
-			d.needHuman(ReasonActionOutcomeUnknown, a.Name)
+			code = ReasonActionOutcomeUnknown
 		case a.Recovery == "NotRecovered" || a.Recovery == "Partial" || a.Recovery == "Unconfirmed":
-			d.raise(opsv1.LevelDecisionRequired, ReasonActionNotRecovered, a.Name)
-			d.needHuman(ReasonActionNotRecovered, a.Name)
+			code = ReasonActionNotRecovered
+		}
+		if n, seen := first[code]; code != "" && (!seen || a.Name < n) {
+			first[code] = a.Name
+		}
+	}
+	for _, code := range []string{ReasonActionNotRecovered, ReasonActionOutcomeUnknown} {
+		if n, ok := first[code]; ok {
+			d.raise(opsv1.LevelDecisionRequired, code, n)
+			d.needHuman(code, n)
 		}
 	}
 }

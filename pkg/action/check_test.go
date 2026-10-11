@@ -86,6 +86,7 @@ func (w *world) latestRecord(proposalID string) (action.Record, bool) {
 func (w *world) check() {
 	f := &w.ck
 	s := w.history[len(w.history)-1]
+	w.noteApprovals()
 
 	for uid, vs := range s.out.Views {
 		name := w.targetName(uid)
@@ -192,7 +193,8 @@ func sameContract(a, b interaction.Execution) bool {
 // assessment, the decisions and the journal record of the handoff alone,
 // never from the engine's proposals or keys. The record's execution
 // contract maps the handoff to its exact declaration(s); only that
-// contract's approvers and approval age apply.
+// contract's approvers and approval age apply, to the decision as the
+// source presented it when the attempt was first persisted.
 func (w *world) checkExecution(f *forbidden, e executed, s stepLog) {
 	h := e.h
 	name := w.targetName(h.Target.UID)
@@ -380,9 +382,8 @@ func (w *world) checkExecution(f *forbidden, e executed, s stepLog) {
 		}
 		return
 	}
-	ds, _ := w.decisions.Decisions(context.Background())
 	valid := false
-	for _, d := range ds {
+	for _, d := range w.approvedWith[h.Key] {
 		if h.Approval.Kind != "policy" && d.ID == h.Approval.DecisionID && d.Principal == h.Approval.Principal &&
 			d.Verdict == action.Approve && d.ProposalID == h.ProposalID && d.Digest == h.Digest && w.signer.Verify(d) &&
 			contains(contract.Approvers, d.Principal) &&
@@ -392,6 +393,25 @@ func (w *world) checkExecution(f *forbidden, e executed, s stepLog) {
 	}
 	if !valid {
 		f.add(&f.unauthorized, "executed without a valid approval by an approver of its own contract (person required, %d viable responses): %+v", len(viable), h.Approval)
+	}
+}
+
+// noteApprovals records, for every attempt not seen before, a deep copy of
+// each decision the source now presents under its approval ID.
+func (w *world) noteApprovals() {
+	ds, _ := w.decisions.Decisions(context.Background())
+	for _, r := range w.records() {
+		if _, seen := w.approvedWith[r.Key]; seen {
+			continue
+		}
+		var at []action.Decision
+		for _, d := range ds {
+			if r.Approval.Kind == "human" && d.ID == r.Approval.DecisionID {
+				d.Proof = append([]byte(nil), d.Proof...)
+				at = append(at, d)
+			}
+		}
+		w.approvedWith[r.Key] = at
 	}
 }
 

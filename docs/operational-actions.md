@@ -100,13 +100,15 @@ Proposal phase (derived each step, never stored on its own):
 | `Rejected` | A verified, allowed approver rejected this exact ID and digest. |
 | `Dispatching` | Handoff intent persisted. Sent (possibly) but not acknowledged. |
 | `Accepted` | Receipt received: durable acceptance only. |
-| `Succeeded` / `Failed` | Result from the provider for the exact key, fence and digest. |
+| `Succeeded` / `Failed` | Result from the provider for the exact key, fence and digest. `Failed` is also shown for an explicit refusal, which the record keeps apart (`Refused`): nothing was executed. |
 | `TimedOut` | No acknowledgement within `ackTimeout`, or no result within `completionTimeout`. The outcome is **unknown**, never success. |
 | `Withdrawn` | A persisted intent whose revalidation failed before any acknowledgement. It is not resent. An earlier send may still have been delivered, so the outcome is unknown as for `TimedOut`. |
 
 `TimedOut` and `Withdrawn` are what is shown; they do not end the provider's
 responsibility. Until a matching definitive result (`Succeeded` or `Failed`
-for the exact key, fence and digest) or an explicit refusal is recorded, the
+for the exact key, fence and digest) or an explicit refusal (a `Submit`
+answer with `Accepted=false`, or a polled `Refused` result for an attempt
+that was never accepted) is recorded, the
 attempt **keeps occupying its target**, also across restarts, and the engine
 keeps polling the provider by key. A timeout, an expired approval, a changed
 proposal or digest, or a recovered capability never releases it. A late
@@ -117,6 +119,16 @@ matching definitive result, on evidence observed after BORI recorded that
 result (`EndedAt`). A refusal, a `TimedOut` or a `Withdrawn` attempt is never
 assessed, so it never reaches `Recovered` and never advances its subject's
 episode; a deadline or withdrawal time is not an execution end.
+
+A refusal stays a refusal however BORI learns it. The provider protocol
+separates `Refused` (nothing executed, no responsibility held) from `Failed`
+(executed and ended in failure), and a provider answers `Refused` when
+polled for a key it refused. So when the refusal's journal write fails or its
+receipt is lost, the next poll, also after a restart, records a refusal
+without an execution end. While the refusal cannot be written the attempt
+keeps its target and nothing new is sent. A `Refused` answer for an attempt
+that was already accepted proves nothing about what ran; it is ignored and
+the target stays held.
 
 | Recovery | Meaning |
 |---|---|
@@ -145,7 +157,7 @@ result.
    - the approval (human or policy) is valid for the exact ID and digest.
 2. **Persist before send:** a `Dispatching` record with key, fence and digest is written by compare-and-swap. If the write fails, nothing is sent. The record also keeps a verbatim copy of the declared execution contract the attempt was derived and approved under. It stays in the journal and is never sent to the provider; it lets an independent reader map the attempt to its exact declaration.
 3. **Send:** `Submit(handoff)`. A receipt with the same key, fence and digest moves the record to `Accepted`. If that write fails, the next step polls the provider by key and adopts its answer, so nothing is sent twice.
-4. **Resend** (same key and fence, at most `maxSends`) only while unacknowledged and only after the gates of step 1 pass again. A resend carries exactly the recorded approval, and that decision itself must still count: present, verified, by an approver of the proposal's declaration, for the exact ID and digest, not from the future and within the declared approval age, with no counting rejection. A newer decision never lends its validity to the recorded one, and no replacement approval is sent. Otherwise the record becomes `Withdrawn`.
+4. **Resend** (same key and fence, at most `maxSends`) only while unacknowledged and only after the gates of step 1 pass again. A resend carries exactly the recorded approval. The record keeps a complete copy of the verified decision it was approved with (ID, proposal, digest, principal, verdict, decision time and proof), taken when the attempt was first persisted; it is journal state only, never sent or shown. On resend that copy itself must still count: verified, by an approver of the proposal's declaration, for the exact ID and digest, not from the future and within the declared approval age measured from its own decision time. The source must still present it unchanged, and no counting rejection may exist. A decision ID is not trusted to be unique or immutable: a newer decision, even one that reuses the recorded ID, principal, proposal and digest with a later time and a valid signature, never stands in for the recorded one, and no replacement approval is sent. Otherwise the record becomes `Withdrawn`.
 5. **Restart and overlap:** a new engine takes a fresh epoch from the journal, and every record it writes carries that epoch. The journal **rejects any write whose fence is below the newest issued epoch**, atomically with the write. Once a newer engine exists, an older one can persist nothing, so it can send nothing; this makes the one-in-flight-per-target rule hold across overlapping engines. A resend carries the new fence. The reference actor rejects lower fences, so an older send that was already on the wire before the takeover is deduplicated by key or refused.
 6. **Results:** an accepted result for the current key, fence and digest records BORI's own completion time, never the provider's clock. This also holds for a `TimedOut` or `Withdrawn` attempt, which is still polled by key. Duplicate results are no-ops. Results for another key, fence or digest are counted and ignored. A result never becomes an O1 observation.
 
@@ -180,20 +192,21 @@ by this document.
 - one idempotency key per attempt;
 - poll by key after a restart before any resend;
 - `TimedOut` = unknown, with no automatic retry, and it keeps the target until a definitive result;
+- an explicit refusal releases the target without an execution end, also when it is learned only by a poll after a failed write, a lost receipt or a restart;
 - a new attempt only after a definitive `Failed`, and only when declared retryable.
 
 Open questions for central: the journal technology, its retention/audit period, and whether `TimedOut` should page a person (the reference projection raises DECISION_REQUIRED).
 
 ## 4. Operator interaction (O4 linkage)
 
-With `--enable-operational-actions`, `status.interaction.actions` (at most 8) shows for each proposal of the target:
+With `--enable-operational-actions`, `status.interaction.actions` shows the target's first 8 proposals by proposal ID, each with:
 - proposal ID and action;
 - `for` and phase;
 - waiting/blocking reasons;
 - execution outcome;
 - recovery state with per-capability detail.
 
-It is a bounded, non-authoritative projection, **not** proposal storage, and it carries no timestamps. O4's level table is unchanged except for one addition: an execution that timed out, or ended without recovery, adds the human reason `action-outcome-unknown` or `action-not-recovered` and raises the level to DECISION_REQUIRED. A recovery never lowers the level: the level follows the current O1 capability states.
+It is a bounded, non-authoritative projection, **not** proposal storage, and it carries no timestamps. O4's level table is unchanged except for one addition: an execution that timed out, or ended without recovery, adds the human reason `action-outcome-unknown` or `action-not-recovered` and raises the level to DECISION_REQUIRED. This is judged on all of the target's actions before the display is bounded to 8, and each of the two reasons is raised once, naming the first such action, so neither depends on an action's position or on how many actions there are. A recovery never lowers the level: the level follows the current O1 capability states.
 
 ## 5. Verification layers
 
@@ -219,9 +232,11 @@ Every scenario runs a forbidden-outcome checker that recomputes independently:
 
 The checker does not use the engine's proposals or keys. It maps each observed handoff to its exact declaration through the record's execution contract, compared field by field with the profile. Only that declaration's `approvers` and approval age apply; nothing is borrowed from another declaration of the same action. A handoff without a matching record, a record whose contract nobody declared, and one proposal recorded under two contracts are each unauthorized. It also applies the several-execution-contracts rule.
 
-The checker takes execution facts from the reference actor, never from BORI's phases or times. A new execution while an earlier execution on the same target is still live at the actor is unauthorized, whatever BORI shows for the earlier one. A `Recovered` claim for an attempt the actor never executed, or one still live at the actor, is unjustified. Recovery evidence must be observed after the actor's own end of the execution.
+The checker takes execution facts from the reference actor, never from BORI's phases or times. A new execution while an earlier execution on the same target is still live at the actor is unauthorized, whatever BORI shows for the earlier one. A `Recovered` claim for an attempt the actor never executed, or one still live at the actor, is unjustified. Recovery evidence must be observed after the actor's own end of the execution. A refused key is never executed at the actor, so a `Recovered` claim for it is unjustified.
 
-Trust limit: the checker trusts that the recorded contract is the one the proposal was derived from. A coherent wrong-contract record is invisible to it: an engine that approves under another declaration's approvers or approval age, and also records that declaration's contract, leaves an observation the checker accepts. That boundary is covered by engine regressions that run the real approval path with declaration-scoped approvers and approval ages, in both declaration orders: `TestApproversAreDeclarationScoped` and `TestApprovalAgeIsDeclarationScoped`. The journal returns and stores copies, so a reader cannot alter a stored contract (`TestJournalCopiesTheExecutionContract`).
+The checker judges an execution's human approval against the decision as the decision source presented it when the checker first saw the attempt persisted (its own deep copy), never against the current source: a later decision that reuses the ID cannot make an expired original look valid. Escalation beyond the display bound is checked separately, by interaction assertions on the controller → `interaction.Project` chain against an oracle computed from the untruncated fixture, not by the forbidden-outcome counts.
+
+Trust limit: the checker trusts that the recorded contract is the one the proposal was derived from. A coherent wrong-contract record is invisible to it: an engine that approves under another declaration's approvers or approval age, and also records that declaration's contract, leaves an observation the checker accepts. That boundary is covered by engine regressions that run the real approval path with declaration-scoped approvers and approval ages, in both declaration orders: `TestApproversAreDeclarationScoped` and `TestApprovalAgeIsDeclarationScoped`. The journal returns and stores copies, so a reader cannot alter a stored contract (`TestJournalCopiesTheExecutionContract`). The same holds for the recorded decision copy, which shares no memory with the decision source or a reader (`TestRecordedDecisionCopyIsIsolated`). The checker's own copy of an approving decision is taken when it first sees the attempt persisted, which is the step that persisted it; a source that already presented other content under the ID at that moment is accepted as it was then.
 
 Every scenario must count 0 on each.
 
@@ -269,6 +284,7 @@ Each scenario runs the independent forbidden-outcome checker after every step.
 | — | Guardrail d137 oracle P1: one action, owner and capability with two execution contracts and disjoint approvers (A: alice, B: bob), both declaration orders. bob's valid signature on A's exact ID and digest is `approver-not-allowed`, nothing is handed off; alice→A and bob→B each run once in their own world; crossed ID/digest and an undeclared principal are refused. The checker counts bob executing A, a borrowed approval age, an undeclared recorded contract, a record/handoff mismatch, a missing record, a remapped proposal and a policy dispatch under several contracts as unauthorized, and nothing else | §4.2, F8 | `TestApproversAreDeclarationScoped`, `TestCheckerAppliesTheExecutedDeclarationsApprovers` |
 | — | Guardrail d416 P2: the same contracts approvable by alice with approval ages 1h/3h and 3h/1h, both orders; a 2h-old approval of the 1h declaration is `approval-expired` with nothing handed off, and that of the 3h declaration runs once; the checker counts a record of another proposal as unauthorized; the journal stores and returns copies | §4.2, F8 | `TestApprovalAgeIsDeclarationScoped`, `TestCheckerAppliesTheExecutedDeclarationsApprovers`, `TestJournalCopiesTheExecutionContract` |
 | — | Codex P1 r4237539530 / r4237539535 / r4237539537 (b4ea617): a `TimedOut` (completion timeout) or possibly delivered `Withdrawn` (receipt lost, result unknown, approval expired) attempt keeps its target, both declaration orders, across a restart and an overlapping engine, so the other approved action runs 0 times; a late `Succeeded`/`Failed` releases it and the other action then runs once; a refusal releases at once; an unrelated target is not held. A resend carries only the recorded decision revalidated itself: with it expired, no later decision (valid, rejecting, wrong digest, forged, non-approver, future, expired; sorting before or after) causes a send; with it valid, the resend carries it, except after a valid rejection; also with a failed resend write and a restart. A dropped and withdrawn intent, a refusal and a still-live timed-out execution are never assessed, and the episode does not advance; after a late success only post-result fresh evidence recovers it. The checker counts an execution while another is live at the actor as unauthorized, and a recovery without an execution or while live as unjustified, and nothing else | R2-B, S10, S11 | `TestUnknownOutcomeKeepsTheTargetOccupied`, `TestLateDefinitiveResultReleasesTheTarget`, `TestOccupancyControls`, `TestResendCarriesOnlyTheRecordedDecision`, `TestResendRevalidationSurvivesFaults`, `TestOnlyADefinitivelyEndedExecutionIsAssessed`, `TestCheckerSeesLiveResponsibilityAndUnexecutedRecovery` |
+| — | Codex P1 r4237824547 / r4237824549 / r4237824550 (b63968c): with the first send lost and the original approval expired, a validly signed decision reusing its ID, principal, proposal and digest with a later time causes no handoff, whether the original is kept or removed, in both declaration orders and across a restart; a still valid original re-presented unchanged is resent once, exactly; a valid rejection, the original's removal, and same-ID content that is changed, forged, unsigned, by a non-approver, future or expired lend nothing; the journal's decision copy is isolated and never sent or shown. A refusal learned by polling after its journal write failed or its receipt was lost, also after a restart, releases the target with no execution end, so fresh AVAILABLE evidence neither recovers it nor advances its episode; while the refusal cannot be written nothing new is sent; mismatched refusal answers and a refusal after acceptance release nothing; an executed failure is still assessed. Through the real controller, a timed-out or not-recovered action beyond the 8 shown raises DECISION_REQUIRED with its exact human reason; on the action.Status → interaction.Project chain, TimedOut, Withdrawn, NotRecovered, Partial and Unconfirmed placed ninth, last or first, in either input order, and more than 8 alerting actions keep the escalation, while Recovered, Inapplicable, AVAILABLE capability, in-flight and unrelated targets add none. The checker counts a resend under a same-ID renewal as unauthorized and a recovery after a refusal as unjustified, and nothing else | R2-B, S09, S10, S11, §4.3 | `TestSameIDRenewalDoesNotRenewTheRecordedApproval`, `TestRecordedDecisionControls`, `TestRecordedDecisionCopyIsIsolated`, `TestPolledRefusalIsNotAnExecution`, `TestRefusalWriteFaultStaysFailClosed`, `TestRefusalAnswerControls`, `TestCheckerSeesRenewalAndRefusal`, `TestO5ControllerEscalatesOnActionsBeyondTheDisplayBound`, `TestO5EscalationIsJudgedBeforeTheDisplayBound` |
 | — | Determinism and zero churn; checker detects each class; no scenario/product/readiness branch; no cluster client | §2, §10 | `TestDeterministicAndZeroChurn`, `TestForbiddenCheckerDetectsViolations`, `TestActionCodeIsAppScenarioAndReadinessNeutral`, `TestActionCodeHasNoClusterClient` |
 | — | O4 linkage: fingerprints unchanged when off, escalation only on unknown outcome/non-recovery, schema at bounds | O4 | `TestFingerprintUnchangedWithoutActions`, `TestActionsEscalateOnlyOnUnknownOutcomeOrNonRecovery`, `TestActionsAtBoundsFitTheSchema`, `TestO5OffEquivalenceAndNoAddedEvidenceIO` |
 

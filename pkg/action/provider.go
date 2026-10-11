@@ -28,6 +28,8 @@ type Handoff struct {
 
 // Receipt is the provider's answer to Submit. Accepted means durable
 // acceptance of responsibility only (R2-B): not applied, not completed.
+// Accepted=false is an explicit refusal: nothing was or will be executed
+// for the key, and Result must then report ResultRefused for it.
 type Receipt struct {
 	Key      string
 	Fence    uint64
@@ -44,7 +46,13 @@ const (
 	ResultUnknown   ResultState = "Unknown"
 	ResultPending   ResultState = "Pending"
 	ResultSucceeded ResultState = "Succeeded"
-	ResultFailed    ResultState = "Failed"
+	// ResultFailed: the handoff was executed and ended in failure.
+	ResultFailed ResultState = "Failed"
+	// ResultRefused: the provider refused the handoff and executed nothing;
+	// it holds no responsibility for it. A provider answers this, never
+	// Failed, for a key it refused, so a lost refusal receipt or an
+	// unrecorded refusal is not later taken for an executed failure.
+	ResultRefused ResultState = "Refused"
 )
 
 // Result is the provider's statement about one keyed handoff. It is never

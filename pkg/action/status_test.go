@@ -8,7 +8,9 @@ import (
 	"github.com/HeaInSeo/bori/pkg/interaction"
 )
 
-// The status projection is bounded whatever the engine produced.
+// Each projected action is bounded whatever the engine produced, and no
+// action is dropped: the interaction projection bounds how many are shown
+// after judging escalation on all of them.
 func TestStatusIsBounded(t *testing.T) {
 	var vs []action.View
 	for i := 0; i < 20; i++ {
@@ -21,7 +23,7 @@ func TestStatusIsBounded(t *testing.T) {
 		vs = append(vs, v)
 	}
 	s := action.Status(vs)
-	if len(s) != 8 || s[0].Proposal != "p00" || s[7].Proposal != "p07" {
+	if len(s) != 20 || s[0].Proposal != "p00" || s[19].Proposal != "p19" {
 		t.Fatalf("%d actions", len(s))
 	}
 	for _, a := range s {
