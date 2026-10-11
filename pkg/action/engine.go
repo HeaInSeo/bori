@@ -401,6 +401,12 @@ func (st *step) gates(p Proposal, resend bool) []Reason {
 	if p.OwnerConflict {
 		out = append(out, Reason{Code: ReasonOwnerConflict})
 	}
+	if len(p.Human) > 0 && len(ex.Approvers) == 0 {
+		// A derived boundary (no-priority-authority) needs a person even
+		// where the declaration itself does not, and profile validation
+		// cannot see it; without an approver it is blocked, not awaited.
+		out = append(out, Reason{Code: ReasonNoApprover})
+	}
 	if reg, ok := st.e.Providers[ex.Provider]; !ok {
 		out = append(out, Reason{Code: ReasonProviderUnregistered, Subject: ex.Provider})
 	} else if !reg.authorises(r.Owner, p.Binding.Target.Namespace, r.Action) {

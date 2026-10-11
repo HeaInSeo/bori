@@ -76,6 +76,9 @@ const (
 	ReasonOutcomeUnknown        = "outcome-unknown"
 	ReasonIdentityChanged       = "identity-changed"
 	ReasonJournalWriteFailed    = "journal-write-failed"
+	// ReasonNoApprover: a person must decide (declared or derived) but the
+	// execution contract names no approver, so no decision can count.
+	ReasonNoApprover = "no-approver"
 
 	// Why a person must decide (declared).
 	ReasonApprovalDeclared = "approval-declared"
