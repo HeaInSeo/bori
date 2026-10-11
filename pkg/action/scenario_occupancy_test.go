@@ -432,7 +432,7 @@ func wantOnly(t *testing.T, w *world, unjustified, unauthorized int) {
 	t.Helper()
 	f := w.ck
 	t.Logf("forbidden4 unrelated=%d unjustifiedRecovery=%d unauthorized=%d staleReuse=%d", f.unrelated, f.unjustifiedRecovery, f.unauthorized, f.staleReuse)
-	if f.unrelated+f.staleReuse != 0 || f.unjustifiedRecovery != unjustified || f.unauthorized != unauthorized {
+	if f.unrelated+f.staleReuse+f.hidden != 0 || f.unjustifiedRecovery != unjustified || f.unauthorized != unauthorized {
 		t.Fatalf("want unjustifiedRecovery=%d unauthorized=%d only: %+v", unjustified, unauthorized, f)
 	}
 }

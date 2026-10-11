@@ -61,9 +61,14 @@ type subject struct {
 	Target      operations.TargetIdentity
 	ResolvedUID string
 	Contract    operations.ContractIdentity
-	Action      interaction.ActionRef
-	For         operations.CapabilityType
-	Profile     string
+	// Providers and Dependencies complete the target's binding (as in
+	// Binding): a provider revision or dependency rebind is a new identity
+	// with a fresh proposal and no inherited execution history.
+	Providers    []string
+	Dependencies []string
+	Action       interaction.ActionRef
+	For          operations.CapabilityType
+	Profile      string
 	// Declaration is the declared response's identity (declarationKey):
 	// two declarations of one action that differ in anything but their
 	// trigger states are two proposals, never one.
@@ -147,8 +152,10 @@ func capState(ta operations.TargetAssessment, c operations.CapabilityType) (oper
 
 // SubjectKey identifies the proposal subject of a response for a target.
 func subjectKey(t operations.Target, r interaction.Response, profile string) string {
+	b := bindingOf(t)
 	return digestOf(subject{
 		Target: t.Identity, ResolvedUID: t.ResolvedUID, Contract: t.ContractRef,
+		Providers: b.Providers, Dependencies: b.Dependencies,
 		Action: r.Action, For: capType(r.For), Profile: profile, Declaration: declarationKey(r),
 	})
 }

@@ -66,6 +66,9 @@ type world struct {
 	// attempt persisted: the checker's own immutable fact of what approved
 	// it, never a later decision reusing the ID.
 	approvedWith map[string][]action.Decision
+	// boundTo is, per attempt key, the checker's own copy of the target as
+	// the snapshot showed it when the attempt was first seen persisted.
+	boundTo map[string]operations.Target
 	// effect is what the authoritative actor's execution does to the world.
 	effect func(h action.Handoff)
 }
@@ -108,6 +111,7 @@ func newWorld(t *testing.T) *world {
 		ended:   map[string]time.Time{},
 
 		approvedWith: map[string][]action.Decision{},
+		boundTo:      map[string]operations.Target{},
 	}
 	for _, n := range []string{"a", "y"} {
 		w.targets[n] = &operations.Target{

@@ -20,7 +20,10 @@ type forbidden struct {
 	unjustifiedRecovery int // Recovered without post-execution proof for the same identity
 	unauthorized        int // an execution without valid approval, owner, authority or preconditions, or a duplicate
 	staleReuse          int // an approval, result or evidence of another identity or meaning used
-	notes               []string
+	// hidden is not one of the four Scenario §7 classes: an execution the
+	// actor still holds live that no view of its target shows.
+	hidden int
+	notes  []string
 }
 
 func (f *forbidden) add(n *int, format string, a ...any) {
@@ -29,7 +32,7 @@ func (f *forbidden) add(n *int, format string, a ...any) {
 }
 
 func (f forbidden) zero() bool {
-	return f.unrelated+f.unjustifiedRecovery+f.unauthorized+f.staleReuse == 0
+	return f.unrelated+f.unjustifiedRecovery+f.unauthorized+f.staleReuse+f.hidden == 0
 }
 
 // declarations returns every response declared for the named target and
@@ -86,7 +89,7 @@ func (w *world) latestRecord(proposalID string) (action.Record, bool) {
 func (w *world) check() {
 	f := &w.ck
 	s := w.history[len(w.history)-1]
-	w.noteApprovals()
+	w.noteApprovals(s.snap)
 
 	for uid, vs := range s.out.Views {
 		name := w.targetName(uid)
@@ -119,6 +122,49 @@ func (w *world) check() {
 	for _, e := range w.pending {
 		w.checkExecution(f, e, s)
 	}
+	if s.out.Views != nil { // an engine step, not an injected one
+		w.checkVisible(f, s)
+	}
+}
+
+// checkVisible requires every execution the actor still holds live on a
+// present target to be shown under its own proposal on that target.
+func (w *world) checkVisible(f *forbidden, s stepLog) {
+	for _, h := range w.actor.Handoffs {
+		if !w.actor.Live(h.Key) || w.actor.Executions[h.Key] == 0 {
+			continue
+		}
+		present := false
+		for _, t := range s.snap.Targets {
+			present = present || t.Identity.UID == h.Target.UID
+		}
+		seen := false
+		for _, v := range s.out.Views[h.Target.UID] {
+			seen = seen || v.ProposalID == h.ProposalID
+		}
+		if present && !seen {
+			f.add(&f.hidden, "execution %s is live at the actor but not shown on %s", h.Key, h.Target)
+		}
+	}
+}
+
+// sameBinding is the checker's own comparison of a target's complete
+// binding: workload, contract, assertion providers and dependencies.
+func sameBinding(a, b operations.Target) bool {
+	norm := func(t operations.Target) operations.Target {
+		t.AssertionBindings = append(t.AssertionBindings[:0:0], t.AssertionBindings...)
+		sort.Slice(t.AssertionBindings, func(i, j int) bool { return t.AssertionBindings[i].Slot < t.AssertionBindings[j].Slot })
+		t.DependencyBindings = append(t.DependencyBindings[:0:0], t.DependencyBindings...)
+		sort.Slice(t.DependencyBindings, func(i, j int) bool { return t.DependencyBindings[i].Slot < t.DependencyBindings[j].Slot })
+		if len(t.AssertionBindings) == 0 {
+			t.AssertionBindings = nil
+		}
+		if len(t.DependencyBindings) == 0 {
+			t.DependencyBindings = nil
+		}
+		return t
+	}
+	return reflect.DeepEqual(norm(a), norm(b))
 }
 
 // checkRecovered recomputes the recovery claim from scratch. The execution
@@ -142,7 +188,8 @@ func (w *world) checkRecovered(f *forbidden, v action.View, s stepLog) {
 			cur = &s.snap.Targets[i]
 		}
 	}
-	if cur == nil || cur.ResolvedUID != rec.Binding.ResolvedUID || cur.ContractRef != rec.Binding.Contract {
+	if cur == nil || cur.ResolvedUID != rec.Binding.ResolvedUID || cur.ContractRef != rec.Binding.Contract ||
+		!sameBinding(w.boundTo[rec.Key], *cur) {
 		f.add(&f.staleReuse, "recovery claimed across an identity change: %+v", v)
 		return
 	}
@@ -247,6 +294,10 @@ func (w *world) checkExecution(f *forbidden, e executed, s stepLog) {
 	rec, ok := w.recordByKey(h.Key)
 	if !ok {
 		f.add(&f.unauthorized, "executed %s without a persisted record", h.Key)
+		return
+	}
+	if !sameBinding(w.boundTo[h.Key], *cur) {
+		f.add(&f.staleReuse, "executed %s for a binding that changed since it was persisted", h.Key)
 		return
 	}
 	var impact []operations.CapabilityType
@@ -397,12 +448,20 @@ func (w *world) checkExecution(f *forbidden, e executed, s stepLog) {
 }
 
 // noteApprovals records, for every attempt not seen before, a deep copy of
-// each decision the source now presents under its approval ID.
-func (w *world) noteApprovals() {
+// each decision the source now presents under its approval ID, and of its
+// target as the snapshot shows it.
+func (w *world) noteApprovals(snap operations.Snapshot) {
 	ds, _ := w.decisions.Decisions(context.Background())
 	for _, r := range w.records() {
 		if _, seen := w.approvedWith[r.Key]; seen {
 			continue
+		}
+		for _, t := range snap.Targets {
+			if t.Identity.UID == r.TargetUID {
+				t.AssertionBindings = append(t.AssertionBindings[:0:0], t.AssertionBindings...)
+				t.DependencyBindings = append(t.DependencyBindings[:0:0], t.DependencyBindings...)
+				w.boundTo[r.Key] = t
+			}
 		}
 		var at []action.Decision
 		for _, d := range ds {
@@ -445,10 +504,10 @@ func contains(xs []string, s string) bool {
 
 func (w *world) assertSafe() {
 	w.t.Helper()
-	w.t.Logf("forbidden4 unrelated=%d unjustifiedRecovery=%d unauthorized=%d staleReuse=%d steps=%d executions=%d",
-		w.ck.unrelated, w.ck.unjustifiedRecovery, w.ck.unauthorized, w.ck.staleReuse, len(w.history), w.actor.TotalExecutions())
+	w.t.Logf("forbidden4 unrelated=%d unjustifiedRecovery=%d unauthorized=%d staleReuse=%d hidden=%d steps=%d executions=%d",
+		w.ck.unrelated, w.ck.unjustifiedRecovery, w.ck.unauthorized, w.ck.staleReuse, w.ck.hidden, len(w.history), w.actor.TotalExecutions())
 	if !w.ck.zero() {
-		w.t.Fatalf("forbidden outcomes: unrelated=%d unjustifiedRecovery=%d unauthorized=%d staleReuse=%d\n%v",
-			w.ck.unrelated, w.ck.unjustifiedRecovery, w.ck.unauthorized, w.ck.staleReuse, w.ck.notes)
+		w.t.Fatalf("forbidden outcomes: unrelated=%d unjustifiedRecovery=%d unauthorized=%d staleReuse=%d hidden=%d\n%v",
+			w.ck.unrelated, w.ck.unjustifiedRecovery, w.ck.unauthorized, w.ck.staleReuse, w.ck.hidden, w.ck.notes)
 	}
 }

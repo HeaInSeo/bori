@@ -124,10 +124,11 @@ func TestInvalidApprovalsAreRefused(t *testing.T) {
 		v := w.view(w.step())
 		w.approve(v)
 		// Before the next step the ready-replicas provider is reconfigured:
-		// the binding (and so the proposal's meaning) changes.
+		// the binding changes, so this is a new proposal (Codex
+		// r4242054568) that the old approval does not name.
 		w.targets["y"].AssertionBindings[2].Provider.ConfigRevision = "r2"
 		nv := w.view(w.advance(time.Second))
-		if nv.Phase != action.PhaseAwaitingApproval || nv.Digest == v.Digest || !hasReason(nv, action.ReasonApprovalDigestMismatch) {
+		if nv.Phase != action.PhaseAwaitingApproval || nv.Digest == v.Digest || nv.ProposalID == v.ProposalID {
 			t.Fatalf("%+v (old digest %s)", nv, v.Digest)
 		}
 		if len(w.actor.Handoffs) != 0 {

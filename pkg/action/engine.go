@@ -119,10 +119,14 @@ func (e *Engine) Step(ctx context.Context, in Input) (Output, error) {
 	}
 
 	out := Output{Views: map[string][]View{}}
-	shown := map[string]bool{} // subjects with a current proposal
+	shown := map[string]bool{}  // subjects with a current proposal
+	listed := map[string]bool{} // proposals with a view
+	add := func(uid string, v View) {
+		out.Views[uid] = append(out.Views[uid], v)
+		listed[v.ProposalID] = true
+	}
 	for _, p := range props {
-		v := st.decide(p)
-		out.Views[p.Binding.Target.UID] = append(out.Views[p.Binding.Target.UID], v)
+		add(p.Binding.Target.UID, st.decide(p))
 		shown[p.Subject] = true
 	}
 	for _, r := range st.latestPerSubject() {
@@ -132,7 +136,21 @@ func (e *Engine) Step(ctx context.Context, in Input) (Output, error) {
 		if _, ok := targetOf(in.Snapshot, r.TargetUID); !ok {
 			continue
 		}
-		out.Views[r.TargetUID] = append(out.Views[r.TargetUID], st.recordView(r))
+		add(r.TargetUID, st.recordView(r))
+	}
+	// An attempt that may still hold live responsibility stays visible
+	// even when a later episode of its subject has a proposal: its unknown
+	// outcome must reach the operator, not only the successor's
+	// target-busy.
+	for _, k := range st.keys() {
+		r := st.recs[k]
+		if !r.Phase.occupies() || listed[r.ProposalID] {
+			continue
+		}
+		if _, ok := targetOf(in.Snapshot, r.TargetUID); !ok {
+			continue
+		}
+		add(r.TargetUID, st.recordView(r))
 	}
 	for uid := range out.Views {
 		vs := out.Views[uid]
