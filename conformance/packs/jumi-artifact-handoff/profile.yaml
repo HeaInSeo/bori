@@ -1,0 +1,14 @@
+revision: p1
+responses:
+  - action: {name: restart, revision: r1}
+    target: {namespace: conf-wf, name: jumi}
+    for: {domain: jumi.heainseo.dev, name: query-runs, revision: v1}
+    owner: workflow-oncall
+    requiresApproval: true
+    execution:
+      provider: workflow-actor
+      approvers: [ops-lead]
+      expectedImpact: [{domain: jumi.heainseo.dev, name: query-runs, revision: v1}]
+      ackTimeout: 10s
+      completionTimeout: 30s
+      recoveryWindow: 30s

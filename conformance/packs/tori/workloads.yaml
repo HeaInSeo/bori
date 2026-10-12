@@ -1,0 +1,13 @@
+# Fixture-only, ASSUMED deployment shape: Tori ships no Kubernetes objects at
+# 0b198d1 (no manifests, `serve` is a no-op). Not part of an installation.
+apiVersion: batch/v1
+kind: CronJob
+metadata: {namespace: conf-catalog, name: tori-sync, uid: w-tori, generation: 1}
+spec:
+  schedule: "*/5 * * * *"
+  jobTemplate: {spec: {template: {spec: {restartPolicy: Never, containers: [{name: tori, image: example/tori, args: [sync]}]}}}}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {namespace: conf-catalog, name: tori-root, uid: w-fs}
+spec: {accessModes: [ReadWriteMany], resources: {requests: {storage: 1Gi}}}

@@ -1,0 +1,50 @@
+name: stateful-single-writer
+description: >
+  Generic reference pack 4 (API v0.1 §15): exactly one writer; a second
+  writer or a fenced primary removes write acceptance, while read serving
+  from the remaining replicas is not contaminated.
+endpoints:
+  - {path: /db, subject: w-db, values: {writers: 1, role: primary}}
+scenarios:
+  - name: healthy
+    purpose: one primary writer
+    steps:
+      - expect:
+          capabilities: {db: {accept-writes: AVAILABLE, serve-reads: AVAILABLE}}
+          envelopes: {db: {minimum: SATISFIED}}
+          level: {db: NO_ACTION}
+  - name: second-writer
+    purpose: two writers is a broken envelope, not more capacity
+    steps:
+      - values: {/db: {writers: 2}}
+        expect:
+          capabilities: {db: {accept-writes: UNAVAILABLE, serve-reads: AVAILABLE}}
+          envelopes: {db: {minimum: UNSATISFIED}}
+  - name: more-replicas-same-writer
+    purpose: scaling read replicas changes nothing about write acceptance
+    steps:
+      - workload: {StatefulSet/db: {ready: 5, available: 5, replicas: 5}}
+        expect:
+          capabilities: {db: {accept-writes: AVAILABLE, serve-reads: AVAILABLE}}
+          envelopes: {db: {minimum: SATISFIED}}
+  - name: fenced-primary
+    purpose: a fenced writer cannot accept writes
+    steps:
+      - values: {/db: {role: fenced}}
+        expect:
+          capabilities: {db: {accept-writes: UNAVAILABLE, serve-reads: AVAILABLE}}
+          envelopes: {db: {minimum: SATISFIED}}
+  - name: role-evidence-stale
+    purpose: stale writer facts are UNKNOWN; reads keep their own fresh evidence
+    steps:
+      - freeze: [/db]
+        advance: 40s
+        expect:
+          capabilities: {db: {accept-writes: UNKNOWN, serve-reads: AVAILABLE}}
+          envelopes: {db: {minimum: UNKNOWN}}
+  - name: workload-recreated
+    purpose: writer facts bound to the old StatefulSet do not apply to the new one
+    steps:
+      - recreate: {StatefulSet/db: w-db-2}
+        expect:
+          capabilities: {db: {accept-writes: UNKNOWN, serve-reads: AVAILABLE}}

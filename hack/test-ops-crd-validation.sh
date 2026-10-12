@@ -22,6 +22,11 @@
 #     the schema at maximum-length names, nothing handed off, no workload
 #     mutation, zero churn, the proposal disappears on recovery without any
 #     recovery claim, and the flag guard
+#   - O6 conformance packs: every pack's OperationalContract/Target
+#     manifests are accepted by the real API server's schema and CEL rules
+#     (server-side dry run, strict field validation). This proves the
+#     contracts are expressible as installable objects; it is not a product
+#     integration (conformance/README.md)
 #
 # Usage: hack/test-ops-crd-validation.sh [--keep]
 set -euo pipefail
@@ -533,6 +538,19 @@ check "no new object in the namespace" eq "$(kubectl get deployments,replicasets
 managers="$(kubectl get deployment web4 -n apps -o jsonpath='{.metadata.managedFields[*].manager}')"
 check "no bori field manager on the O5 workload ($managers)" eq "${managers//bori/}" "$managers"
 check "O5 workload generation unchanged" eq "$(kubectl get deployment web4 -n apps -o jsonpath='{.metadata.generation}')" "$web4_gen"
+
+echo "── O6 conformance pack manifests (server-side dry run, strict)"
+for m in "$ROOT"/conformance/packs/*/manifests.yaml; do
+  pack="$(basename "$(dirname "$m")")"
+  for ns in $(grep -oE 'namespace: [a-z0-9-]+' "$m" | awk '{print $2}' | sort -u); do
+    kubectl get namespace "$ns" >/dev/null 2>&1 || kubectl create namespace "$ns" >/dev/null
+  done
+  if out="$(kubectl apply --dry-run=server --validate=strict -f "$m" 2>&1)"; then
+    pass "accept: conformance pack $pack ($(grep -c '^kind: Operational' "$m") objects)"
+  else
+    fail "accept: conformance pack $pack: $out"
+  fi
+done
 
 if ((FAILURES > 0)); then
   echo "── operator log (tail)"; tail -50 "$WORK/operator.log"

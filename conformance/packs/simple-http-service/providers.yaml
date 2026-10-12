@@ -1,0 +1,14 @@
+http: {allowInsecureHTTP: true, allowPrivateNetworks: true}
+providers:
+  - namespace: conf-http
+    name: kube-status
+    configRevision: r1
+    kubernetesStatus: {fields: {ready-replicas: readyReplicas}}
+  - namespace: conf-http
+    name: app-http
+    configRevision: r1
+    http:
+      endpoints:
+        - subjectUID: w-web
+          url: ${EVIDENCE_URL}/web
+          fields: {api-serving: serving, latency-within-slo: latencyOK, metrics-endpoint-up: metricsUp}

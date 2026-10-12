@@ -1,0 +1,91 @@
+# Tori (snapshot catalog over a shared filesystem root) as a generic
+# OperationalContract. Source: tori 0b198d1297b5ba70b913802963ad2b2a420184c9.
+# At this commit Tori is a CLI (tori-admin sync/snapshot/dump); `serve` is a
+# no-op (cmd/root.go:71-82), it publishes no facts, ships no Kubernetes
+# workload and calls no other product. The shared root is a separate
+# target: its mount is an external dependency (docs/product_readiness_
+# sprint_plan_v0.1.md). Both bindings below are an ASSUMED deployment shape
+# (a CronJob running `tori-admin sync`, a PVC for the root) that does not
+# exist today; see conformance/GAPS.md G3.
+apiVersion: ops.bori.dev/v1alpha1
+kind: OperationalContract
+metadata: {namespace: conf-catalog, name: shared-filesystem-v1, uid: c-fs}
+spec:
+  assertions:
+    - {name: root-mounted, type: Boolean, maxAge: 10m}
+    - {name: root-writable, type: Boolean, maxAge: 10m}
+  capabilities:
+    - type: {domain: storage.example.io, name: read-root, revision: v1}
+      requirements:
+        - {predicate: {assertion: root-mounted, operator: IsTrue}, onUnmet: UNAVAILABLE}
+    - type: {domain: storage.example.io, name: write-root, revision: v1}
+      requirements:
+        - {localCapability: read-root, onUnmet: UNAVAILABLE}
+        - {predicate: {assertion: root-writable, operator: IsTrue}, onUnmet: UNAVAILABLE}
+---
+apiVersion: ops.bori.dev/v1alpha1
+kind: OperationalContract
+metadata: {namespace: conf-catalog, name: tori-catalog-v1, uid: c-tori}
+spec:
+  assertions:
+    # SyncResult (db/acceptance.go:123-182) of the latest `sync` run.
+    - {name: sync-outcome, type: String, enum: [unchanged, accepted-update, degraded-hold, reclassify-hold, incomplete-pending], maxAge: 10m}
+    - {name: source-scope, type: String, enum: [CONFIRMED, UNKNOWN], maxAge: 10m}
+    - {name: coverage, type: String, enum: [COMPLETE, PARTIAL, UNKNOWN], maxAge: 10m}
+    # snapshot_meta acceptance_state (db/acceptance.go:67-73).
+    - {name: acceptance-state, type: String, enum: [clean, pending], maxAge: 10m}
+    - {name: catalog-db-writable, type: Boolean, maxAge: 10m}
+    - {name: datablock-readable, type: Boolean, maxAge: 10m}
+  dependencySlots:
+    - {name: shared-root}
+  capabilities:
+    # Observe the root, prove continuity and coverage, durably accept.
+    # "Healthy" is the set {unchanged, accepted-update}: on a closed enum the
+    # set is the conjunction of NotEq on the other members.
+    - type: {domain: tori.heainseo.dev, name: accept-snapshot, revision: v1}
+      requirements:
+        - {predicate: {assertion: sync-outcome, operator: NotEq, operand: {string: degraded-hold}}, onUnmet: UNAVAILABLE}
+        - {predicate: {assertion: sync-outcome, operator: NotEq, operand: {string: reclassify-hold}}, onUnmet: UNAVAILABLE}
+        - {predicate: {assertion: sync-outcome, operator: NotEq, operand: {string: incomplete-pending}}, onUnmet: DEGRADED}
+        - {predicate: {assertion: source-scope, operator: Eq, operand: {string: CONFIRMED}}, onUnmet: UNAVAILABLE}
+        - {predicate: {assertion: catalog-db-writable, operator: IsTrue}, onUnmet: UNAVAILABLE}
+        - dependency: {slot: shared-root, capability: {domain: storage.example.io, name: write-root, revision: v1}}
+          onUnmet: UNAVAILABLE
+    - type: {domain: tori.heainseo.dev, name: catalog-consistent, revision: v1}
+      requirements:
+        - {predicate: {assertion: acceptance-state, operator: Eq, operand: {string: clean}}, onUnmet: DEGRADED}
+    # FetchDataBlock reads <root>/datablock.pb only; it does not use the
+    # catalog database (service/service.go:40-75).
+    - type: {domain: tori.heainseo.dev, name: serve-datablock, revision: v1}
+      requirements:
+        - {predicate: {assertion: datablock-readable, operator: IsTrue}, onUnmet: UNAVAILABLE}
+        - dependency: {slot: shared-root, capability: {domain: storage.example.io, name: read-root, revision: v1}}
+          onUnmet: UNAVAILABLE
+---
+apiVersion: ops.bori.dev/v1alpha1
+kind: OperationalTarget
+metadata: {namespace: conf-catalog, name: shared-root, uid: t-fs, generation: 1}
+spec:
+  targetRef: {apiVersion: v1, kind: PersistentVolumeClaim, name: tori-root}
+  contractRef: {name: shared-filesystem-v1}
+  assertionBindings:
+    - {slot: root-mounted, provider: {name: catalog-facts, configRevision: r1}}
+    - {slot: root-writable, provider: {name: catalog-facts, configRevision: r1}}
+---
+apiVersion: ops.bori.dev/v1alpha1
+kind: OperationalTarget
+metadata: {namespace: conf-catalog, name: tori, uid: t-tori, generation: 1}
+spec:
+  targetRef: {apiVersion: batch/v1, kind: CronJob, name: tori-sync}
+  contractRef: {name: tori-catalog-v1}
+  assertionBindings:
+    - {slot: sync-outcome, provider: {name: catalog-facts, configRevision: r1}}
+    - {slot: source-scope, provider: {name: catalog-facts, configRevision: r1}}
+    - {slot: coverage, provider: {name: catalog-facts, configRevision: r1}}
+    - {slot: acceptance-state, provider: {name: catalog-facts, configRevision: r1}}
+    - {slot: catalog-db-writable, provider: {name: catalog-facts, configRevision: r1}}
+    - {slot: datablock-readable, provider: {name: catalog-facts, configRevision: r1}}
+  dependencyBindings:
+    - slot: shared-root
+      target: {name: shared-root, uid: t-fs}
+      contract: {name: shared-filesystem-v1, uid: c-fs, specDigest: "sha256:b7c0c10f811f28059095945a428f2a4d72399dcf900aa2862be25ed93937b895"}

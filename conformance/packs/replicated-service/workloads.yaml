@@ -1,0 +1,6 @@
+# Fixture-only stand-in for the workload; not part of an installation.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {namespace: conf-repl, name: store, uid: w-store, generation: 1}
+spec: {selector: {matchLabels: {app: store}}, template: {metadata: {labels: {app: store}}, spec: {containers: [{name: store, image: example/store}]}}}
+status: {observedGeneration: 1, replicas: 3, readyReplicas: 3, availableReplicas: 3}

@@ -1,0 +1,74 @@
+name: replicated-service
+description: >
+  Generic reference pack 3 (API v0.1 §15): minimum vs recommended envelopes
+  over replicas and storage; a redundancy gap degrades only the capability
+  that references the recommended envelope.
+endpoints:
+  - {path: /store, subject: w-store, values: {writable: true}}
+  - {path: /store-gitops, subject: w-store, values: {inSync: true}}
+actor:
+  provider: storage-actor
+  owner: storage-oncall
+  namespaces: [conf-repl]
+  actions: [remount-storage@r1]
+  behaviour: Succeed
+  approver: ops-lead
+scenarios:
+  - name: healthy
+    purpose: all capabilities AVAILABLE, both envelopes SATISFIED
+    steps:
+      - expect:
+          capabilities: {store: {serve: AVAILABLE, persist: AVAILABLE, serve-with-redundancy: AVAILABLE, run-declared-config: AVAILABLE}}
+          envelopes: {store: {minimum: SATISFIED, recommended: SATISFIED}}
+          level: {store: NO_ACTION}
+  - name: redundancy-gap
+    purpose: one replica left - minimum holds, recommended does not, only redundancy degrades
+    steps:
+      - workload: {Deployment/store: {available: 1, ready: 1}}
+        expect:
+          capabilities: {store: {serve: AVAILABLE, persist: AVAILABLE, serve-with-redundancy: DEGRADED, run-declared-config: AVAILABLE}}
+          envelopes: {store: {minimum: SATISFIED, recommended: UNSATISFIED}}
+  - name: below-minimum
+    purpose: no replica - serving fails, persistence evidence is not contaminated
+    steps:
+      - workload: {Deployment/store: {available: 0, ready: 0}}
+        expect:
+          capabilities: {store: {serve: UNAVAILABLE, persist: AVAILABLE, run-declared-config: AVAILABLE}}
+          envelopes: {store: {minimum: UNSATISFIED}}
+  - name: storage-evidence-stale
+    purpose: a stale storage fact makes persistence and both envelopes UNKNOWN, not failed
+    steps:
+      - freeze: [/store]
+        advance: 40s
+        expect:
+          capabilities: {store: {serve: AVAILABLE, persist: UNKNOWN, run-declared-config: AVAILABLE}}
+          envelopes: {store: {minimum: UNKNOWN, recommended: UNKNOWN}}
+  - name: config-provider-outage
+    purpose: a second provider's outage affects only the capability it feeds
+    steps:
+      - httpStatus: {/store-gitops: 503}
+        advance: 40s
+        expect:
+          capabilities: {store: {serve: AVAILABLE, persist: AVAILABLE, serve-with-redundancy: AVAILABLE, run-declared-config: UNKNOWN}}
+  - name: provider-rebound
+    purpose: rebinding storage evidence to an unregistered provider revision drops the old evidence
+    steps:
+      - rebind: {store/storage-writable: r2}
+        expect:
+          capabilities: {store: {serve: AVAILABLE, persist: UNKNOWN}}
+  - name: pods-ready-is-not-recovery
+    purpose: the action restarts pods (replicas ready) but storage stays unwritable, so it is NotRecovered
+    onExecute: {workload: {Deployment/store: {available: 3, ready: 3}}}
+    steps:
+      - values: {/store: {writable: false}}
+        expect:
+          capabilities: {store: {persist: UNAVAILABLE, serve: AVAILABLE}}
+          actions: {store: [{name: remount-storage@r1, phase: AwaitingApproval}]}
+      - approve: [store/remount-storage@r1]
+        expect: {executions: 1}
+      - advance: 40s
+        expect:
+          capabilities: {store: {persist: UNAVAILABLE, serve: AVAILABLE}}
+          actions: {store: [{name: remount-storage@r1, phase: Succeeded, recovery: NotRecovered}]}
+          human: {store: [action-not-recovered]}
+          executions: 1

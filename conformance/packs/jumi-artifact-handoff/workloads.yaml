@@ -1,0 +1,14 @@
+# Fixture-only stand-ins for the products' Deployments (both declare
+# replicas: 1: JUMI deploy/k8s/jumi.yaml:40, artifact-handoff
+# deploy/k8s/artifact-handoff.yaml:13); not part of an installation.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {namespace: conf-wf, name: jumi, uid: w-jumi, generation: 1}
+spec: {selector: {matchLabels: {app: jumi}}, template: {metadata: {labels: {app: jumi}}, spec: {containers: [{name: jumi, image: example/jumi}]}}}
+status: {observedGeneration: 1, replicas: 1, readyReplicas: 1, availableReplicas: 1}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {namespace: conf-wf, name: artifact-handoff, uid: w-ah, generation: 1}
+spec: {selector: {matchLabels: {app: artifact-handoff}}, template: {metadata: {labels: {app: artifact-handoff}}, spec: {containers: [{name: artifact-handoff, image: example/ah}]}}}
+status: {observedGeneration: 1, replicas: 1, readyReplicas: 1, availableReplicas: 1}
