@@ -93,7 +93,7 @@ func TestConformanceCheckerControls(t *testing.T) {
 			}, [4]int{0, 1, 0, 0}},
 		{"control: untampered recovered action", "simple-http-service", "action-succeeds-and-recovers", nil, [4]int{}},
 		{"execution without an approval", "jumi-artifact-handoff", "restart-without-registry-recovery",
-			func(e *confEnv, _ claims) { e.approved = map[string]bool{} }, [4]int{0, 0, 1, 0}},
+			func(e *confEnv, _ claims) { e.approvals = nil }, [4]int{0, 0, 1, 0}},
 		{"execution of an undeclared action", "replicated-service", "pods-ready-is-not-recovery",
 			func(e *confEnv, _ claims) { e.p.profile = nil }, [4]int{0, 0, 1, 0}},
 	}
@@ -169,3 +169,7 @@ func TestConformancePacksAreValid(t *testing.T) {
 		}
 	}
 }
+
+// setEffect makes the scenario's actuation part of the world the actor
+// changes when it executes.
+func setEffect(e *confEnv, s *confStep) { e.effect = s }

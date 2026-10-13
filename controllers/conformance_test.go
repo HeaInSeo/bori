@@ -235,6 +235,15 @@ type evidenceServer struct {
 	values  map[string]map[string]any
 	status  map[string]int
 	frozen  map[string]time.Time
+	// served records every successful response: the observation time it
+	// carried and the values it published.
+	served []servedObs
+}
+
+type servedObs struct {
+	path   string
+	at     time.Time
+	values map[string]string
 }
 
 func newEvidenceServer(t *testing.T, clk *fakeClock, eps []confEndpoint) *evidenceServer {
@@ -258,11 +267,27 @@ func newEvidenceServer(t *testing.T, clk *fakeClock, eps []confEndpoint) *eviden
 		if f, ok := s.frozen[r.URL.Path]; ok {
 			at = f
 		}
+		vals := map[string]string{}
+		for k, v := range s.values[r.URL.Path] {
+			vals[k] = fmt.Sprint(v)
+		}
+		s.served = append(s.served, servedObs{path: r.URL.Path, at: at, values: vals})
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"subject": s.subject[r.URL.Path], "observedAt": at.Format(time.RFC3339Nano), "values": s.values[r.URL.Path]})
 	}))
 	t.Cleanup(s.Close)
 	return s
+}
+
+type confApproval struct {
+	decision       action.Decision
+	target, action string
+}
+
+type kubeRead struct {
+	namespace, name, uid string
+	at                   time.Time
+	status               map[string]string
 }
 
 // confEnv is one scenario's world.
@@ -275,17 +300,28 @@ type confEnv struct {
 	ev        *evidenceServer
 	actor     *actiontest.Actor
 	decisions *actiontest.Decisions
-	approved  map[string]bool // "<target>/<action name@revision>" approved by a step
-	writes    int
-	mu        sync.Mutex
-	truth     *truth
-	ck        confForbidden
+	// approvals are the exact decisions approve steps signed, with the
+	// target and action each was given for.
+	approvals []confApproval
+	// kubeReads records every workload status read by a provider (not by
+	// the checker): when it was read and what it said.
+	kubeReads []kubeRead
+	// executedAt and endedAt are the reference actor's own facts per
+	// handoff key: when it executed, and when the harness first saw the
+	// actor report the execution ended. Never BORI's record.
+	executedAt map[string]time.Time
+	endedAt    map[string]time.Time
+	effect     *confStep
+	writes     int
+	mu         sync.Mutex
+	truth      *truth
+	ck         confForbidden
 }
 
 func newConfEnv(t *testing.T, p *confPack, shippedOnly bool) *confEnv {
 	t.Helper()
 	clk := &fakeClock{t: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)}
-	e := &confEnv{t: t, p: p, clk: clk, approved: map[string]bool{}}
+	e := &confEnv{t: t, p: p, clk: clk, executedAt: map[string]time.Time{}, endedAt: map[string]time.Time{}}
 	var objs []client.Object
 	for _, o := range append(append([]client.Object(nil), p.objects...), p.workloads...) {
 		objs = append(objs, o.DeepCopyObject().(client.Object))
@@ -293,6 +329,20 @@ func newConfEnv(t *testing.T, p *confPack, shippedOnly bool) *confEnv {
 	e.c = fake.NewClientBuilder().WithScheme(confScheme()).WithObjects(objs...).
 		WithStatusSubresource(&opsv1.OperationalContract{}, &opsv1.OperationalTarget{}).
 		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				err := c.Get(ctx, key, obj, opts...)
+				if u, ok := obj.(*unstructured.Unstructured); ok && err == nil && ctx.Value(driverKey{}) == nil {
+					st, _, _ := unstructured.NestedMap(u.Object, "status")
+					vals := map[string]string{}
+					for k, v := range st {
+						vals[k] = fmt.Sprint(v)
+					}
+					e.mu.Lock()
+					e.kubeReads = append(e.kubeReads, kubeRead{namespace: key.Namespace, name: key.Name, uid: string(u.GetUID()), at: clk.now(), status: vals})
+					e.mu.Unlock()
+				}
+				return err
+			},
 			SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
 				if _, ok := obj.(*opsv1.OperationalTarget); ok && ctx.Value(driverKey{}) == nil {
 					e.mu.Lock()
@@ -342,6 +392,16 @@ func newConfEnv(t *testing.T, p *confPack, shippedOnly bool) *confEnv {
 			Providers: action.Registry{p.Actor.Provider: {Provider: e.actor, Owner: p.Actor.Owner,
 				Namespaces: p.Actor.Namespaces, Actions: p.Actor.Actions}},
 			Decisions: e.decisions, Verifier: actiontest.NewSigner(map[string]string{p.Actor.Approver: p.Actor.Approver + "-key"}),
+		}
+		e.actor.OnExecute = func(h action.Handoff) {
+			// Runs inside the actor's Submit: only harness state here.
+			e.mu.Lock()
+			e.executedAt[h.Key] = clk.now()
+			eff := e.effect
+			e.mu.Unlock()
+			if eff != nil {
+				e.apply(*eff)
+			}
 		}
 	}
 	e.truth = newTruth(e)
@@ -494,7 +554,7 @@ func (e *confEnv) approve(ref string) {
 			d := action.Decision{ID: fmt.Sprintf("d-%s-%d", tname, e.clk.now().Unix()), ProposalID: a.Proposal, Digest: a.Digest,
 				Principal: e.p.Actor.Approver, Verdict: action.Approve, DecidedAt: e.clk.now()}
 			e.decisions.Add(actiontest.Sign(d, e.p.Actor.Approver+"-key"))
-			e.approved[tname+"/"+act] = true
+			e.approvals = append(e.approvals, confApproval{decision: d, target: tname, action: act})
 			return
 		}
 	}
@@ -528,10 +588,7 @@ func (e *confEnv) reconcile() {
 // compares the pack's expectations.
 func (e *confEnv) run(sc confScenario) {
 	e.t.Helper()
-	if sc.OnExecute != nil && e.actor != nil {
-		eff := *sc.OnExecute
-		e.actor.OnExecute = func(action.Handoff) { e.apply(eff) }
-	}
+	e.effect = sc.OnExecute
 	e.settle()
 	for i, s := range sc.Steps {
 		if s.Approve != nil {

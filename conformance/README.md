@@ -45,10 +45,15 @@ or evidence references.
 - **unrelated:** a capability whose referenced facts were never disturbed in the scenario changes state.
 - **staleReuse:** a capability is AVAILABLE while a fact it rests on, directly or through a dependency,
   is missing, stale or bound to another workload.
-- **unauthorized:** an execution of an undeclared action, or of an approval-requiring action without an
-  approval step.
-- **unjustifiedRecovery:** `Recovered` while the expected capability's facts are not fresh and back at
-  their healthy values.
+- **unauthorized:** an execution of an undeclared action or of a display-only response (one without an
+  `execution` block), or an execution whose handoff does not carry exactly a decision an approve step
+  signed for that target, action, proposal ID and digest (decision ID and principal included). An
+  approval-requiring action executed without a human approval also counts.
+- **unjustifiedRecovery:** `Recovered` without an execution that the reference actor itself reports
+  ended, or before every fact behind the expected capability was delivered with its healthy value strictly
+  after that end. The checker uses the evidence server's own record of observations it served and the
+  Kubernetes status reads it saw, plus the harness's own time of the actor's end, never BORI's end time
+  or recovery reasoning. A fixture value that is healthy now proves nothing by itself.
 
 Every real scenario must count 0 in every class. `TestConformanceCheckerControls` injects each fault
 into BORI's claims and checks that the checker counts it in exactly its own class, and that it counts

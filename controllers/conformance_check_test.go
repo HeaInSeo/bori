@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	opsv1 "github.com/HeaInSeo/bori/apis/ops/v1alpha1"
+	"github.com/HeaInSeo/bori/pkg/action"
 	"github.com/HeaInSeo/bori/pkg/providers"
 )
 
@@ -258,6 +259,7 @@ func (e *confEnv) claims() claims {
 
 // check runs the independent checker over BORI's current claims.
 func (e *confEnv) check() {
+	e.noteEnded()
 	facts := e.truth.facts()
 	for k, f := range facts {
 		if f != e.truth.baseline[k] {
@@ -265,6 +267,68 @@ func (e *confEnv) check() {
 		}
 	}
 	e.judge(e.claims(), facts)
+}
+
+// noteEnded records, per executed key, the harness time at which the
+// reference actor itself first reports the execution ended.
+func (e *confEnv) noteEnded() {
+	if e.actor == nil {
+		return
+	}
+	now := e.clk.now()
+	for _, h := range e.actor.Handoffs {
+		if _, seen := e.endedAt[h.Key]; !seen && e.actor.Executions[h.Key] > 0 && e.actor.Ended(h.Key) {
+			e.endedAt[h.Key] = now
+		}
+	}
+}
+
+// observedAfter reports whether a provider served an observation of the
+// target's slot strictly after t, carrying want, about the target's
+// current workload. It reads only what the evidence server and the
+// Kubernetes reads actually delivered.
+func (tr *truth) observedAfter(target, slot string, t time.Time, want string) bool {
+	tg := tr.e.target(target)
+	_, uid, ok := tr.workloadOf(tg)
+	if !ok {
+		return false
+	}
+	for _, b := range tg.Spec.AssertionBindings {
+		if b.Slot != slot {
+			continue
+		}
+		id := tg.Namespace + "/" + b.Provider.Name + "@" + b.Provider.ConfigRevision
+		if eps := tr.http[id]; eps != nil {
+			ep, found := eps[uid]
+			if !found {
+				return false
+			}
+			key := ep.fields[slot]
+			tr.e.ev.mu.Lock()
+			defer tr.e.ev.mu.Unlock()
+			for _, o := range tr.e.ev.served {
+				if o.path == ep.path && o.at.After(t) && o.values[key] == want {
+					return true
+				}
+			}
+			return false
+		}
+		if fields := tr.kube[id]; fields != nil {
+			tr.e.mu.Lock()
+			defer tr.e.mu.Unlock()
+			for _, r := range tr.e.kubeReads {
+				v, has := r.status[fields[slot]]
+				if !has {
+					v = "0" // an absent count reads as zero
+				}
+				if r.namespace == tg.Namespace && r.name == tg.Spec.TargetRef.Name && r.uid == uid && r.at.After(t) && v == want {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return false
 }
 
 // judge is the pure checker: claims against facts. Positive controls call
@@ -295,14 +359,40 @@ func (e *confEnv) judge(cl claims, facts map[string]slotFact) {
 			if a.Recovery != "Recovered" {
 				continue
 			}
+			key := "recovered/" + name + "/" + a.Proposal
+			// The execution's end is the actor's own fact; without one there
+			// is nothing a recovery could follow.
+			var end time.Time
+			executed := false
+			if e.actor != nil {
+				for _, h := range e.actor.Handoffs {
+					if h.ProposalID == a.Proposal && e.actor.Executions[h.Key] > 0 {
+						executed = true
+						if t, ok := e.endedAt[h.Key]; ok && t.After(end) {
+							end = t
+						}
+					}
+				}
+			}
+			if !executed || end.IsZero() {
+				f.add(&f.unjustifiedRecovery, key, "%s %s Recovered without an execution that ended at the actor", name, a.Name)
+				continue
+			}
 			for _, capName := range tr.expectedImpact(name, a.Name) {
 				refs, ok := tr.refs(name, capName, map[string]bool{})
-				healthy := ok
-				for _, r := range refs {
-					healthy = healthy && facts[r].fresh && facts[r] == tr.baseline[r]
+				if !ok {
+					f.add(&f.unjustifiedRecovery, key, "%s %s Recovered although %s cannot be traced to its facts", name, a.Name, capName)
+					continue
 				}
-				if !healthy {
-					f.add(&f.unjustifiedRecovery, "recovered/"+name+"/"+a.Proposal, "%s %s Recovered while %s is not healthy again", name, a.Name, capName)
+				// Every fact must have been delivered healthy strictly after
+				// the actor ended the execution: earlier evidence, or the
+				// fixture's current value, proves nothing. Recovered is an
+				// as-of statement, so a later regression does not void it.
+				for _, r := range refs {
+					rt, rs, _ := strings.Cut(r, "/")
+					if !tr.observedAfter(rt, rs, end, tr.baseline[r].value) {
+						f.add(&f.unjustifiedRecovery, key, "%s %s Recovered before %s was observed healthy after the execution ended at %s", name, a.Name, r, end.Format(time.RFC3339))
+					}
 				}
 			}
 		}
@@ -326,10 +416,29 @@ func (e *confEnv) judge(cl claims, facts map[string]slotFact) {
 			f.add(&f.unauthorized, "exec/"+h.Key, "executed undeclared %s on %s", h.Action, h.Target)
 		case r.Owner != h.Owner:
 			f.add(&f.unauthorized, "exec/"+h.Key, "executed %s for owner %s, declared %s", h.Action, h.Owner, r.Owner)
-		case r.RequiresApproval && !e.approved[name+"/"+h.Action.String()]:
-			f.add(&f.unauthorized, "exec/"+h.Key, "executed %s on %s without an approval step", h.Action, name)
+		case !r.Execution:
+			f.add(&f.unauthorized, "exec/"+h.Key, "executed display-only %s on %s", h.Action, name)
+		case h.Approval.Kind == "human" && !e.approvedExactly(name, h):
+			f.add(&f.unauthorized, "exec/"+h.Key, "executed %s on %s under approval %+v that no approve step gave for proposal %s digest %s", h.Action, name, h.Approval, h.ProposalID, h.Digest)
+		case r.RequiresApproval && h.Approval.Kind != "human":
+			f.add(&f.unauthorized, "exec/"+h.Key, "executed approval-requiring %s on %s without a human approval", h.Action, name)
 		}
 	}
+}
+
+// approvedExactly reports whether an approve step signed exactly the
+// decision the handoff carries, for exactly its target, action, proposal
+// and digest.
+func (e *confEnv) approvedExactly(target string, h action.Handoff) bool {
+	for _, a := range e.approvals {
+		d := a.decision
+		if a.target == target && a.action == h.Action.String() && d.ID == h.Approval.DecisionID &&
+			d.Principal == h.Approval.Principal && d.ProposalID == h.ProposalID && d.Digest == h.Digest &&
+			d.Verdict == action.Approve {
+			return true
+		}
+	}
+	return false
 }
 
 func (tr *truth) response(target, act string) *profileResponse {
