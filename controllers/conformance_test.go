@@ -33,6 +33,7 @@ import (
 	"github.com/HeaInSeo/bori/pkg/action/actiontest"
 	"github.com/HeaInSeo/bori/pkg/interaction"
 	"github.com/HeaInSeo/bori/pkg/investigate"
+	"github.com/HeaInSeo/bori/pkg/operations"
 	"github.com/HeaInSeo/bori/pkg/providers"
 )
 
@@ -284,10 +285,50 @@ type confApproval struct {
 	target, action string
 }
 
-type kubeRead struct {
-	namespace, name, uid string
-	at                   time.Time
-	status               map[string]string
+// providerObs is one result a shipped provider returned for a slot: the
+// value it accepted, or why it refused (status lagging the spec, subject
+// mismatch, ...). A successful GET or HTTP response is not acceptance.
+type providerObs struct {
+	provider, uid, slot string // provider "ns/name@rev" (its identity), subject UID
+	at                  time.Time
+	value, unavailable  string
+}
+
+// recordingLookup hands BORI the shipped providers unchanged and records
+// every result they return.
+type recordingLookup struct {
+	inner investigate.ProviderLookup
+	e     *confEnv
+}
+
+func (l recordingLookup) Lookup(id operations.ProviderIdentity) (providers.Provider, bool) {
+	p, ok := l.inner.Lookup(id)
+	if !ok {
+		return nil, false
+	}
+	return recordingProvider{inner: p, e: l.e}, true
+}
+
+type recordingProvider struct {
+	inner providers.Provider
+	e     *confEnv
+}
+
+func (p recordingProvider) Observe(ctx context.Context, req providers.Request) providers.Result {
+	res := p.inner.Observe(ctx, req)
+	o := providerObs{provider: req.Key.Provider.String(), uid: req.Subject.ResolvedUID,
+		slot: req.Key.Slot, at: res.ObservedAt, unavailable: res.Unavailable}
+	switch {
+	case res.Unavailable != "":
+	case res.Value.Type == operations.TypeString:
+		o.value = res.Value.Str // as the fixture publishes it, unquoted
+	default:
+		o.value = res.Value.String()
+	}
+	p.e.mu.Lock()
+	p.e.observed = append(p.e.observed, o)
+	p.e.mu.Unlock()
+	return res
 }
 
 // confEnv is one scenario's world.
@@ -303,9 +344,9 @@ type confEnv struct {
 	// approvals are the exact decisions approve steps signed, with the
 	// target and action each was given for.
 	approvals []confApproval
-	// kubeReads records every workload status read by a provider (not by
-	// the checker): when it was read and what it said.
-	kubeReads []kubeRead
+	// observed records every result a provider returned to BORI (not to
+	// the checker): what it accepted, when, and for which subject.
+	observed []providerObs
 	// executedAt and endedAt are the reference actor's own facts per
 	// handoff key: when it executed, and when the harness first saw the
 	// actor report the execution ended. Never BORI's record.
@@ -329,20 +370,6 @@ func newConfEnv(t *testing.T, p *confPack, shippedOnly bool) *confEnv {
 	e.c = fake.NewClientBuilder().WithScheme(confScheme()).WithObjects(objs...).
 		WithStatusSubresource(&opsv1.OperationalContract{}, &opsv1.OperationalTarget{}).
 		WithInterceptorFuncs(interceptor.Funcs{
-			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-				err := c.Get(ctx, key, obj, opts...)
-				if u, ok := obj.(*unstructured.Unstructured); ok && err == nil && ctx.Value(driverKey{}) == nil {
-					st, _, _ := unstructured.NestedMap(u.Object, "status")
-					vals := map[string]string{}
-					for k, v := range st {
-						vals[k] = fmt.Sprint(v)
-					}
-					e.mu.Lock()
-					e.kubeReads = append(e.kubeReads, kubeRead{namespace: key.Namespace, name: key.Name, uid: string(u.GetUID()), at: clk.now(), status: vals})
-					e.mu.Unlock()
-				}
-				return err
-			},
 			SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
 				if _, ok := obj.(*opsv1.OperationalTarget); ok && ctx.Value(driverKey{}) == nil {
 					e.mu.Lock()
@@ -376,7 +403,7 @@ func newConfEnv(t *testing.T, p *confPack, shippedOnly bool) *confEnv {
 	}
 	e.r = &OperationalReconciler{
 		Client: e.c, TargetKinds: kinds, Now: clk.now, RequeueInterval: 30 * time.Second,
-		Investigator: investigate.New(investigate.ReferenceLimits(), clk.now), Providers: reg,
+		Investigator: investigate.New(investigate.ReferenceLimits(), clk.now), Providers: recordingLookup{inner: reg, e: e},
 		Interaction: true, InteractionProfile: p.profile,
 	}
 	if p.Actor != nil {

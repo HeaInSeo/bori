@@ -56,6 +56,11 @@ type slotFact struct {
 	// subject is the resolved workload UID the evidence is about: a new
 	// identity is a changed input even when the value is equal.
 	subject string
+	// specGeneration is the workload generation and the one its status was
+	// recorded for: a status that falls behind its spec is a changed input,
+	// which the provider refuses, although BORI may hold its earlier
+	// observation until that ages out.
+	specGeneration [2]int64
 }
 
 // truth is the harness's own model: the pack's declarations, the provider
@@ -72,6 +77,9 @@ type truth struct {
 	// until it observes again, so only never-touched inputs are "unchanged".
 	touched   map[string]bool
 	baseState map[string]string // "<target>/<capability>" state after settling
+	// profileRevision is the revision of the response profile the harness
+	// loaded: the only one a policy approval may name.
+	profileRevision string
 }
 
 type httpEP struct {
@@ -82,6 +90,9 @@ type httpEP struct {
 func newTruth(e *confEnv) *truth {
 	tr := &truth{e: e, targets: map[string]*opsv1.OperationalTarget{}, contracts: map[string]*opsv1.OperationalContract{},
 		http: map[string]map[string]httpEP{}, kube: map[string]map[string]string{}}
+	if e.p.profile != nil {
+		tr.profileRevision = e.p.profile.Revision
+	}
 	for _, o := range e.p.objects {
 		switch v := o.(type) {
 		case *opsv1.OperationalTarget:
@@ -168,7 +179,9 @@ func (tr *truth) facts() map[string]slotFact {
 				if !has && field != "" {
 					v, has = int64(0), true
 				}
-				f = slotFact{fresh: has && field != "", value: fmt.Sprint(v), subject: uid}
+				gen, _, _ := unstructured.NestedInt64(obj, "metadata", "generation")
+				og, _, _ := unstructured.NestedInt64(obj, "status", "observedGeneration")
+				f = slotFact{fresh: has && field != "", value: fmt.Sprint(v), subject: uid, specGeneration: [2]int64{gen, og}}
 			}
 			out[name+"/"+b.Slot] = f
 		}
@@ -283,10 +296,12 @@ func (e *confEnv) noteEnded() {
 	}
 }
 
-// observedAfter reports whether a provider served an observation of the
-// target's slot strictly after t, carrying want, about the target's
-// current workload. It reads only what the evidence server and the
-// Kubernetes reads actually delivered.
+// observedAfter reports whether a provider accepted an observation of the
+// target's slot strictly after t, carrying want, about the target's current
+// workload. A provider's refusal (a status lagging the spec, a subject
+// mismatch, ...) proves nothing, however healthy the bytes it read. For an
+// HTTP slot the evidence server must also have served that value at that
+// time: the provider cannot accept what was never delivered.
 func (tr *truth) observedAfter(target, slot string, t time.Time, want string) bool {
 	tg := tr.e.target(target)
 	_, uid, ok := tr.workloadOf(tg)
@@ -298,35 +313,36 @@ func (tr *truth) observedAfter(target, slot string, t time.Time, want string) bo
 			continue
 		}
 		id := tg.Namespace + "/" + b.Provider.Name + "@" + b.Provider.ConfigRevision
+		var served func(at time.Time) bool
 		if eps := tr.http[id]; eps != nil {
 			ep, found := eps[uid]
 			if !found {
 				return false
 			}
 			key := ep.fields[slot]
-			tr.e.ev.mu.Lock()
-			defer tr.e.ev.mu.Unlock()
-			for _, o := range tr.e.ev.served {
-				if o.path == ep.path && o.at.After(t) && o.values[key] == want {
-					return true
+			served = func(at time.Time) bool {
+				tr.e.ev.mu.Lock()
+				defer tr.e.ev.mu.Unlock()
+				for _, o := range tr.e.ev.served {
+					if o.path == ep.path && o.at.Equal(at) && o.values[key] == want {
+						return true
+					}
 				}
+				return false
 			}
+		} else if tr.kube[id] == nil {
 			return false
 		}
-		if fields := tr.kube[id]; fields != nil {
-			tr.e.mu.Lock()
-			defer tr.e.mu.Unlock()
-			for _, r := range tr.e.kubeReads {
-				v, has := r.status[fields[slot]]
-				if !has {
-					v = "0" // an absent count reads as zero
-				}
-				if r.namespace == tg.Namespace && r.name == tg.Spec.TargetRef.Name && r.uid == uid && r.at.After(t) && v == want {
-					return true
-				}
+		tr.e.mu.Lock()
+		obs := append([]providerObs(nil), tr.e.observed...)
+		tr.e.mu.Unlock()
+		for _, o := range obs {
+			if o.provider == id && o.uid == uid && o.slot == slot && o.unavailable == "" &&
+				o.at.After(t) && o.value == want && (served == nil || served(o.at)) {
+				return true
 			}
-			return false
 		}
+		return false
 	}
 	return false
 }
@@ -418,10 +434,18 @@ func (e *confEnv) judge(cl claims, facts map[string]slotFact) {
 			f.add(&f.unauthorized, "exec/"+h.Key, "executed %s for owner %s, declared %s", h.Action, h.Owner, r.Owner)
 		case !r.Execution:
 			f.add(&f.unauthorized, "exec/"+h.Key, "executed display-only %s on %s", h.Action, name)
-		case h.Approval.Kind == "human" && !e.approvedExactly(name, h):
-			f.add(&f.unauthorized, "exec/"+h.Key, "executed %s on %s under approval %+v that no approve step gave for proposal %s digest %s", h.Action, name, h.Approval, h.ProposalID, h.Digest)
-		case r.RequiresApproval && h.Approval.Kind != "human":
-			f.add(&f.unauthorized, "exec/"+h.Key, "executed approval-requiring %s on %s without a human approval", h.Action, name)
+		case h.Approval.Kind == "human":
+			if !e.approvedExactly(name, h) {
+				f.add(&f.unauthorized, "exec/"+h.Key, "executed %s on %s under approval %+v that no approve step gave for proposal %s digest %s", h.Action, name, h.Approval, h.ProposalID, h.Digest)
+			}
+		case r.Human:
+			f.add(&f.unauthorized, "exec/"+h.Key, "executed %s on %s, which needs a human decision, under non-human approval %+v", h.Action, name, h.Approval)
+		case h.Approval.Kind != "policy":
+			f.add(&f.unauthorized, "exec/"+h.Key, "executed %s on %s under an approval of unknown kind %+v", h.Action, name, h.Approval)
+		case h.Approval.Principal != "policy:"+tr.profileRevision || h.Approval.DecisionID != "":
+			// The engine's policy approval names exactly the profile revision
+			// the harness loaded, and no decision.
+			f.add(&f.unauthorized, "exec/"+h.Key, "executed %s on %s under policy approval %+v, not that of profile revision %s", h.Action, name, h.Approval, tr.profileRevision)
 		}
 	}
 }
@@ -448,16 +472,18 @@ func (tr *truth) response(target, act string) *profileResponse {
 	t := tr.targets[target]
 	for _, r := range tr.e.p.profile.Responses {
 		if t != nil && r.Target.Name == t.Name && r.Target.Namespace == t.Namespace && r.Action.String() == act {
-			return &profileResponse{Owner: r.Owner, RequiresApproval: r.RequiresApproval, Execution: r.Execution != nil}
+			return &profileResponse{Owner: r.Owner, Human: len(r.HumanDecisionReasons()) > 0, Execution: r.Execution != nil}
 		}
 	}
 	return nil
 }
 
 type profileResponse struct {
-	Owner            string
-	RequiresApproval bool
-	Execution        bool
+	Owner string
+	// Human: the declaration itself calls for a human decision (approval,
+	// risks, interruption), so a policy approval cannot authorize it.
+	Human     bool
+	Execution bool
 }
 
 func (tr *truth) expectedImpact(target, act string) []string {

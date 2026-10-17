@@ -46,14 +46,23 @@ or evidence references.
 - **staleReuse:** a capability is AVAILABLE while a fact it rests on, directly or through a dependency,
   is missing, stale or bound to another workload.
 - **unauthorized:** an execution of an undeclared action or of a display-only response (one without an
-  `execution` block), or an execution whose handoff does not carry exactly a decision an approve step
-  signed for that target, action, proposal ID and digest (decision ID and principal included). An
-  approval-requiring action executed without a human approval also counts.
+  `execution` block), or an execution whose approval is not one of these:
+  - a human approval carrying exactly a decision an approve step signed for that target, action, proposal
+    ID and digest (decision ID and principal included);
+  - for a response whose declaration needs no human decision (no approval, risk or interruption
+    declared), the engine's policy approval: kind `policy`, principal `policy:<profile revision>` for the
+    revision of the profile the harness loaded, and no decision ID.
+
+  An empty approval, an unknown kind, or a policy approval naming another or an earlier revision counts.
+  So does a policy approval of a response that needs a human decision.
 - **unjustifiedRecovery:** `Recovered` without an execution that the reference actor itself reports
-  ended, or before every fact behind the expected capability was delivered with its healthy value strictly
-  after that end. The checker uses the evidence server's own record of observations it served and the
-  Kubernetes status reads it saw, plus the harness's own time of the actor's end, never BORI's end time
-  or recovery reasoning. A fixture value that is healthy now proves nothing by itself.
+  ended, or before every fact behind the expected capability was accepted by its bound provider with its
+  healthy value, about the current workload, strictly after that end. The harness records every result a
+  shipped provider returns to BORI. A successful read is not acceptance: a Kubernetes status that lags its
+  spec (`status.observedGeneration < metadata.generation`) is refused by the provider and proves nothing,
+  however healthy its counts. For an HTTP fact the evidence server must also have served that value at
+  that time. The checker uses these records and the harness's own time of the actor's end, never BORI's
+  end time or recovery reasoning. A fixture value that is healthy now proves nothing by itself.
 
 Every real scenario must count 0 in every class. `TestConformanceCheckerControls` injects each fault
 into BORI's claims and checks that the checker counts it in exactly its own class, and that it counts
