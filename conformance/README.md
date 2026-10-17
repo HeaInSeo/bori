@@ -47,14 +47,16 @@ or evidence references.
   is missing, stale or bound to another workload.
 - **unauthorized:** an execution of an undeclared action or of a display-only response (one without an
   `execution` block), or an execution whose approval is not one of these:
-  - a human approval carrying exactly a decision an approve step signed for that target, action, proposal
-    ID and digest (decision ID and principal included);
-  - for a response whose declaration needs no human decision (no approval, risk or interruption
-    declared), the engine's policy approval: kind `policy`, principal `policy:<profile revision>` for the
-    revision of the profile the harness loaded, and no decision ID.
+  - where a person must decide, a human approval carrying exactly a decision an approve step signed for
+    that target, action, proposal ID and digest (decision ID and principal included);
+  - where nothing is for a person to decide, the engine's policy approval: kind `policy`, principal
+    `policy:<profile revision>` for the revision of the profile the harness loaded, and no decision ID.
 
-  An empty approval, an unknown kind, or a policy approval naming another or an earlier revision counts.
-  So does a policy approval of a response that needs a human decision.
+  A person must decide when the response declares an approval, a risk or an interruption, or when another,
+  distinct declaration exists for the same capability of the same target (the engine's
+  `no-priority-authority`). An empty approval, an unknown kind, or a policy approval naming another or an
+  earlier revision counts. So do a policy approval where a person must decide, and a human approval where
+  nothing is for a person to decide.
 - **unjustifiedRecovery:** `Recovered` without an execution that the reference actor itself reports
   ended, or before every fact behind the expected capability was accepted by its bound provider with its
   healthy value, about the current workload, strictly after that end. The harness records every result a
@@ -63,6 +65,17 @@ or evidence references.
   however healthy its counts. For an HTTP fact the evidence server must also have served that value at
   that time. The checker uses these records and the harness's own time of the actor's end, never BORI's
   end time or recovery reasoning. A fixture value that is healthy now proves nothing by itself.
+
+### What the checker does not judge
+
+- **Run-time competition.** The checker decides competition from the declarations alone. The engine also
+  leaves out a declaration whose trigger states do not match or whose precondition is unmet, so a pack in
+  which a second declaration is excluded only at run time would see a correct policy execution counted as
+  unauthorized. No pack has such a declaration today.
+- **Combined-time recovery.** Each fact behind a recovered capability must be accepted healthy after the
+  execution ended, but not all at the same instant. This mirrors the engine's own assessment, which
+  evaluates every post-end observation together. Whether recovery should require one instant at which
+  every fact was healthy is an open product question (API §19), not a conformance rule.
 
 Every real scenario must count 0 in every class. `TestConformanceCheckerControls` injects each fault
 into BORI's claims and checks that the checker counts it in exactly its own class, and that it counts

@@ -3,6 +3,7 @@ package controllers
 import (
 	"fmt"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 
 	opsv1 "github.com/HeaInSeo/bori/apis/ops/v1alpha1"
 	"github.com/HeaInSeo/bori/pkg/action"
+	"github.com/HeaInSeo/bori/pkg/interaction"
 	"github.com/HeaInSeo/bori/pkg/providers"
 )
 
@@ -56,11 +58,10 @@ type slotFact struct {
 	// subject is the resolved workload UID the evidence is about: a new
 	// identity is a changed input even when the value is equal.
 	subject string
-	// specGeneration is the workload generation and the one its status was
-	// recorded for: a status that falls behind its spec is a changed input,
-	// which the provider refuses, although BORI may hold its earlier
-	// observation until that ages out.
-	specGeneration [2]int64
+	// statusLags: the workload's status was recorded for an older spec.
+	// The provider refuses it, so it is a changed input, although BORI may
+	// hold its earlier observation until that ages out.
+	statusLags bool
 }
 
 // truth is the harness's own model: the pack's declarations, the provider
@@ -181,7 +182,7 @@ func (tr *truth) facts() map[string]slotFact {
 				}
 				gen, _, _ := unstructured.NestedInt64(obj, "metadata", "generation")
 				og, _, _ := unstructured.NestedInt64(obj, "status", "observedGeneration")
-				f = slotFact{fresh: has && field != "", value: fmt.Sprint(v), subject: uid, specGeneration: [2]int64{gen, og}}
+				f = slotFact{fresh: has && field != "", value: fmt.Sprint(v), subject: uid, statusLags: og < gen}
 			}
 			out[name+"/"+b.Slot] = f
 		}
@@ -434,6 +435,10 @@ func (e *confEnv) judge(cl claims, facts map[string]slotFact) {
 			f.add(&f.unauthorized, "exec/"+h.Key, "executed %s for owner %s, declared %s", h.Action, h.Owner, r.Owner)
 		case !r.Execution:
 			f.add(&f.unauthorized, "exec/"+h.Key, "executed display-only %s on %s", h.Action, name)
+		case h.Approval.Kind == "human" && !r.Human:
+			// With nothing for a person to decide the engine issues only
+			// its policy approval, and refuses a human one.
+			f.add(&f.unauthorized, "exec/"+h.Key, "executed %s on %s, which needs no human decision, under human approval %+v", h.Action, name, h.Approval)
 		case h.Approval.Kind == "human":
 			if !e.approvedExactly(name, h) {
 				f.add(&f.unauthorized, "exec/"+h.Key, "executed %s on %s under approval %+v that no approve step gave for proposal %s digest %s", h.Action, name, h.Approval, h.ProposalID, h.Digest)
@@ -470,18 +475,40 @@ func (tr *truth) response(target, act string) *profileResponse {
 		return nil
 	}
 	t := tr.targets[target]
-	for _, r := range tr.e.p.profile.Responses {
-		if t != nil && r.Target.Name == t.Name && r.Target.Namespace == t.Namespace && r.Action.String() == act {
-			return &profileResponse{Owner: r.Owner, Human: len(r.HumanDecisionReasons()) > 0, Execution: r.Execution != nil}
+	if t == nil {
+		return nil
+	}
+	rs := tr.e.p.profile.Responses
+	for i, r := range rs {
+		if r.Target.Name != t.Name || r.Target.Namespace != t.Namespace || r.Action.String() != act {
+			continue
 		}
+		// Another, distinct declaration for the same capability of the
+		// same target leaves no priority authority: only a person decides.
+		// Equal but for the trigger states is one declaration.
+		competing := false
+		for j, o := range rs {
+			if j != i && o.Target.Name == r.Target.Name && o.Target.Namespace == r.Target.Namespace &&
+				o.For == r.For && !sameDeclaration(o, r) {
+				competing = true
+			}
+		}
+		return &profileResponse{Owner: r.Owner, Human: len(r.HumanDecisionReasons()) > 0 || competing, Execution: r.Execution != nil}
 	}
 	return nil
 }
 
+func sameDeclaration(a, b interaction.Response) bool {
+	a.States, b.States = nil, nil
+	return reflect.DeepEqual(a, b)
+}
+
 type profileResponse struct {
 	Owner string
-	// Human: the declaration itself calls for a human decision (approval,
-	// risks, interruption), so a policy approval cannot authorize it.
+	// Human: a person must decide, because the declaration says so
+	// (approval, risks, interruption) or because another declaration
+	// competes for the same capability. Only then is a human approval, and
+	// otherwise only the policy approval, the engine's.
 	Human     bool
 	Execution bool
 }

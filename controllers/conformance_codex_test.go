@@ -236,26 +236,19 @@ func TestConformanceCheckerCodexFindings(t *testing.T) {
 	}
 
 	// r4245188596: a response declared without an execution block is
-	// display-only; executing it is unauthorized. The response needs no
-	// approval, so only the display-only rule can count it.
+	// display-only; executing it is unauthorized. In a world where the engine
+	// itself dispatched the response by policy, only the display-only rule
+	// can count it.
 	for _, displayOnly := range []bool{true, false} {
 		name := "execution of a display-only response"
 		if !displayOnly {
 			name = "control: the same response with an execution block"
 		}
 		t.Run(name, func(t *testing.T) {
-			e := runTo(t, "jumi-artifact-handoff", "restart-without-registry-recovery")
-			r := e.p.profile.Responses[0]
-			r.Action = interaction.ActionRef{Name: "page-owner", Revision: "r1"}
-			r.RequiresApproval = false
+			e := policyWorld(t)
 			if displayOnly {
-				r.Execution = nil
+				e.p.profile.Responses[0].Execution = nil
 			}
-			e.p.profile.Responses = append(e.p.profile.Responses, r)
-			inject(t, e, 9, func(h *action.Handoff) {
-				h.Action = r.Action
-				h.Approval = action.Approval{Kind: "policy", Principal: "policy:p1"}
-			})
 			e.judge(e.claims(), e.truth.facts())
 			want := 0
 			if displayOnly {
@@ -264,6 +257,45 @@ func TestConformanceCheckerCodexFindings(t *testing.T) {
 			wantForbidden(t, e.ck, 0, 0, want, 0)
 		})
 	}
+}
+
+// policyWorld runs a world in which the shipped engine itself authorizes by
+// policy: the pack's only response for the capability declares no approval,
+// risk or interruption, so the degraded capability is restarted with the
+// policy approval and no approve step. The genuine run counts nothing.
+func policyWorld(t *testing.T, tune ...func(*confPack)) *confEnv {
+	t.Helper()
+	p, scs := packByName(t, "jumi-artifact-handoff")
+	s := scs["restart-without-registry-recovery"]
+	p.profile.Responses[0].RequiresApproval = false
+	for _, f := range tune {
+		f(p)
+	}
+	e := newConfEnv(t, p, false)
+	setEffect(e, s.OnExecute)
+	e.settle()
+	e.apply(confStep{Values: s.Steps[0].Values})
+	for r := 0; r < 10 && e.actor.TotalExecutions() == 0; r++ {
+		e.clk.add(3 * time.Second)
+		e.reconcile()
+		e.check()
+	}
+	n := 0
+	for _, h := range e.actor.Handoffs {
+		if e.actor.Executions[h.Key] == 0 {
+			continue
+		}
+		n++
+		if h.Approval != (action.Approval{Kind: "policy", Principal: "policy:p1"}) {
+			t.Fatalf("setup: engine dispatched under %+v", h.Approval)
+		}
+	}
+	if n == 0 || len(e.approvals) != 0 {
+		t.Fatalf("setup: %d policy executions, %d approvals", n, len(e.approvals))
+	}
+	wantForbidden(t, e.ck, 0, 0, 0, 0) // the genuine run
+	e.ck = confForbidden{}
+	return e
 }
 
 // setObservedGeneration moves a target's workload to a new spec generation
@@ -383,15 +415,75 @@ func TestConformanceCheckerCodexFindingsHead2(t *testing.T) {
 		wantForbidden(t, e.ck, 0, 1, 0, 0)
 	})
 
-	// r4271250376: a declared, executable response that needs no human
-	// decision is authorized only by the engine's policy approval, Kind
-	// "policy" and Principal "policy:<profile revision>" (here p1).
+	// A sibling slot's acceptance never stands in for the slot under test:
+	// serving was served healthy, but the provider accepted only the other
+	// slots of that response.
+	t.Run("Recovered with only sibling slots accepted after the end", func(t *testing.T) {
+		e := untilExecuted(t, "simple-http-service", "action-succeeds-and-recovers")
+		var end time.Time
+		for _, at := range e.endedAt {
+			end = at
+		}
+		at := end.Add(time.Second)
+		e.ev.mu.Lock()
+		e.ev.served = append(e.ev.served, servedObs{path: "/web", at: at, values: map[string]string{"serving": "true", "latencyOK": "true", "metricsUp": "true"}})
+		e.ev.mu.Unlock()
+		accept(e, providerObs{provider: "conf-http/app-http@r1", uid: "w-web", slot: "latency-within-slo", at: at, value: "true"})
+		accept(e, providerObs{provider: "conf-http/app-http@r1", uid: "w-web", slot: "metrics-endpoint-up", at: at, value: "true"})
+		accept(e, providerObs{provider: "conf-http/kube-status@r1", uid: "w-web", slot: "ready-replicas", at: at, value: "2"})
+		e.ck = confForbidden{}
+		cl := e.claims()
+		markRecovered(cl, "web")
+		e.judge(cl, e.truth.facts())
+		wantForbidden(t, e.ck, 0, 1, 0, 0)
+	})
+	// The serve must corroborate the accepted observation's own instant: a
+	// later healthy serve, never accepted, does not vouch for an accepted
+	// observation whose instant was served unhealthy.
+	t.Run("Recovered with serving accepted at an instant served unhealthy, healthy only later", func(t *testing.T) {
+		e := untilExecuted(t, "simple-http-service", "action-succeeds-and-recovers")
+		var end time.Time
+		for _, at := range e.endedAt {
+			end = at
+		}
+		t1, t2 := end.Add(time.Second), end.Add(2*time.Second)
+		e.ev.mu.Lock()
+		e.ev.served = append(e.ev.served,
+			servedObs{path: "/web", at: t1, values: map[string]string{"serving": "false", "latencyOK": "true", "metricsUp": "true"}},
+			servedObs{path: "/web", at: t2, values: map[string]string{"serving": "true", "latencyOK": "true", "metricsUp": "true"}})
+		e.ev.mu.Unlock()
+		accept(e, providerObs{provider: "conf-http/app-http@r1", uid: "w-web", slot: "api-serving", at: t1, value: "true"})
+		accept(e, providerObs{provider: "conf-http/kube-status@r1", uid: "w-web", slot: "ready-replicas", at: t1, value: "2"})
+		e.ck = confForbidden{}
+		cl := e.claims()
+		markRecovered(cl, "web")
+		e.judge(cl, e.truth.facts())
+		wantForbidden(t, e.ck, 0, 1, 0, 0)
+	})
+	// A generation move whose status is caught up changes no input: a
+	// capability resting on it stays under the unrelated check. Only a
+	// status lagging its spec is a changed input.
+	t.Run("unrelated contamination after a caught-up generation move", func(t *testing.T) {
+		e := runTo(t, "jumi-artifact-handoff", "resolver-down")
+		setObservedGeneration(t, e, "jumi", 0)
+		e.check()
+		e.ck = confForbidden{}
+		cl := e.claims()
+		setCap(cl, "jumi", "query-runs", "UNKNOWN")
+		e.judge(cl, e.truth.facts())
+		wantForbidden(t, e.ck, 1, 0, 0, 0)
+	})
+
+	// r4271250376: where nothing is for a person to decide, the engine's own
+	// policy approval, Kind "policy" and Principal "policy:<profile
+	// revision>" (here p1), is the only authorization. Each case resubmits
+	// the engine's genuine policy execution with its approval replaced.
 	policies := []struct {
 		name     string
 		approval action.Approval
 		want     int
 	}{
-		{"control: policy approval of the loaded profile revision", action.Approval{Kind: "policy", Principal: "policy:p1"}, 0},
+		{"control: the engine's policy approval of the loaded profile revision", action.Approval{Kind: "policy", Principal: "policy:p1"}, 0},
 		{"empty approval", action.Approval{}, 1},
 		{"approval of an unknown kind", action.Approval{Kind: "automatic", Principal: "policy:p1"}, 1},
 		{"policy approval naming a previous profile revision", action.Approval{Kind: "policy", Principal: "policy:p0"}, 1},
@@ -400,20 +492,64 @@ func TestConformanceCheckerCodexFindingsHead2(t *testing.T) {
 	}
 	for i, c := range policies {
 		t.Run(c.name, func(t *testing.T) {
-			e := runTo(t, "jumi-artifact-handoff", "restart-without-registry-recovery")
-			r := e.p.profile.Responses[0]
-			r.Action = interaction.ActionRef{Name: "page-owner", Revision: "r1"}
-			r.RequiresApproval = false
-			e.p.profile.Responses = append(e.p.profile.Responses, r)
-			inject(t, e, 20+i, func(h *action.Handoff) {
-				h.Action = r.Action
-				h.Approval = c.approval
-			})
+			e := policyWorld(t)
+			inject(t, e, 20+i, func(h *action.Handoff) { h.Approval = c.approval })
 			e.judge(e.claims(), e.truth.facts())
 			wantForbidden(t, e.ck, 0, 0, c.want, 0)
 		})
 	}
-	// A response that needs a human decision is never authorized by the
+	// The engine refuses a human approval where nothing needs one, even one
+	// an approve step signed exactly for this proposal and digest.
+	t.Run("exactly signed human approval of a response that needs no human decision", func(t *testing.T) {
+		e := policyWorld(t)
+		var h0 action.Handoff
+		for _, h := range e.actor.Handoffs {
+			h0 = h
+		}
+		d := action.Decision{ID: "d-exact", ProposalID: h0.ProposalID, Digest: h0.Digest, Principal: "ops-lead", Verdict: action.Approve, DecidedAt: e.clk.now()}
+		e.approvals = append(e.approvals, confApproval{decision: d, target: "jumi", action: h0.Action.String()})
+		inject(t, e, 27, func(h *action.Handoff) {
+			h.Approval = action.Approval{Kind: "human", Principal: d.Principal, DecisionID: d.ID}
+		})
+		e.judge(e.claims(), e.truth.facts())
+		wantForbidden(t, e.ck, 0, 0, 1, 0)
+	})
+	// The same declaration repeated with other trigger states is one
+	// declaration, not a competitor: the engine still dispatches by policy.
+	t.Run("control: a duplicate declaration differing only in trigger states", func(t *testing.T) {
+		e := policyWorld(t, func(p *confPack) {
+			r := p.profile.Responses[0]
+			r.States = []string{"UNAVAILABLE", "DEGRADED", "UNKNOWN"}
+			p.profile.Responses = append(p.profile.Responses, r)
+		})
+		e.judge(e.claims(), e.truth.facts())
+		wantForbidden(t, e.ck, 0, 0, 0, 0)
+	})
+	// A second, distinct declaration for the same capability leaves no
+	// priority authority: the engine blocks both and dispatches neither by
+	// policy, so a well-formed policy approval authorizes neither.
+	t.Run("policy approval while another declaration competes for the capability", func(t *testing.T) {
+		p, scs := packByName(t, "jumi-artifact-handoff")
+		r := p.profile.Responses[0]
+		r.Action = interaction.ActionRef{Name: "page-owner", Revision: "r1"}
+		r.RequiresApproval = false
+		p.profile.Responses = append(p.profile.Responses, r)
+		e := newConfEnv(t, p, false)
+		e.run(scs["restart-without-registry-recovery"])
+		for _, h := range e.actor.Handoffs {
+			if h.Action == r.Action && e.actor.Executions[h.Key] > 0 {
+				t.Fatalf("setup: the engine dispatched competing %s", r.Action)
+			}
+		}
+		e.ck = confForbidden{}
+		inject(t, e, 28, func(h *action.Handoff) {
+			h.Action = r.Action
+			h.Approval = action.Approval{Kind: "policy", Principal: "policy:p1"}
+		})
+		e.judge(e.claims(), e.truth.facts())
+		wantForbidden(t, e.ck, 0, 0, 1, 0)
+	})
+	// A response that declares a human decision is never authorized by the
 	// policy approval, however well formed.
 	t.Run("policy approval of an approval-requiring response", func(t *testing.T) {
 		e := runTo(t, "jumi-artifact-handoff", "restart-without-registry-recovery")
