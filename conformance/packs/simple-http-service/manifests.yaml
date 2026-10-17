@@ -1,0 +1,40 @@
+# simple-http-service: one stateless HTTP workload with local availability
+# and quality facts (API v0.1 §15 reference pack 1).
+apiVersion: ops.bori.dev/v1alpha1
+kind: OperationalContract
+metadata: {namespace: conf-http, name: http-service-v1, uid: c-http}
+spec:
+  assertions:
+    - {name: api-serving, type: Boolean, maxAge: 30s}
+    - {name: latency-within-slo, type: Boolean, maxAge: 30s}
+    - {name: metrics-endpoint-up, type: Boolean, maxAge: 30s}
+    - {name: ready-replicas, type: Integer, maxAge: 30s}
+  capabilities:
+    - type: {domain: example.io, name: serve-requests, revision: v1}
+      requirements:
+        - {predicate: {assertion: api-serving, operator: IsTrue}, onUnmet: UNAVAILABLE}
+        - {predicate: {assertion: ready-replicas, operator: Gte, operand: {integer: 1}}, onUnmet: UNAVAILABLE}
+    - type: {domain: example.io, name: serve-within-slo, revision: v1}
+      requirements:
+        - {predicate: {assertion: api-serving, operator: IsTrue}, onUnmet: UNAVAILABLE}
+        - {predicate: {assertion: latency-within-slo, operator: IsTrue}, onUnmet: DEGRADED}
+    - type: {domain: example.io, name: export-metrics, revision: v1}
+      requirements:
+        - {predicate: {assertion: metrics-endpoint-up, operator: IsTrue}, onUnmet: UNAVAILABLE}
+  envelopes:
+    - name: minimum
+      class: Minimum
+      requirements:
+        - {assertion: ready-replicas, operator: Gte, operand: {integer: 1}}
+---
+apiVersion: ops.bori.dev/v1alpha1
+kind: OperationalTarget
+metadata: {namespace: conf-http, name: web, uid: t-web, generation: 1}
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: web}
+  contractRef: {name: http-service-v1}
+  assertionBindings:
+    - {slot: api-serving, provider: {name: app-http, configRevision: r1}}
+    - {slot: latency-within-slo, provider: {name: app-http, configRevision: r1}}
+    - {slot: metrics-endpoint-up, provider: {name: app-http, configRevision: r1}}
+    - {slot: ready-replicas, provider: {name: kube-status, configRevision: r1}}

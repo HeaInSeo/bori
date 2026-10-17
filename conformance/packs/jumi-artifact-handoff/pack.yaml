@@ -1,0 +1,128 @@
+name: jumi-artifact-handoff
+description: >
+  Real-world reference pack (API v0.1 §15): the JUMI workflow runtime and the
+  artifact-handoff resolver as generic contracts. JUMI's artifact-dependent
+  capabilities reach the resolver only through a capability-specific
+  dependency slot; its run acceptance, queries and unbound node execution do
+  not depend on it. Facts are served by a fixture adapter: see
+  conformance/SOURCES.md for which ones the products publish today.
+endpoints:
+  - path: /jumi
+    subject: w-jumi
+    values: {registryReadable: true, registryWritable: true, registryDurable: true, backendReady: true}
+  - path: /ah
+    subject: w-ah
+    values: {storeReadable: true, storeWritable: true, storeDurable: true, httpAllowlist: true}
+actor:
+  provider: workflow-actor
+  owner: workflow-oncall
+  namespaces: [conf-wf]
+  actions: [restart@r1]
+  behaviour: Succeed
+  approver: ops-lead
+scenarios:
+  - name: healthy
+    purpose: every capability of both products AVAILABLE; envelopes satisfied; nothing to do
+    steps:
+      - expect:
+          capabilities:
+            jumi: {accept-runs: AVAILABLE, query-runs: AVAILABLE, execute-unbound-nodes: AVAILABLE, resolve-node-inputs: AVAILABLE, register-node-outputs: AVAILABLE, complete-runs: AVAILABLE}
+            artifact-handoff: {register-artifact: AVAILABLE, resolve-artifact: AVAILABLE, manage-sources: AVAILABLE, verify-http-sources: AVAILABLE, accept-node-terminal: AVAILABLE, finalize-run: AVAILABLE, read-run-lifecycle: AVAILABLE}
+          envelopes: {jumi: {minimum: SATISFIED, recommended: SATISFIED}, artifact-handoff: {minimum: SATISFIED, recommended: SATISFIED}}
+          level: {jumi: NO_ACTION, artifact-handoff: NO_ACTION}
+      - advance: 10s
+        expect: {quiet: true}
+  - name: resolver-store-unwritable
+    purpose: >
+      a read-only resolver store breaks registration and run finalization, and through the
+      dependency JUMI's output registration and run completion; resolution and every
+      resolver-independent JUMI capability stay AVAILABLE
+    steps:
+      - values: {/ah: {storeWritable: false}}
+        expect:
+          capabilities:
+            artifact-handoff: {register-artifact: UNAVAILABLE, manage-sources: UNAVAILABLE, accept-node-terminal: UNAVAILABLE, finalize-run: UNAVAILABLE, resolve-artifact: AVAILABLE, read-run-lifecycle: AVAILABLE, verify-http-sources: AVAILABLE}
+            jumi: {register-node-outputs: UNAVAILABLE, complete-runs: UNAVAILABLE, resolve-node-inputs: AVAILABLE, accept-runs: AVAILABLE, query-runs: AVAILABLE, execute-unbound-nodes: AVAILABLE}
+  - name: resolver-down
+    purpose: no resolver replica - every resolver capability and every JUMI capability that needs it fails; the rest of JUMI is not contaminated
+    steps:
+      - workload: {Deployment/artifact-handoff: {ready: 0, available: 0}}
+        expect:
+          capabilities:
+            artifact-handoff: {register-artifact: UNAVAILABLE, resolve-artifact: UNAVAILABLE, finalize-run: UNAVAILABLE}
+            jumi: {resolve-node-inputs: UNAVAILABLE, register-node-outputs: UNAVAILABLE, complete-runs: UNAVAILABLE, accept-runs: AVAILABLE, query-runs: AVAILABLE, execute-unbound-nodes: AVAILABLE}
+          envelopes: {artifact-handoff: {minimum: UNSATISFIED}, jumi: {minimum: SATISFIED}}
+  - name: resolver-evidence-outage
+    purpose: losing the resolver's fact source is UNKNOWN for its store capabilities and propagates as UNKNOWN, never as failure
+    steps:
+      - httpStatus: {/ah: 503}
+        advance: 40s
+        expect:
+          capabilities:
+            artifact-handoff: {register-artifact: UNKNOWN, resolve-artifact: UNKNOWN}
+            jumi: {resolve-node-inputs: UNKNOWN, complete-runs: UNKNOWN, accept-runs: AVAILABLE, query-runs: AVAILABLE, execute-unbound-nodes: AVAILABLE}
+  - name: resolver-recreated
+    purpose: a replaced resolver workload invalidates its old facts; JUMI's dependent capabilities become UNKNOWN, not silently healthy
+    steps:
+      - recreate: {Deployment/artifact-handoff: w-ah-2}
+        expect:
+          capabilities:
+            artifact-handoff: {register-artifact: UNKNOWN, resolve-artifact: UNKNOWN}
+            jumi: {resolve-node-inputs: UNKNOWN, register-node-outputs: UNKNOWN, accept-runs: AVAILABLE}
+  - name: runtime-second-replica
+    purpose: a second JUMI replica breaks the single-writer envelope although every capability fact is healthy
+    steps:
+      - workload: {Deployment/jumi: {ready: 2, available: 2, replicas: 2}}
+        expect:
+          envelopes: {jumi: {minimum: UNSATISFIED, recommended: UNSATISFIED}, artifact-handoff: {minimum: SATISFIED}}
+          capabilities: {jumi: {query-runs: AVAILABLE}}
+  - name: runtime-registry-unreadable
+    purpose: a JUMI registry fault affects only JUMI's registry-backed capabilities; the resolver is untouched
+    steps:
+      - values: {/jumi: {registryReadable: false}}
+        expect:
+          capabilities:
+            jumi: {query-runs: UNAVAILABLE, accept-runs: AVAILABLE, execute-unbound-nodes: AVAILABLE}
+            artifact-handoff: {register-artifact: AVAILABLE, resolve-artifact: AVAILABLE}
+  - name: restart-without-registry-recovery
+    purpose: an approved restart brings the pod back but the registry stays unreadable, so the action is Succeeded and NotRecovered
+    onExecute: {workload: {Deployment/jumi: {ready: 1, available: 1}}}
+    steps:
+      - values: {/jumi: {registryReadable: false}}
+        expect:
+          actions: {jumi: [{name: restart@r1, phase: AwaitingApproval}]}
+      - approve: [jumi/restart@r1]
+        expect: {executions: 1}
+      - advance: 40s
+        expect:
+          capabilities: {jumi: {query-runs: UNAVAILABLE}}
+          actions: {jumi: [{name: restart@r1, phase: Succeeded, recovery: NotRecovered}]}
+          human: {jumi: [action-not-recovered]}
+          level: {jumi: DECISION_REQUIRED}
+  - name: restart-with-registry-recovery
+    purpose: control - the restart restores the registry and fresh evidence after it proves recovery
+    onExecute: {values: {/jumi: {registryReadable: true}}}
+    steps:
+      - values: {/jumi: {registryReadable: false}}
+      - approve: [jumi/restart@r1]
+      - advance: 10s
+        expect:
+          capabilities: {jumi: {query-runs: AVAILABLE}}
+          actions: {jumi: [{name: restart@r1, recovery: Recovered}]}
+  - name: published-facts-only
+    gap: G1, G2
+    purpose: >
+      only facts the products publish today - Deployment replicas, plus what an adapter could
+      derive from JUMI /statusz (200 vs 500, backendReady) - while registry writability and
+      durability and every resolver store fact are absent; the capabilities that rest on
+      absent facts are honestly UNKNOWN
+    steps:
+      - unset:
+          /jumi: [registryWritable, registryDurable]
+          /ah: [storeReadable, storeWritable, storeDurable, httpAllowlist]
+        advance: 40s
+        expect:
+          capabilities:
+            jumi: {query-runs: AVAILABLE, execute-unbound-nodes: AVAILABLE, accept-runs: UNKNOWN, resolve-node-inputs: UNKNOWN, register-node-outputs: UNKNOWN, complete-runs: UNKNOWN}
+            artifact-handoff: {register-artifact: UNKNOWN, resolve-artifact: UNKNOWN, verify-http-sources: UNKNOWN}
+          envelopes: {jumi: {minimum: SATISFIED, recommended: UNKNOWN}, artifact-handoff: {minimum: SATISFIED, recommended: UNKNOWN}}

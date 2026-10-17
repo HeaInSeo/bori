@@ -1,0 +1,14 @@
+revision: p1
+responses:
+  - action: {name: restart, revision: r1}
+    target: {namespace: conf-http, name: web}
+    for: {domain: example.io, name: serve-requests, revision: v1}
+    owner: web-oncall
+    requiresApproval: true
+    execution:
+      provider: restarter
+      approvers: [ops-lead]
+      expectedImpact: [{domain: example.io, name: serve-requests, revision: v1}]
+      ackTimeout: 10s
+      completionTimeout: 30s
+      recoveryWindow: 30s

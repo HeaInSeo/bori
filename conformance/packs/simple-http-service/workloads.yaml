@@ -1,0 +1,6 @@
+# Fixture-only stand-in for the workload; not part of an installation.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {namespace: conf-http, name: web, uid: w-web, generation: 1}
+spec: {selector: {matchLabels: {app: web}}, template: {metadata: {labels: {app: web}}, spec: {containers: [{name: web, image: example/web}]}}}
+status: {observedGeneration: 1, replicas: 2, readyReplicas: 2, availableReplicas: 2}

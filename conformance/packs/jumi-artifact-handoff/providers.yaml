@@ -1,0 +1,26 @@
+# kube-status reads the real Deployment status (works against the products
+# today). jumi-facts and ah-facts stand for adapters that would publish each
+# product's facts in the reference typed-response form; the products do not
+# publish them in that form today (conformance/SOURCES.md, GAPS.md G1-G2).
+http: {allowInsecureHTTP: true, allowPrivateNetworks: true}
+providers:
+  - namespace: conf-wf
+    name: kube-status
+    configRevision: r1
+    kubernetesStatus: {fields: {ready-replicas: readyReplicas}}
+  - namespace: conf-wf
+    name: jumi-facts
+    configRevision: r1
+    http:
+      endpoints:
+        - subjectUID: w-jumi
+          url: ${EVIDENCE_URL}/jumi
+          fields: {registry-readable: registryReadable, registry-writable: registryWritable, registry-durable: registryDurable, backend-ready: backendReady}
+  - namespace: conf-wf
+    name: ah-facts
+    configRevision: r1
+    http:
+      endpoints:
+        - subjectUID: w-ah
+          url: ${EVIDENCE_URL}/ah
+          fields: {store-readable: storeReadable, store-writable: storeWritable, store-durable: storeDurable, http-source-allowlist-configured: httpAllowlist}

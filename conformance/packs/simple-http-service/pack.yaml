@@ -1,0 +1,85 @@
+name: simple-http-service
+description: >
+  Generic reference pack 1 (API v0.1 §15): one stateless HTTP service whose
+  local facts decide three independent capabilities.
+endpoints:
+  - path: /web
+    subject: w-web
+    values: {serving: true, latencyOK: true, metricsUp: true}
+actor:
+  provider: restarter
+  owner: web-oncall
+  namespaces: [conf-http]
+  actions: [restart@r1]
+  behaviour: Succeed
+  approver: ops-lead
+scenarios:
+  - name: healthy-and-quiet
+    purpose: every capability AVAILABLE on fresh evidence; a repeated equal evaluation writes nothing
+    steps:
+      - expect:
+          capabilities: {web: {serve-requests: AVAILABLE, serve-within-slo: AVAILABLE, export-metrics: AVAILABLE}}
+          envelopes: {web: {minimum: SATISFIED}}
+          level: {web: NO_ACTION}
+      - advance: 10s
+        expect: {quiet: true}
+  - name: local-failure-is-contained
+    purpose: a failed serving fact affects only the capabilities that reference it
+    steps:
+      - values: {/web: {serving: false}}
+        expect:
+          capabilities: {web: {serve-requests: UNAVAILABLE, serve-within-slo: UNAVAILABLE, export-metrics: AVAILABLE}}
+  - name: quality-gap-degrades-only
+    purpose: a latency fact degrades only the SLO capability
+    steps:
+      - values: {/web: {latencyOK: false}}
+        expect:
+          capabilities: {web: {serve-requests: AVAILABLE, serve-within-slo: DEGRADED, export-metrics: AVAILABLE}}
+  - name: evidence-missing-is-unknown
+    purpose: an evidence provider failure is UNKNOWN, never the application's failure
+    steps:
+      - httpStatus: {/web: 503}
+        advance: 40s
+        expect:
+          capabilities: {web: {serve-requests: UNKNOWN, serve-within-slo: UNKNOWN, export-metrics: UNKNOWN}}
+          envelopes: {web: {minimum: SATISFIED}}
+  - name: evidence-stale-is-unknown
+    purpose: a fact older than its maxAge is not reused as current
+    steps:
+      - freeze: [/web]
+        advance: 40s
+        expect:
+          capabilities: {web: {serve-requests: UNKNOWN, export-metrics: UNKNOWN}}
+  - name: workload-recreated
+    purpose: evidence bound to the replaced workload is inapplicable to the new one
+    steps:
+      - recreate: {Deployment/web: w-web-2}
+        expect:
+          capabilities: {web: {serve-requests: UNKNOWN, export-metrics: UNKNOWN}}
+  - name: action-succeeds-without-recovery
+    purpose: an approved restart succeeds but the serving fact stays false, so it is NotRecovered and a person is asked
+    steps:
+      - values: {/web: {serving: false}}
+        expect:
+          actions: {web: [{name: restart@r1, phase: AwaitingApproval}]}
+          executions: 0
+      - approve: [web/restart@r1]
+        expect: {executions: 1}
+      - advance: 40s
+        expect:
+          capabilities: {web: {serve-requests: UNAVAILABLE, export-metrics: AVAILABLE}}
+          actions: {web: [{name: restart@r1, phase: Succeeded, recovery: NotRecovered}]}
+          human: {web: [action-not-recovered]}
+          level: {web: DECISION_REQUIRED}
+          executions: 1
+  - name: action-succeeds-and-recovers
+    purpose: control - the actuation restores the fact, and fresh evidence after the execution proves recovery
+    onExecute: {values: {/web: {serving: true}}}
+    steps:
+      - values: {/web: {serving: false}}
+      - approve: [web/restart@r1]
+      - advance: 10s
+        expect:
+          capabilities: {web: {serve-requests: AVAILABLE}}
+          actions: {web: [{name: restart@r1, recovery: Recovered}]}
+          executions: 1
