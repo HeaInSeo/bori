@@ -352,17 +352,21 @@ type confEnv struct {
 	// actor report the execution ended. Never BORI's record.
 	executedAt map[string]time.Time
 	endedAt    map[string]time.Time
-	effect     *confStep
-	writes     int
-	mu         sync.Mutex
-	truth      *truth
-	ck         confForbidden
+	// boundAt is the checker's record, per executed key, of every target
+	// as it was when the actor executed it.
+	boundAt map[string]map[string]handoffTruth
+	effect  *confStep
+	writes  int
+	mu      sync.Mutex
+	truth   *truth
+	ck      confForbidden
 }
 
 func newConfEnv(t *testing.T, p *confPack, shippedOnly bool) *confEnv {
 	t.Helper()
 	clk := &fakeClock{t: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)}
-	e := &confEnv{t: t, p: p, clk: clk, executedAt: map[string]time.Time{}, endedAt: map[string]time.Time{}}
+	e := &confEnv{t: t, p: p, clk: clk, executedAt: map[string]time.Time{}, endedAt: map[string]time.Time{},
+		boundAt: map[string]map[string]handoffTruth{}}
 	var objs []client.Object
 	for _, o := range append(append([]client.Object(nil), p.objects...), p.workloads...) {
 		objs = append(objs, o.DeepCopyObject().(client.Object))
@@ -422,6 +426,7 @@ func newConfEnv(t *testing.T, p *confPack, shippedOnly bool) *confEnv {
 		}
 		e.actor.OnExecute = func(h action.Handoff) {
 			// Runs inside the actor's Submit: only harness state here.
+			e.noteBinding(h.Key)
 			e.mu.Lock()
 			e.executedAt[h.Key] = clk.now()
 			eff := e.effect

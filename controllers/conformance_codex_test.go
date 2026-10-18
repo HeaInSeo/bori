@@ -8,9 +8,11 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 
+	opsv1 "github.com/HeaInSeo/bori/apis/ops/v1alpha1"
 	"github.com/HeaInSeo/bori/pkg/action"
 	"github.com/HeaInSeo/bori/pkg/action/actiontest"
 	"github.com/HeaInSeo/bori/pkg/interaction"
+	"github.com/HeaInSeo/bori/pkg/operations"
 )
 
 // Codex review of 2279312 (r4245188586, r4245188592, r4245188596): the
@@ -554,6 +556,175 @@ func TestConformanceCheckerCodexFindingsHead2(t *testing.T) {
 	t.Run("policy approval of an approval-requiring response", func(t *testing.T) {
 		e := runTo(t, "jumi-artifact-handoff", "restart-without-registry-recovery")
 		inject(t, e, 30, func(h *action.Handoff) { h.Approval = action.Approval{Kind: "policy", Principal: "policy:p1"} })
+		e.judge(e.claims(), e.truth.facts())
+		wantForbidden(t, e.ck, 0, 0, 1, 0)
+	})
+}
+
+// Codex review of b761b9b (r4303213858, r4303213864, r4303213869): recovery
+// is judged by the contract's predicates, not by the value before the fault;
+// an execution must carry exactly the declared capability, impacts and the
+// target's identities as they were when it ran; and a declaration lists its
+// risks and preconditions as sets.
+func TestConformanceCheckerCodexFindingsHead3(t *testing.T) {
+	// r4303213858: the action restores service with one ready replica
+	// where there were two. serve-requests needs ready-replicas Gte 1, so
+	// BORI's genuine Recovered claim is justified.
+	t.Run("genuine recovery to another healthy replica count", func(t *testing.T) {
+		p, scs := packByName(t, "simple-http-service")
+		s := scs["action-succeeds-and-recovers"]
+		one := int32(1)
+		s.Steps = append([]confStep{{Workload: map[string]confWorkload{"Deployment/web": {Ready: &one, Available: &one}}}}, s.Steps...)
+		e := newConfEnv(t, p, false)
+		e.run(s)
+		recovered := false
+		for _, a := range e.target("web").Status.Interaction.Actions {
+			recovered = recovered || a.Recovery == "Recovered"
+		}
+		if !recovered {
+			t.Fatal("setup: BORI did not claim Recovered")
+		}
+		wantForbidden(t, e.ck, 0, 0, 0, 0)
+	})
+	for _, c := range []struct {
+		replicas string
+		want     int
+	}{{"1", 0}, {"3", 0}, {"0", 1}} {
+		name := "Recovered with ready-replicas " + c.replicas + " accepted after the end"
+		if c.want == 0 {
+			name = "control: " + name
+		}
+		t.Run(name, func(t *testing.T) {
+			e := untilExecuted(t, "simple-http-service", "action-succeeds-and-recovers")
+			var end time.Time
+			for _, at := range e.endedAt {
+				end = at
+			}
+			deliverWeb(e, servedObs{path: "/web", at: end.Add(time.Second), values: map[string]string{"serving": "true", "latencyOK": "true", "metricsUp": "true"}})
+			accept(e, providerObs{provider: "conf-http/kube-status@r1", uid: "w-web", slot: "ready-replicas", at: end.Add(time.Second), value: c.replicas})
+			e.ck = confForbidden{}
+			cl := e.claims()
+			markRecovered(cl, "web")
+			e.judge(cl, e.truth.facts())
+			wantForbidden(t, e.ck, 0, c.want, 0, 0)
+		})
+	}
+	t.Run("predicates as the contract states them", func(t *testing.T) {
+		i := func(n int64) *opsv1.Operand { return &opsv1.Operand{Integer: &n} }
+		b := func(v bool) *opsv1.Operand { return &opsv1.Operand{Boolean: &v} }
+		str := func(v string) *opsv1.Operand { return &opsv1.Operand{String: &v} }
+		for _, c := range []struct {
+			op   opsv1.Operator
+			o    *opsv1.Operand
+			typ  opsv1.ValueType
+			v    string
+			want bool
+		}{
+			{"IsTrue", nil, "Boolean", "true", true},
+			{"IsTrue", nil, "Boolean", "false", false},
+			{"IsFalse", nil, "Boolean", "false", true},
+			{"IsFalse", nil, "Boolean", "true", false},
+			{"IsTrue", nil, "String", "true", false},
+			{"Gte", i(1), "Integer", "1", true},
+			{"Gte", i(1), "Integer", "2", true},
+			{"Gte", i(1), "Integer", "0", false},
+			{"Lte", i(1), "Integer", "1", true},
+			{"Lte", i(1), "Integer", "2", false},
+			{"Gte", i(1), "Integer", "x", false},
+			{"Gte", i(1), "String", "2", false},
+			{"Eq", i(2), "Integer", "2", true},
+			{"Eq", i(2), "Integer", "3", false},
+			{"NotEq", i(2), "Integer", "3", true},
+			{"NotEq", i(2), "Integer", "2", false},
+			{"Eq", str("primary"), "String", "primary", true},
+			{"Eq", str("primary"), "String", "replica", false},
+			{"Eq", b(true), "Boolean", "true", true},
+			{"Eq", str("true"), "Boolean", "true", false},
+			{"Eq", nil, "Integer", "", false},
+		} {
+			p := opsv1.Predicate{Assertion: "a", Operator: c.op, Operand: c.o}
+			if got := satisfies(p, c.typ, c.v); got != c.want {
+				t.Errorf("%s %s on %s %q = %v, want %v", c.op, operand(c.o), c.typ, c.v, got, c.want)
+			}
+		}
+	})
+
+	// r4303213864: the engine's genuine policy execution resubmitted with
+	// one binding field changed; proposal, digest and approval are kept.
+	other := operations.CapabilityType{Domain: "jumi.heainseo.dev", Name: "accept-runs", Revision: "v1"}
+	bindings := []struct {
+		name string
+		tune func(h *action.Handoff)
+	}{
+		{"for another capability", func(h *action.Handoff) { h.For = other }},
+		{"for another target UID", func(h *action.Handoff) { h.Target.UID = "t-other" }},
+		{"for another resolved workload", func(h *action.Handoff) { h.ResolvedUID = "w-other" }},
+		{"under another contract UID", func(h *action.Handoff) { h.Contract.UID = "c-other" }},
+		{"under another contract digest", func(h *action.Handoff) { h.Contract.SpecDigest = "other-digest" }},
+		{"expecting another impact", func(h *action.Handoff) { h.ExpectedImpact = []operations.CapabilityType{other} }},
+		{"expecting an extra impact", func(h *action.Handoff) { h.ExpectedImpact = append(h.ExpectedImpact, other) }},
+	}
+	t.Run("control: the genuine binding resubmitted", func(t *testing.T) {
+		e := policyWorld(t)
+		inject(t, e, 40, func(*action.Handoff) {})
+		e.judge(e.claims(), e.truth.facts())
+		wantForbidden(t, e.ck, 0, 0, 0, 0)
+	})
+	for i, c := range bindings {
+		t.Run("execution "+c.name, func(t *testing.T) {
+			e := policyWorld(t)
+			inject(t, e, 41+i, c.tune)
+			e.judge(e.claims(), e.truth.facts())
+			wantForbidden(t, e.ck, 0, 0, 1, 0)
+		})
+	}
+	// The same under an exact human approval: the approved proposal and
+	// digest do not bind the workload.
+	t.Run("exactly approved execution for another resolved workload", func(t *testing.T) {
+		e := runTo(t, "jumi-artifact-handoff", "restart-without-registry-recovery")
+		inject(t, e, 50, func(h *action.Handoff) { h.ResolvedUID = "w-other" })
+		e.judge(e.claims(), e.truth.facts())
+		wantForbidden(t, e.ck, 0, 0, 1, 0)
+	})
+	// The binding is the target as it was when the actor ran: a workload
+	// recreated afterwards does not void an exact execution.
+	t.Run("control: exact execution, workload recreated afterwards", func(t *testing.T) {
+		e := policyWorld(t)
+		e.apply(confStep{Recreate: map[string]string{"Deployment/jumi": "w-jumi-2"}})
+		for r := 0; r < 10; r++ {
+			e.clk.add(3 * time.Second)
+			e.reconcile()
+			e.check()
+		}
+		if _, uid, _ := e.truth.workloadOf(e.target("jumi")); uid != "w-jumi-2" {
+			t.Fatalf("setup: workload %q", uid)
+		}
+		wantForbidden(t, e.ck, 0, 0, 0, 0)
+	})
+
+	// r4303213869: the shipped engine dispatches by policy although the
+	// declaration is listed twice with its preconditions in another order.
+	pre := []opsv1.CapabilityType{
+		{Domain: "jumi.heainseo.dev", Name: "accept-runs", Revision: "v1"},
+		{Domain: "jumi.heainseo.dev", Name: "execute-unbound-nodes", Revision: "v1"},
+	}
+	withPre := func(p *confPack) { p.profile.Responses[0].Preconditions = append([]opsv1.CapabilityType(nil), pre...) }
+	t.Run("control: a duplicate declaration listing its preconditions in another order", func(t *testing.T) {
+		e := policyWorld(t, withPre, func(p *confPack) {
+			r := p.profile.Responses[0]
+			r.Preconditions = []opsv1.CapabilityType{pre[1], pre[0]}
+			p.profile.Responses = append(p.profile.Responses, r)
+		})
+		e.judge(e.claims(), e.truth.facts())
+		wantForbidden(t, e.ck, 0, 0, 0, 0)
+	})
+	// Order is all that is ignored: another set of preconditions is another
+	// declaration, which competes.
+	t.Run("policy execution while a declaration with other preconditions competes", func(t *testing.T) {
+		e := policyWorld(t, withPre)
+		r := e.p.profile.Responses[0]
+		r.Preconditions = pre[:1]
+		e.p.profile.Responses = append(e.p.profile.Responses, r)
 		e.judge(e.claims(), e.truth.facts())
 		wantForbidden(t, e.ck, 0, 0, 1, 0)
 	})

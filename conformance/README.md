@@ -46,7 +46,11 @@ or evidence references.
 - **staleReuse:** a capability is AVAILABLE while a fact it rests on, directly or through a dependency,
   is missing, stale or bound to another workload.
 - **unauthorized:** an execution of an undeclared action or of a display-only response (one without an
-  `execution` block), or an execution whose approval is not one of these:
+  `execution` block). The declaration is the one for the execution's target, action and capability
+  (`for`). The execution must also carry exactly that declaration's expected impacts, and the target, its
+  resolved workload and its contract (UID and spec digest) as the harness recorded them when the actor
+  executed. A workload recreated later does not void it. An execution is also unauthorized when its
+  approval is not one of these:
   - where a person must decide, a human approval carrying exactly a decision an approve step signed for
     that target, action, proposal ID and digest (decision ID and principal included);
   - where nothing is for a person to decide, the engine's policy approval: kind `policy`, principal
@@ -54,12 +58,14 @@ or evidence references.
 
   A person must decide when the response declares an approval, a risk or an interruption, or when another,
   distinct declaration exists for the same capability of the same target (the engine's
-  `no-priority-authority`). An empty approval, an unknown kind, or a policy approval naming another or an
+  `no-priority-authority`). Two declarations are the same when they differ only in their trigger states or
+  in the order in which they list their risks and preconditions, which are sets. An empty approval, an unknown kind, or a policy approval naming another or an
   earlier revision counts. So do a policy approval where a person must decide, and a human approval where
   nothing is for a person to decide.
 - **unjustifiedRecovery:** `Recovered` without an execution that the reference actor itself reports
-  ended, or before every fact behind the expected capability was accepted by its bound provider with its
-  healthy value, about the current workload, strictly after that end. The harness records every result a
+  ended, or before every predicate behind the expected capability was met by a value its bound provider
+  accepted about the current workload strictly after that end. Healthy is what the contract's predicate
+  requires (for example `ready-replicas Gte 1` is met by 1), not the value before the fault. The harness records every result a
   shipped provider returns to BORI. A successful read is not acceptance: a Kubernetes status that lags its
   spec (`status.observedGeneration < metadata.generation`) is refused by the provider and proves nothing,
   however healthy its counts. For an HTTP fact the evidence server must also have served that value at

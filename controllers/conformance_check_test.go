@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,8 @@ import (
 	opsv1 "github.com/HeaInSeo/bori/apis/ops/v1alpha1"
 	"github.com/HeaInSeo/bori/pkg/action"
 	"github.com/HeaInSeo/bori/pkg/interaction"
+	"github.com/HeaInSeo/bori/pkg/operations"
+	"github.com/HeaInSeo/bori/pkg/opswire"
 	"github.com/HeaInSeo/bori/pkg/providers"
 )
 
@@ -201,7 +205,25 @@ func runtimeGVK(apiVersion, kind string) schema.GroupVersionKind {
 // refs walks a capability's requirements, through envelopes and bound
 // dependencies, to every "<target>/<slot>" it rests on. ok is false when a
 // dependency cannot be followed (unbound, missing target or capability).
-func (tr *truth) refs(target, capName string, seen map[string]bool) (out []string, ok bool) {
+func (tr *truth) refs(target, capName string, seen map[string]bool) ([]string, bool) {
+	reqs, ok := tr.reqs(target, capName, seen)
+	out := make([]string, 0, len(reqs))
+	for _, q := range reqs {
+		out = append(out, q.ref)
+	}
+	return out, ok
+}
+
+// slotReq is one predicate a capability rests on, with the declared type of
+// the slot it tests.
+type slotReq struct {
+	ref  string // "<target>/<slot>"
+	pred opsv1.Predicate
+	typ  opsv1.ValueType
+}
+
+// reqs is the walk behind refs, keeping each predicate.
+func (tr *truth) reqs(target, capName string, seen map[string]bool) (out []slotReq, ok bool) {
 	key := target + "/" + capName
 	if seen[key] {
 		return nil, false
@@ -216,6 +238,13 @@ func (tr *truth) refs(target, capName string, seen map[string]bool) (out []strin
 		return nil, false
 	}
 	ok = true
+	typ := map[string]opsv1.ValueType{}
+	for _, s := range c.Spec.Assertions {
+		typ[s.Name] = s.Type
+	}
+	req := func(p opsv1.Predicate) slotReq {
+		return slotReq{ref: target + "/" + p.Assertion, pred: p, typ: typ[p.Assertion]}
+	}
 	for _, cp := range c.Spec.Capabilities {
 		if cp.Type.Name != capName {
 			continue
@@ -223,16 +252,16 @@ func (tr *truth) refs(target, capName string, seen map[string]bool) (out []strin
 		for _, r := range cp.Requirements {
 			switch {
 			case r.Predicate != nil:
-				out = append(out, target+"/"+r.Predicate.Assertion)
+				out = append(out, req(*r.Predicate))
 			case r.LocalCapability != "":
-				sub, subOK := tr.refs(target, r.LocalCapability, seen)
+				sub, subOK := tr.reqs(target, r.LocalCapability, seen)
 				out = append(out, sub...)
 				ok = ok && subOK
 			case r.Envelope != "":
 				for _, env := range c.Spec.Envelopes {
 					if env.Name == r.Envelope {
 						for _, p := range env.Requirements {
-							out = append(out, target+"/"+p.Assertion)
+							out = append(out, req(p))
 						}
 					}
 				}
@@ -251,7 +280,7 @@ func (tr *truth) refs(target, capName string, seen map[string]bool) (out []strin
 					ok = false
 					continue
 				}
-				sub, subOK := tr.refs(bound, r.Dependency.Capability.Name, seen)
+				sub, subOK := tr.reqs(bound, r.Dependency.Capability.Name, seen)
 				out = append(out, sub...)
 				ok = ok && subOK
 			}
@@ -298,12 +327,12 @@ func (e *confEnv) noteEnded() {
 }
 
 // observedAfter reports whether a provider accepted an observation of the
-// target's slot strictly after t, carrying want, about the target's current
-// workload. A provider's refusal (a status lagging the spec, a subject
+// target's slot strictly after t, with a value healthy accepts, about the
+// target's current workload. A provider's refusal (a status lagging the spec, a subject
 // mismatch, ...) proves nothing, however healthy the bytes it read. For an
 // HTTP slot the evidence server must also have served that value at that
 // time: the provider cannot accept what was never delivered.
-func (tr *truth) observedAfter(target, slot string, t time.Time, want string) bool {
+func (tr *truth) observedAfter(target, slot string, t time.Time, healthy func(string) bool) bool {
 	tg := tr.e.target(target)
 	_, uid, ok := tr.workloadOf(tg)
 	if !ok {
@@ -314,18 +343,18 @@ func (tr *truth) observedAfter(target, slot string, t time.Time, want string) bo
 			continue
 		}
 		id := tg.Namespace + "/" + b.Provider.Name + "@" + b.Provider.ConfigRevision
-		var served func(at time.Time) bool
+		var served func(at time.Time, v string) bool
 		if eps := tr.http[id]; eps != nil {
 			ep, found := eps[uid]
 			if !found {
 				return false
 			}
 			key := ep.fields[slot]
-			served = func(at time.Time) bool {
+			served = func(at time.Time, v string) bool {
 				tr.e.ev.mu.Lock()
 				defer tr.e.ev.mu.Unlock()
 				for _, o := range tr.e.ev.served {
-					if o.path == ep.path && o.at.Equal(at) && o.values[key] == want {
+					if o.path == ep.path && o.at.Equal(at) && o.values[key] == v {
 						return true
 					}
 				}
@@ -339,13 +368,64 @@ func (tr *truth) observedAfter(target, slot string, t time.Time, want string) bo
 		tr.e.mu.Unlock()
 		for _, o := range obs {
 			if o.provider == id && o.uid == uid && o.slot == slot && o.unavailable == "" &&
-				o.at.After(t) && o.value == want && (served == nil || served(o.at)) {
+				o.at.After(t) && healthy(o.value) && (served == nil || served(o.at, o.value)) {
 				return true
 			}
 		}
 		return false
 	}
 	return false
+}
+
+// satisfies applies a contract predicate to a value as providers report
+// it: Booleans "true"/"false", Integers in decimal, Strings as they are.
+func satisfies(p opsv1.Predicate, typ opsv1.ValueType, v string) bool {
+	switch p.Operator {
+	case "IsTrue":
+		return typ == "Boolean" && v == "true"
+	case "IsFalse":
+		return typ == "Boolean" && v == "false"
+	case "Eq", "NotEq":
+		want, ok := typedOperand(p.Operand, typ)
+		return ok && (v == want) == (p.Operator == "Eq")
+	case "Gte", "Lte":
+		if typ != "Integer" || p.Operand == nil || p.Operand.Integer == nil {
+			return false
+		}
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return false
+		}
+		if p.Operator == "Gte" {
+			return n >= *p.Operand.Integer
+		}
+		return n <= *p.Operand.Integer
+	}
+	return false
+}
+
+// typedOperand renders an operand of the slot's type as providers report
+// such a value; ok is false for a missing operand or one of another type.
+func typedOperand(o *opsv1.Operand, typ opsv1.ValueType) (string, bool) {
+	switch {
+	case o == nil:
+	case typ == "Boolean" && o.Boolean != nil:
+		return strconv.FormatBool(*o.Boolean), true
+	case typ == "Integer" && o.Integer != nil:
+		return strconv.FormatInt(*o.Integer, 10), true
+	case typ == "String" && o.String != nil:
+		return *o.String, true
+	}
+	return "", false
+}
+
+func operand(o *opsv1.Operand) string {
+	for _, typ := range []opsv1.ValueType{"Boolean", "Integer", "String"} {
+		if v, ok := typedOperand(o, typ); ok {
+			return v
+		}
+	}
+	return ""
 }
 
 // judge is the pure checker: claims against facts. Positive controls call
@@ -396,19 +476,21 @@ func (e *confEnv) judge(cl claims, facts map[string]slotFact) {
 				continue
 			}
 			for _, capName := range tr.expectedImpact(name, a.Name) {
-				refs, ok := tr.refs(name, capName, map[string]bool{})
+				reqs, ok := tr.reqs(name, capName, map[string]bool{})
 				if !ok {
 					f.add(&f.unjustifiedRecovery, key, "%s %s Recovered although %s cannot be traced to its facts", name, a.Name, capName)
 					continue
 				}
-				// Every fact must have been delivered healthy strictly after
-				// the actor ended the execution: earlier evidence, or the
-				// fixture's current value, proves nothing. Recovered is an
-				// as-of statement, so a later regression does not void it.
-				for _, r := range refs {
-					rt, rs, _ := strings.Cut(r, "/")
-					if !tr.observedAfter(rt, rs, end, tr.baseline[r].value) {
-						f.add(&f.unjustifiedRecovery, key, "%s %s Recovered before %s was observed healthy after the execution ended at %s", name, a.Name, r, end.Format(time.RFC3339))
+				// Every predicate the capability rests on must have been met
+				// by a value delivered strictly after the actor ended the
+				// execution: earlier evidence, or the fixture's current value,
+				// proves nothing. Healthy is what the contract requires, not
+				// the value before the fault. Recovered is an as-of statement,
+				// so a later regression does not void it.
+				for _, q := range reqs {
+					rt, rs, _ := strings.Cut(q.ref, "/")
+					if !tr.observedAfter(rt, rs, end, func(v string) bool { return satisfies(q.pred, q.typ, v) }) {
+						f.add(&f.unjustifiedRecovery, key, "%s %s Recovered before %s was observed meeting %s %s after the execution ended at %s", name, a.Name, q.ref, q.pred.Operator, operand(q.pred.Operand), end.Format(time.RFC3339))
 					}
 				}
 			}
@@ -427,14 +509,16 @@ func (e *confEnv) judge(cl claims, facts map[string]slotFact) {
 				name = n
 			}
 		}
-		r := tr.response(name, h.Action.String())
+		r := tr.response(name, h.Action.String(), h.For)
 		switch {
 		case r == nil:
-			f.add(&f.unauthorized, "exec/"+h.Key, "executed undeclared %s on %s", h.Action, h.Target)
+			f.add(&f.unauthorized, "exec/"+h.Key, "executed undeclared %s for %s on %s", h.Action, h.For, h.Target)
 		case r.Owner != h.Owner:
 			f.add(&f.unauthorized, "exec/"+h.Key, "executed %s for owner %s, declared %s", h.Action, h.Owner, r.Owner)
 		case !r.Execution:
 			f.add(&f.unauthorized, "exec/"+h.Key, "executed display-only %s on %s", h.Action, name)
+		case !e.boundExactly(name, h, r):
+			f.add(&f.unauthorized, "exec/"+h.Key, "executed %s on %s bound to target %s, workload %q, contract %+v, expecting %v: not the target as it was at execution or not its declaration", h.Action, name, h.Target, h.ResolvedUID, h.Contract, h.ExpectedImpact)
 		case h.Approval.Kind == "human" && !r.Human:
 			// With nothing for a person to decide the engine issues only
 			// its policy approval, and refuses a human one.
@@ -470,7 +554,67 @@ func (e *confEnv) approvedExactly(target string, h action.Handoff) bool {
 	return false
 }
 
-func (tr *truth) response(target, act string) *profileResponse {
+// handoffTruth is the harness's own record of a target as it was when the
+// actor executed: the identities an exact handoff for it must carry.
+type handoffTruth struct {
+	target   operations.TargetIdentity
+	resolved string
+	contract operations.ContractIdentity
+}
+
+// noteBinding records every target's identities at the moment the actor
+// executes key. It runs inside the actor's Submit, before any effect.
+func (e *confEnv) noteBinding(key string) {
+	tr := e.truth
+	if tr == nil {
+		return
+	}
+	snap := map[string]handoffTruth{}
+	for name := range tr.targets {
+		t := e.target(name)
+		ht := handoffTruth{target: operations.TargetIdentity{Namespace: t.Namespace, Name: t.Name, UID: string(t.UID)}}
+		if _, uid, ok := tr.workloadOf(t); ok {
+			ht.resolved = uid
+		}
+		var c opsv1.OperationalContract
+		if err := e.c.Get(e.driver(), types.NamespacedName{Namespace: t.Namespace, Name: t.Spec.ContractRef.Name}, &c); err == nil {
+			ht.contract = operations.ContractIdentity{Namespace: c.Namespace, Name: c.Name, UID: string(c.UID), SpecDigest: opswire.SpecDigest(&c.Spec)}
+		}
+		snap[name] = ht
+	}
+	e.mu.Lock()
+	if _, seen := e.boundAt[key]; !seen {
+		e.boundAt[key] = snap
+	}
+	e.mu.Unlock()
+}
+
+// boundExactly reports whether a handoff carries exactly the target, its
+// resolved workload and contract as they were when the actor executed it,
+// and exactly the declared expected impacts.
+func (e *confEnv) boundExactly(target string, h action.Handoff, r *profileResponse) bool {
+	e.mu.Lock()
+	b, ok := e.boundAt[h.Key][target]
+	e.mu.Unlock()
+	return ok && h.Target == b.target && h.ResolvedUID == b.resolved && h.Contract == b.contract &&
+		sameCaps(h.ExpectedImpact, r.Expected)
+}
+
+func sameCaps(got []operations.CapabilityType, want []opsv1.CapabilityType) bool {
+	var g, w []string
+	for _, c := range got {
+		g = append(g, c.Domain+"/"+c.Name+"@"+c.Revision)
+	}
+	for _, c := range want {
+		w = append(w, c.Domain+"/"+c.Name+"@"+c.Revision)
+	}
+	sort.Strings(g)
+	sort.Strings(w)
+	return reflect.DeepEqual(g, w)
+}
+
+// response is the declaration for the target, action and capability.
+func (tr *truth) response(target, act string, capability operations.CapabilityType) *profileResponse {
 	if tr.e.p.profile == nil {
 		return nil
 	}
@@ -480,7 +624,8 @@ func (tr *truth) response(target, act string) *profileResponse {
 	}
 	rs := tr.e.p.profile.Responses
 	for i, r := range rs {
-		if r.Target.Name != t.Name || r.Target.Namespace != t.Namespace || r.Action.String() != act {
+		if r.Target.Name != t.Name || r.Target.Namespace != t.Namespace || r.Action.String() != act ||
+			r.For.Domain != capability.Domain || r.For.Name != capability.Name || r.For.Revision != capability.Revision {
 			continue
 		}
 		// Another, distinct declaration for the same capability of the
@@ -493,14 +638,37 @@ func (tr *truth) response(target, act string) *profileResponse {
 				competing = true
 			}
 		}
-		return &profileResponse{Owner: r.Owner, Human: len(r.HumanDecisionReasons()) > 0 || competing, Execution: r.Execution != nil}
+		pr := &profileResponse{Owner: r.Owner, Human: len(r.HumanDecisionReasons()) > 0 || competing, Execution: r.Execution != nil}
+		if r.Execution != nil {
+			pr.Expected = r.Execution.ExpectedImpact
+		}
+		return pr
 	}
 	return nil
 }
 
+// sameDeclaration: one declaration whatever its trigger states and the
+// order in which it lists its risks and preconditions, which are sets.
 func sameDeclaration(a, b interaction.Response) bool {
-	a.States, b.States = nil, nil
-	return reflect.DeepEqual(a, b)
+	return reflect.DeepEqual(canonicalDeclaration(a), canonicalDeclaration(b))
+}
+
+func canonicalDeclaration(r interaction.Response) interaction.Response {
+	r.States = nil
+	r.Risks = append([]string(nil), r.Risks...)
+	sort.Strings(r.Risks)
+	r.Preconditions = append([]opsv1.CapabilityType(nil), r.Preconditions...)
+	sort.Slice(r.Preconditions, func(i, j int) bool {
+		a, b := r.Preconditions[i], r.Preconditions[j]
+		return a.Domain+"/"+a.Name+"@"+a.Revision < b.Domain+"/"+b.Name+"@"+b.Revision
+	})
+	if len(r.Risks) == 0 {
+		r.Risks = nil
+	}
+	if len(r.Preconditions) == 0 {
+		r.Preconditions = nil
+	}
+	return r
 }
 
 type profileResponse struct {
@@ -511,6 +679,8 @@ type profileResponse struct {
 	// otherwise only the policy approval, the engine's.
 	Human     bool
 	Execution bool
+	// Expected are the declared expected impacts of an executable response.
+	Expected []opsv1.CapabilityType
 }
 
 func (tr *truth) expectedImpact(target, act string) []string {
