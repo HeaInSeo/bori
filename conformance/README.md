@@ -47,19 +47,24 @@ or evidence references.
   is missing, stale or bound to another workload.
 - **unauthorized:** an execution of an undeclared action or of a display-only response (one without an
   `execution` block). The declaration is the one for the execution's target, action and capability
-  (`for`). The execution must also carry exactly that declaration's expected impacts, and the target, its
-  resolved workload and its contract (UID and spec digest) as the harness recorded them when the actor
-  executed. A workload recreated later does not void it. An execution is also unauthorized when its
+  (`for`). The execution must also carry exactly that declaration's expected impacts, in any order, and
+  the target, its resolved workload and its contract (UID and spec digest) as the harness recorded them
+  when the actor executed that execution, not any other. A workload recreated later does not void it. An execution is also unauthorized when its
   approval is not one of these:
   - where a person must decide, a human approval carrying exactly a decision an approve step signed for
     that target, action, proposal ID and digest (decision ID and principal included);
   - where nothing is for a person to decide, the engine's policy approval: kind `policy`, principal
     `policy:<profile revision>` for the revision of the profile the harness loaded, and no decision ID.
 
-  A person must decide when the response declares an approval, a risk or an interruption, or when another,
-  distinct declaration exists for the same capability of the same target (the engine's
-  `no-priority-authority`). Two declarations are the same when they differ only in their trigger states or
-  in the order in which they list their risks and preconditions, which are sets. An empty approval, an unknown kind, or a policy approval naming another or an
+  A person must decide when the response declares an approval, a risk or an interruption, or when another
+  declaration competes for the same capability of the same target instance (the engine's
+  `no-priority-authority`). A declaration whose target UID pins another instance is not that target's and
+  never competes. A declaration competes when it is another response, or the same response with another
+  execution contract. The response is its action, capability, owner, approval, and its risks and
+  preconditions as sets. Its trigger states and target pin are not part of it, so the same declaration
+  listed again with other trigger states, another order or pinned to this instance does not compete. A
+  display-only declaration has no execution contract, so it competes only when it is another response.
+  An empty approval, an unknown kind, or a policy approval naming another or an
   earlier revision counts. So do a policy approval where a person must decide, and a human approval where
   nothing is for a person to decide.
 - **unjustifiedRecovery:** `Recovered` without an execution that the reference actor itself reports
@@ -75,7 +80,9 @@ or evidence references.
 ### What the checker does not judge
 
 - **Run-time competition.** The checker decides competition from the declarations alone. The engine also
-  leaves out a declaration whose trigger states do not match or whose precondition is unmet, so a pack in
+  leaves out a declaration whose trigger states do not match or whose precondition is unmet, at run time.
+  The static exclusions (a target UID pinning another instance, a display-only sibling of the same
+  response) are mirrored. A pack in
   which a second declaration is excluded only at run time would see a correct policy execution counted as
   unauthorized. No pack has such a declaration today.
 - **Combined-time recovery.** Each fact behind a recovered capability must be accepted healthy after the

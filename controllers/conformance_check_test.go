@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"reflect"
@@ -613,7 +614,8 @@ func sameCaps(got []operations.CapabilityType, want []opsv1.CapabilityType) bool
 	return reflect.DeepEqual(g, w)
 }
 
-// response is the declaration for the target, action and capability.
+// response is the declaration for the target, action and capability, among
+// those declared for this target instance.
 func (tr *truth) response(target, act string, capability operations.CapabilityType) *profileResponse {
 	if tr.e.p.profile == nil {
 		return nil
@@ -623,18 +625,17 @@ func (tr *truth) response(target, act string, capability operations.CapabilityTy
 		return nil
 	}
 	rs := tr.e.p.profile.Responses
-	for i, r := range rs {
-		if r.Target.Name != t.Name || r.Target.Namespace != t.Namespace || r.Action.String() != act ||
+	for _, r := range rs {
+		if !forInstance(r, t) || r.Action.String() != act ||
 			r.For.Domain != capability.Domain || r.For.Name != capability.Name || r.For.Revision != capability.Revision {
 			continue
 		}
-		// Another, distinct declaration for the same capability of the
-		// same target leaves no priority authority: only a person decides.
-		// Equal but for the trigger states is one declaration.
+		// Another declaration competing for the same capability of this
+		// target instance leaves no priority authority: only a person
+		// decides.
 		competing := false
-		for j, o := range rs {
-			if j != i && o.Target.Name == r.Target.Name && o.Target.Namespace == r.Target.Namespace &&
-				o.For == r.For && !sameDeclaration(o, r) {
+		for _, o := range rs {
+			if forInstance(o, t) && o.For == r.For && competes(o, r) {
 				competing = true
 			}
 		}
@@ -647,28 +648,54 @@ func (tr *truth) response(target, act string, capability operations.CapabilityTy
 	return nil
 }
 
-// sameDeclaration: one declaration whatever its trigger states and the
-// order in which it lists its risks and preconditions, which are sets.
-func sameDeclaration(a, b interaction.Response) bool {
-	return reflect.DeepEqual(canonicalDeclaration(a), canonicalDeclaration(b))
+// forInstance: the declaration names the target, and a set UID pins it to
+// one instance; a declaration pinned to another instance is not this
+// target's.
+func forInstance(r interaction.Response, t *opsv1.OperationalTarget) bool {
+	return r.Target.Namespace == t.Namespace && r.Target.Name == t.Name &&
+		(r.Target.UID == "" || r.Target.UID == string(t.UID))
 }
 
-func canonicalDeclaration(r interaction.Response) interaction.Response {
-	r.States = nil
-	r.Risks = append([]string(nil), r.Risks...)
-	sort.Strings(r.Risks)
-	r.Preconditions = append([]opsv1.CapabilityType(nil), r.Preconditions...)
-	sort.Slice(r.Preconditions, func(i, j int) bool {
-		a, b := r.Preconditions[i], r.Preconditions[j]
-		return a.Domain+"/"+a.Name+"@"+a.Revision < b.Domain+"/"+b.Name+"@"+b.Revision
-	})
-	if len(r.Risks) == 0 {
-		r.Risks = nil
+// responseIdentity is what makes a declared response another one: its
+// action, capability, owner, approval, and its risks and preconditions as
+// sets. The target pin and the trigger states are not part of it, nor is
+// the execution contract.
+type responseIdentity struct {
+	Action, For, Owner   string
+	RequiresApproval     bool
+	Risks, Preconditions string
+}
+
+func identityOf(r interaction.Response) responseIdentity {
+	risks := append([]string(nil), r.Risks...)
+	sort.Strings(risks)
+	var pre []string
+	for _, c := range r.Preconditions {
+		pre = append(pre, c.Domain+"/"+c.Name+"@"+c.Revision)
 	}
-	if len(r.Preconditions) == 0 {
-		r.Preconditions = nil
+	sort.Strings(pre)
+	return responseIdentity{
+		Action: r.Action.String(), For: r.For.Domain + "/" + r.For.Name + "@" + r.For.Revision,
+		Owner: r.Owner, RequiresApproval: r.RequiresApproval,
+		Risks: strings.Join(risks, ","), Preconditions: strings.Join(pre, ","),
 	}
-	return r
+}
+
+// competes: o is another response, or the same response with another
+// execution contract. A display-only response has no contract, so it
+// competes only as another response.
+func competes(o, r interaction.Response) bool {
+	if identityOf(o) != identityOf(r) {
+		return true
+	}
+	return o.Execution != nil && r.Execution != nil && !sameContract(o.Execution, r.Execution)
+}
+
+// sameContract compares two execution contracts as declared on the wire.
+func sameContract(a, b *interaction.Execution) bool {
+	ja, errA := json.Marshal(a)
+	jb, errB := json.Marshal(b)
+	return errA == nil && errB == nil && string(ja) == string(jb)
 }
 
 type profileResponse struct {

@@ -729,3 +729,147 @@ func TestConformanceCheckerCodexFindingsHead3(t *testing.T) {
 		wantForbidden(t, e.ck, 0, 0, 1, 0)
 	})
 }
+
+// Guardrail review of 86bdb61 (N4, N5): a declaration's identity is its
+// response, not where it is pinned or whether it executes; one pinned to
+// another target instance is not this target's; only executable
+// declarations compete by execution contract. An execution carries its
+// expected impacts as a set and is bound to the target as it was when that
+// execution ran.
+func TestConformanceCheckerCodexFindingsHead4(t *testing.T) {
+	pre := []opsv1.CapabilityType{
+		{Domain: "jumi.heainseo.dev", Name: "accept-runs", Revision: "v1"},
+		{Domain: "jumi.heainseo.dev", Name: "execute-unbound-nodes", Revision: "v1"},
+	}
+	withPre := func(p *confPack) { p.profile.Responses[0].Preconditions = append([]opsv1.CapabilityType(nil), pre...) }
+	sibling := func(f func(r *interaction.Response)) func(*confPack) {
+		return func(p *confPack) {
+			r := p.profile.Responses[0]
+			f(&r)
+			p.profile.Responses = append(p.profile.Responses, r)
+		}
+	}
+	otherContract := func(r *interaction.Response) {
+		ex := *r.Execution
+		ex.ExpectedImpact = append(append([]opsv1.CapabilityType(nil), ex.ExpectedImpact...), pre[0])
+		r.Execution = &ex
+	}
+
+	// The shipped engine still dispatches by policy: each sibling is the
+	// same declaration for this instance, or none of its.
+	for _, c := range []struct {
+		name string
+		f    func(r *interaction.Response)
+	}{
+		{"the same declaration pinned to this instance", func(r *interaction.Response) { r.Target.UID = "t-jumi" }},
+		{"the same declaration pinned to another instance", func(r *interaction.Response) { r.Target.UID = "t-earlier-instance" }},
+		{"another declaration pinned to another instance", func(r *interaction.Response) {
+			r.Target.UID = "t-earlier-instance"
+			r.Preconditions = pre[:1]
+		}},
+		{"a display-only sibling of the same declaration", func(r *interaction.Response) { r.Execution = nil }},
+	} {
+		t.Run("control: "+c.name, func(t *testing.T) {
+			e := policyWorld(t, withPre, sibling(c.f))
+			e.judge(e.claims(), e.truth.facts())
+			wantForbidden(t, e.ck, 0, 0, 0, 0)
+		})
+	}
+
+	// Real competitors: the shipped engine dispatches nothing by policy, so
+	// a policy execution next to one is unauthorized.
+	for _, c := range []struct {
+		name string
+		f    func(r *interaction.Response)
+	}{
+		{"another declaration pinned to this instance", func(r *interaction.Response) {
+			r.Target.UID = "t-jumi"
+			r.Preconditions = pre[:1]
+		}},
+		{"a display-only declaration of another response", func(r *interaction.Response) {
+			r.Execution = nil
+			r.Preconditions = pre[:1]
+		}},
+		{"the same response with another execution contract", otherContract},
+		{"the same declaration under another owner", func(r *interaction.Response) { r.Owner = "ops-other" }},
+		{"the same declaration requiring approval", func(r *interaction.Response) { r.RequiresApproval = true }},
+	} {
+		t.Run("policy execution while "+c.name+" competes", func(t *testing.T) {
+			p, scs := packByName(t, "jumi-artifact-handoff")
+			s := scs["restart-without-registry-recovery"]
+			p.profile.Responses[0].RequiresApproval = false
+			withPre(p)
+			sibling(c.f)(p)
+			g := newConfEnv(t, p, false)
+			setEffect(g, s.OnExecute)
+			g.settle()
+			g.apply(confStep{Values: s.Steps[0].Values})
+			for r := 0; r < 10; r++ {
+				g.clk.add(3 * time.Second)
+				g.reconcile()
+				g.check()
+			}
+			for _, h := range g.actor.Handoffs {
+				if g.actor.Executions[h.Key] > 0 && h.Approval.Kind == "policy" {
+					t.Fatalf("setup: the engine dispatched %s by policy", h.Action)
+				}
+			}
+
+			e := policyWorld(t, withPre)
+			r := e.p.profile.Responses[0]
+			c.f(&r)
+			e.p.profile.Responses = append(e.p.profile.Responses, r)
+			e.judge(e.claims(), e.truth.facts())
+			wantForbidden(t, e.ck, 0, 0, 1, 0)
+		})
+	}
+
+	// N5: the declaration expects two impacts.
+	twoImpacts := func(p *confPack) { otherContract(&p.profile.Responses[0]) }
+	t.Run("control: execution carrying the two impacts in the other order", func(t *testing.T) {
+		e := policyWorld(t, twoImpacts)
+		inject(t, e, 60, func(h *action.Handoff) {
+			if len(h.ExpectedImpact) != 2 {
+				t.Fatalf("setup: %d expected impacts", len(h.ExpectedImpact))
+			}
+			h.ExpectedImpact = []operations.CapabilityType{h.ExpectedImpact[1], h.ExpectedImpact[0]}
+		})
+		e.judge(e.claims(), e.truth.facts())
+		wantForbidden(t, e.ck, 0, 0, 0, 0)
+	})
+	t.Run("execution dropping one of the two impacts", func(t *testing.T) {
+		e := policyWorld(t, twoImpacts)
+		inject(t, e, 61, func(h *action.Handoff) { h.ExpectedImpact = h.ExpectedImpact[:1] })
+		e.judge(e.claims(), e.truth.facts())
+		wantForbidden(t, e.ck, 0, 0, 1, 0)
+	})
+
+	// Each execution is bound to the target as it was when that execution
+	// ran, not when any other did.
+	recreated := func(t *testing.T) *confEnv {
+		e := policyWorld(t)
+		e.apply(confStep{Recreate: map[string]string{"Deployment/jumi": "w-jumi-2"}})
+		for r := 0; r < 10; r++ {
+			e.clk.add(3 * time.Second)
+			e.reconcile()
+			e.check()
+		}
+		if _, uid, _ := e.truth.workloadOf(e.target("jumi")); uid != "w-jumi-2" {
+			t.Fatalf("setup: workload %q", uid)
+		}
+		e.ck = confForbidden{}
+		return e
+	}
+	t.Run("execution after a workload recreation carrying the earlier workload", func(t *testing.T) {
+		e := recreated(t)
+		inject(t, e, 62, func(h *action.Handoff) { h.ResolvedUID = "w-jumi" })
+		e.judge(e.claims(), e.truth.facts())
+		wantForbidden(t, e.ck, 0, 0, 1, 0)
+	})
+	t.Run("control: execution after a workload recreation carrying the new workload", func(t *testing.T) {
+		e := recreated(t)
+		inject(t, e, 63, func(h *action.Handoff) { h.ResolvedUID = "w-jumi-2" })
+		e.judge(e.claims(), e.truth.facts())
+		wantForbidden(t, e.ck, 0, 0, 0, 0)
+	})
+}
