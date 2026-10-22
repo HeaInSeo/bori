@@ -46,8 +46,10 @@ or evidence references.
 - **staleReuse:** a capability is AVAILABLE while a fact it rests on, directly or through a dependency,
   is missing, stale or bound to another workload.
 - **unauthorized:** an execution of an undeclared action or of a display-only response (one without an
-  `execution` block). The declaration is the one for the execution's target, action and capability
-  (`for`). The execution must also carry exactly that declaration's expected impacts, in any order, and
+  `execution` block). The declaration is the one for the execution's target instance, action and
+  capability (`for`), whatever order the profile lists them in: an executable one with the execution's
+  owner and expected impacts, else any executable one. The execution is display-only only when no
+  executable declaration exists, since the engine dispatches only executable ones. The execution must also carry exactly that declaration's expected impacts, in any order, and
   the target, its resolved workload and its contract (UID and spec digest) as the harness recorded them
   when the actor executed that execution, not any other. A workload recreated later does not void it. An execution is also unauthorized when its
   approval is not one of these:
@@ -82,7 +84,7 @@ or evidence references.
 - **Run-time competition.** The checker decides competition from the declarations alone. The engine also
   leaves out a declaration whose trigger states do not match or whose precondition is unmet, at run time.
   The static exclusions (a target UID pinning another instance, a display-only sibling of the same
-  response) are mirrored. A pack in
+  response, in any list order) are mirrored. A pack in
   which a second declaration is excluded only at run time would see a correct policy execution counted as
   unauthorized. No pack has such a declaration today.
 - **Combined-time recovery.** Each fact behind a recovered capability must be accepted healthy after the

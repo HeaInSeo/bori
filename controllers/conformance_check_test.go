@@ -510,7 +510,7 @@ func (e *confEnv) judge(cl claims, facts map[string]slotFact) {
 				name = n
 			}
 		}
-		r := tr.response(name, h.Action.String(), h.For)
+		r := tr.response(name, h)
 		switch {
 		case r == nil:
 			f.add(&f.unauthorized, "exec/"+h.Key, "executed undeclared %s for %s on %s", h.Action, h.For, h.Target)
@@ -614,9 +614,12 @@ func sameCaps(got []operations.CapabilityType, want []opsv1.CapabilityType) bool
 	return reflect.DeepEqual(g, w)
 }
 
-// response is the declaration for the target, action and capability, among
-// those declared for this target instance.
-func (tr *truth) response(target, act string, capability operations.CapabilityType) *profileResponse {
+// response is the declaration an execution corresponds to, among those
+// declared for this target instance with its action and capability,
+// whatever their order: an executable one with the execution's owner and
+// expected impacts, else any executable one, and a display-only one only
+// when none executes. The engine dispatches only executable declarations.
+func (tr *truth) response(target string, h action.Handoff) *profileResponse {
 	if tr.e.p.profile == nil {
 		return nil
 	}
@@ -625,27 +628,50 @@ func (tr *truth) response(target, act string, capability operations.CapabilityTy
 		return nil
 	}
 	rs := tr.e.p.profile.Responses
-	for _, r := range rs {
-		if !forInstance(r, t) || r.Action.String() != act ||
-			r.For.Domain != capability.Domain || r.For.Name != capability.Name || r.For.Revision != capability.Revision {
+	var exact, executable, display *interaction.Response
+	for i := range rs {
+		r := &rs[i]
+		if !forInstance(*r, t) || r.Action.String() != h.Action.String() ||
+			r.For.Domain != h.For.Domain || r.For.Name != h.For.Name || r.For.Revision != h.For.Revision {
 			continue
 		}
-		// Another declaration competing for the same capability of this
-		// target instance leaves no priority authority: only a person
-		// decides.
-		competing := false
-		for _, o := range rs {
-			if forInstance(o, t) && o.For == r.For && competes(o, r) {
-				competing = true
+		switch {
+		case r.Execution == nil:
+			if display == nil {
+				display = r
 			}
+		case r.Owner == h.Owner && sameCaps(h.ExpectedImpact, r.Execution.ExpectedImpact):
+			if exact == nil {
+				exact = r
+			}
+		case executable == nil:
+			executable = r
 		}
-		pr := &profileResponse{Owner: r.Owner, Human: len(r.HumanDecisionReasons()) > 0 || competing, Execution: r.Execution != nil}
-		if r.Execution != nil {
-			pr.Expected = r.Execution.ExpectedImpact
-		}
-		return pr
 	}
-	return nil
+	r := exact
+	if r == nil {
+		r = executable
+	}
+	if r == nil {
+		r = display
+	}
+	if r == nil {
+		return nil
+	}
+	// Another declaration competing for the same capability of this
+	// target instance leaves no priority authority: only a person
+	// decides.
+	competing := false
+	for _, o := range rs {
+		if forInstance(o, t) && o.For == r.For && competes(o, *r) {
+			competing = true
+		}
+	}
+	pr := &profileResponse{Owner: r.Owner, Human: len(r.HumanDecisionReasons()) > 0 || competing, Execution: r.Execution != nil}
+	if r.Execution != nil {
+		pr.Expected = r.Execution.ExpectedImpact
+	}
+	return pr
 }
 
 // forInstance: the declaration names the target, and a set UID pins it to

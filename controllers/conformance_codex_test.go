@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -871,5 +872,105 @@ func TestConformanceCheckerCodexFindingsHead4(t *testing.T) {
 		inject(t, e, 63, func(h *action.Handoff) { h.ResolvedUID = "w-jumi-2" })
 		e.judge(e.claims(), e.truth.facts())
 		wantForbidden(t, e.ck, 0, 0, 0, 0)
+	})
+}
+
+// Guardrail review of d096fc9 (N6): the declaration an execution is judged
+// against does not depend on the order the profile lists them in. A
+// display-only sibling listed first does not hide the executable
+// declaration the engine dispatched, and an execution of the second of two
+// competing executable declarations is bound to that one's expected
+// impacts, not the first's.
+func TestConformanceCheckerCodexFindingsHead5(t *testing.T) {
+	pre := []opsv1.CapabilityType{
+		{Domain: "jumi.heainseo.dev", Name: "accept-runs", Revision: "v1"},
+		{Domain: "jumi.heainseo.dev", Name: "execute-unbound-nodes", Revision: "v1"},
+	}
+	withPre := func(p *confPack) { p.profile.Responses[0].Preconditions = append([]opsv1.CapabilityType(nil), pre...) }
+	prepend := func(f func(r *interaction.Response)) func(*confPack) {
+		return func(p *confPack) {
+			r := p.profile.Responses[0]
+			f(&r)
+			p.profile.Responses = append([]interaction.Response{r}, p.profile.Responses...)
+		}
+	}
+	otherContract := func(r *interaction.Response) {
+		ex := *r.Execution
+		ex.ExpectedImpact = append(append([]opsv1.CapabilityType(nil), ex.ExpectedImpact...), pre[0])
+		r.Execution = &ex
+	}
+
+	// The shipped engine still dispatches by policy, whatever the order:
+	// policyWorld checks the genuine run counts nothing.
+	for _, c := range []struct {
+		name string
+		f    func(r *interaction.Response)
+	}{
+		{"a display-only sibling of the same declaration", func(r *interaction.Response) { r.Execution = nil }},
+		{"the same declaration pinned to this instance", func(r *interaction.Response) { r.Target.UID = "t-jumi" }},
+		{"the same declaration pinned to another instance", func(r *interaction.Response) { r.Target.UID = "t-earlier-instance" }},
+	} {
+		t.Run("control: "+c.name+" listed first", func(t *testing.T) {
+			e := policyWorld(t, withPre, prepend(c.f))
+			e.judge(e.claims(), e.truth.facts())
+			wantForbidden(t, e.ck, 0, 0, 0, 0)
+		})
+	}
+
+	// Real competitors stay competitors when listed first.
+	for _, c := range []struct {
+		name string
+		f    func(r *interaction.Response)
+	}{
+		{"a display-only declaration of another response", func(r *interaction.Response) {
+			r.Execution = nil
+			r.Preconditions = pre[:1]
+		}},
+		{"the same response with another execution contract", otherContract},
+	} {
+		t.Run("policy execution while "+c.name+" listed first competes", func(t *testing.T) {
+			e := policyWorld(t, withPre)
+			prepend(c.f)(e.p)
+			e.judge(e.claims(), e.truth.facts())
+			wantForbidden(t, e.ck, 0, 0, 1, 0)
+		})
+	}
+
+	// Two executable declarations that differ in contract compete, so a
+	// person decides; the approved execution is that of the one listed
+	// second, and is bound to its expected impacts.
+	competing := func(t *testing.T, f func(r *interaction.Response)) *confEnv {
+		e := untilExecuted(t, "jumi-artifact-handoff", "restart-with-registry-recovery")
+		e.ck = confForbidden{}
+		prepend(f)(e.p)
+		return e
+	}
+	t.Run("control: approved execution of the second of two competing declarations", func(t *testing.T) {
+		e := competing(t, otherContract)
+		e.judge(e.claims(), e.truth.facts())
+		wantForbidden(t, e.ck, 0, 0, 0, 0)
+	})
+	t.Run("control: approved execution next to the same declaration under another owner listed first", func(t *testing.T) {
+		e := competing(t, func(r *interaction.Response) { r.Owner = "ops-other" })
+		e.judge(e.claims(), e.truth.facts())
+		wantForbidden(t, e.ck, 0, 0, 0, 0)
+	})
+	t.Run("approved execution carrying neither declaration's impacts", func(t *testing.T) {
+		e := competing(t, otherContract)
+		inject(t, e, 70, func(h *action.Handoff) { h.ExpectedImpact = nil })
+		e.judge(e.claims(), e.truth.facts())
+		wantForbidden(t, e.ck, 0, 0, 1, 0)
+	})
+	// An executable declaration whose impacts it does not carry, not a
+	// display-only sibling listed first, is what such an execution breaks.
+	t.Run("approved execution carrying no impacts next to a display-only sibling listed first", func(t *testing.T) {
+		e := competing(t, otherContract)
+		prepend(func(r *interaction.Response) { r.Execution = nil })(e.p)
+		inject(t, e, 71, func(h *action.Handoff) { h.ExpectedImpact = nil })
+		e.judge(e.claims(), e.truth.facts())
+		wantForbidden(t, e.ck, 0, 0, 1, 0)
+		if !strings.Contains(e.ck.notes[0], "not its declaration") {
+			t.Fatalf("judged as %q, not against the executable declaration", e.ck.notes[0])
+		}
 	})
 }
