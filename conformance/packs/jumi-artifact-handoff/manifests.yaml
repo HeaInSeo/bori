@@ -1,0 +1,150 @@
+# JUMI (workflow runtime) and artifact-handoff (artifact resolver) as generic
+# OperationalContracts. Sources: JUMI e6a4573ed79db40911524397361b06bfea2be712,
+# artifact-handoff 9d07eddf837fbd778f4909e1fb23d43ba172ec02; the per-fact
+# source and whether the product publishes it today are in
+# conformance/SOURCES.md. Contracts name no other product: JUMI reaches the
+# resolver only through its "artifact-resolver" dependency slot.
+apiVersion: ops.bori.dev/v1alpha1
+kind: OperationalContract
+metadata: {namespace: conf-wf, name: artifact-handoff-v1, uid: c-ah}
+spec:
+  assertions:
+    - {name: ready-replicas, type: Integer, maxAge: 30s}
+    - {name: store-readable, type: Boolean, maxAge: 30s}
+    - {name: store-writable, type: Boolean, maxAge: 30s}
+    - {name: store-durable, type: Boolean, maxAge: 30s}
+    - {name: http-source-allowlist-configured, type: Boolean, maxAge: 30s}
+  capabilities:
+    - type: {domain: artifact-handoff.heainseo.dev, name: register-artifact, revision: v1}
+      requirements:
+        - {predicate: {assertion: ready-replicas, operator: Gte, operand: {integer: 1}}, onUnmet: UNAVAILABLE}
+        - {predicate: {assertion: store-writable, operator: IsTrue}, onUnmet: UNAVAILABLE}
+    # Read-only: works on a readable store that cannot be written.
+    - type: {domain: artifact-handoff.heainseo.dev, name: resolve-artifact, revision: v1}
+      requirements:
+        - {predicate: {assertion: ready-replicas, operator: Gte, operand: {integer: 1}}, onUnmet: UNAVAILABLE}
+        - {predicate: {assertion: store-readable, operator: IsTrue}, onUnmet: UNAVAILABLE}
+    - type: {domain: artifact-handoff.heainseo.dev, name: manage-sources, revision: v1}
+      requirements:
+        - {localCapability: register-artifact, onUnmet: UNAVAILABLE}
+        - {predicate: {assertion: store-readable, operator: IsTrue}, onUnmet: UNAVAILABLE}
+    # Only HTTP sources need the allowlist; node-local sources never check it.
+    - type: {domain: artifact-handoff.heainseo.dev, name: verify-http-sources, revision: v1}
+      requirements:
+        - {predicate: {assertion: ready-replicas, operator: Gte, operand: {integer: 1}}, onUnmet: UNAVAILABLE}
+        - {predicate: {assertion: http-source-allowlist-configured, operator: IsTrue}, onUnmet: UNAVAILABLE}
+    - type: {domain: artifact-handoff.heainseo.dev, name: accept-node-terminal, revision: v1}
+      requirements:
+        - {predicate: {assertion: ready-replicas, operator: Gte, operand: {integer: 1}}, onUnmet: UNAVAILABLE}
+        - {predicate: {assertion: store-writable, operator: IsTrue}, onUnmet: UNAVAILABLE}
+    - type: {domain: artifact-handoff.heainseo.dev, name: finalize-run, revision: v1}
+      requirements:
+        - {predicate: {assertion: ready-replicas, operator: Gte, operand: {integer: 1}}, onUnmet: UNAVAILABLE}
+        - {predicate: {assertion: store-writable, operator: IsTrue}, onUnmet: UNAVAILABLE}
+    - type: {domain: artifact-handoff.heainseo.dev, name: read-run-lifecycle, revision: v1}
+      requirements:
+        - {predicate: {assertion: ready-replicas, operator: Gte, operand: {integer: 1}}, onUnmet: UNAVAILABLE}
+        - {predicate: {assertion: store-readable, operator: IsTrue}, onUnmet: UNAVAILABLE}
+  envelopes:
+    - name: minimum
+      class: Minimum
+      requirements:
+        - {assertion: ready-replicas, operator: Gte, operand: {integer: 1}}
+    # One process per SQLite file on durable storage (manifest replicas 1).
+    - name: recommended
+      class: Recommended
+      requirements:
+        - {assertion: ready-replicas, operator: Gte, operand: {integer: 1}}
+        - {assertion: ready-replicas, operator: Lte, operand: {integer: 1}}
+        - {assertion: store-durable, operator: IsTrue}
+---
+apiVersion: ops.bori.dev/v1alpha1
+kind: OperationalContract
+metadata: {namespace: conf-wf, name: jumi-runtime-v1, uid: c-jumi}
+spec:
+  assertions:
+    - {name: ready-replicas, type: Integer, maxAge: 30s}
+    - {name: registry-readable, type: Boolean, maxAge: 30s}
+    - {name: registry-writable, type: Boolean, maxAge: 30s}
+    - {name: registry-durable, type: Boolean, maxAge: 30s}
+    - {name: backend-ready, type: Boolean, maxAge: 30s}
+  dependencySlots:
+    - {name: artifact-resolver}
+  capabilities:
+    # SubmitRun persists and admits; execution is asynchronous, so the
+    # resolver is not needed to accept a run.
+    - type: {domain: jumi.heainseo.dev, name: accept-runs, revision: v1}
+      requirements:
+        - {predicate: {assertion: ready-replicas, operator: Gte, operand: {integer: 1}}, onUnmet: UNAVAILABLE}
+        - {predicate: {assertion: registry-writable, operator: IsTrue}, onUnmet: UNAVAILABLE}
+    - type: {domain: jumi.heainseo.dev, name: query-runs, revision: v1}
+      requirements:
+        - {predicate: {assertion: ready-replicas, operator: Gte, operand: {integer: 1}}, onUnmet: UNAVAILABLE}
+        - {predicate: {assertion: registry-readable, operator: IsTrue}, onUnmet: UNAVAILABLE}
+    # Nodes without artifact bindings never call the resolver.
+    - type: {domain: jumi.heainseo.dev, name: execute-unbound-nodes, revision: v1}
+      requirements:
+        - {predicate: {assertion: ready-replicas, operator: Gte, operand: {integer: 1}}, onUnmet: UNAVAILABLE}
+        - {predicate: {assertion: backend-ready, operator: IsTrue}, onUnmet: UNAVAILABLE}
+    - type: {domain: jumi.heainseo.dev, name: resolve-node-inputs, revision: v1}
+      requirements:
+        - {localCapability: execute-unbound-nodes, onUnmet: UNAVAILABLE}
+        - dependency: {slot: artifact-resolver, capability: {domain: artifact-handoff.heainseo.dev, name: resolve-artifact, revision: v1}}
+          onUnmet: UNAVAILABLE
+    - type: {domain: jumi.heainseo.dev, name: register-node-outputs, revision: v1}
+      requirements:
+        - {localCapability: execute-unbound-nodes, onUnmet: UNAVAILABLE}
+        - dependency: {slot: artifact-resolver, capability: {domain: artifact-handoff.heainseo.dev, name: register-artifact, revision: v1}}
+          onUnmet: UNAVAILABLE
+    # Every run is finalized through the resolver; a finalize failure turns
+    # a succeeded run into Failed.
+    - type: {domain: jumi.heainseo.dev, name: complete-runs, revision: v1}
+      requirements:
+        - {predicate: {assertion: registry-writable, operator: IsTrue}, onUnmet: UNAVAILABLE}
+        - dependency: {slot: artifact-resolver, capability: {domain: artifact-handoff.heainseo.dev, name: finalize-run, revision: v1}}
+          onUnmet: UNAVAILABLE
+  envelopes:
+    # A single authoritative writer: exactly one replica.
+    - name: minimum
+      class: Minimum
+      requirements:
+        - {assertion: ready-replicas, operator: Gte, operand: {integer: 1}}
+        - {assertion: ready-replicas, operator: Lte, operand: {integer: 1}}
+    - name: recommended
+      class: Recommended
+      requirements:
+        - {assertion: ready-replicas, operator: Gte, operand: {integer: 1}}
+        - {assertion: ready-replicas, operator: Lte, operand: {integer: 1}}
+        - {assertion: registry-durable, operator: IsTrue}
+---
+apiVersion: ops.bori.dev/v1alpha1
+kind: OperationalTarget
+metadata: {namespace: conf-wf, name: artifact-handoff, uid: t-ah, generation: 1}
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: artifact-handoff}
+  contractRef: {name: artifact-handoff-v1}
+  envelopeSelection: recommended
+  assertionBindings:
+    - {slot: ready-replicas, provider: {name: kube-status, configRevision: r1}}
+    - {slot: store-readable, provider: {name: ah-facts, configRevision: r1}}
+    - {slot: store-writable, provider: {name: ah-facts, configRevision: r1}}
+    - {slot: store-durable, provider: {name: ah-facts, configRevision: r1}}
+    - {slot: http-source-allowlist-configured, provider: {name: ah-facts, configRevision: r1}}
+---
+apiVersion: ops.bori.dev/v1alpha1
+kind: OperationalTarget
+metadata: {namespace: conf-wf, name: jumi, uid: t-jumi, generation: 1}
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: jumi}
+  contractRef: {name: jumi-runtime-v1}
+  envelopeSelection: recommended
+  assertionBindings:
+    - {slot: ready-replicas, provider: {name: kube-status, configRevision: r1}}
+    - {slot: registry-readable, provider: {name: jumi-facts, configRevision: r1}}
+    - {slot: registry-writable, provider: {name: jumi-facts, configRevision: r1}}
+    - {slot: registry-durable, provider: {name: jumi-facts, configRevision: r1}}
+    - {slot: backend-ready, provider: {name: jumi-facts, configRevision: r1}}
+  dependencyBindings:
+    - slot: artifact-resolver
+      target: {name: artifact-handoff, uid: t-ah}
+      contract: {name: artifact-handoff-v1, uid: c-ah, specDigest: "sha256:ac53b172825fbc2899d55bb1f3cccc70a0ed024d759af8c1ae7c8fec49f9a619"}

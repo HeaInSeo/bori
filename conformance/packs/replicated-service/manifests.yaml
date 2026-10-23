@@ -1,0 +1,48 @@
+# replicated-service: minimum vs recommended envelope; replicas are one
+# assertion among others (API v0.1 §8, §15 reference pack 3).
+apiVersion: ops.bori.dev/v1alpha1
+kind: OperationalContract
+metadata: {namespace: conf-repl, name: replicated-v1, uid: c-repl}
+spec:
+  assertions:
+    - {name: available-replicas, type: Integer, maxAge: 30s}
+    - {name: storage-writable, type: Boolean, maxAge: 30s}
+    - {name: config-in-sync, type: Boolean, maxAge: 30s}
+  capabilities:
+    - type: {domain: example.io, name: serve, revision: v1}
+      requirements:
+        - {predicate: {assertion: available-replicas, operator: Gte, operand: {integer: 1}}, onUnmet: UNAVAILABLE}
+    - type: {domain: example.io, name: persist, revision: v1}
+      requirements:
+        - {predicate: {assertion: storage-writable, operator: IsTrue}, onUnmet: UNAVAILABLE}
+    # Only this capability is affected by the recommended envelope.
+    - type: {domain: example.io, name: serve-with-redundancy, revision: v1}
+      requirements:
+        - {envelope: recommended, onUnmet: DEGRADED}
+    # A GitOps-reported fact consumed as an ordinary assertion, never a Sync axis.
+    - type: {domain: example.io, name: run-declared-config, revision: v1}
+      requirements:
+        - {predicate: {assertion: config-in-sync, operator: IsTrue}, onUnmet: DEGRADED}
+  envelopes:
+    - name: minimum
+      class: Minimum
+      requirements:
+        - {assertion: available-replicas, operator: Gte, operand: {integer: 1}}
+        - {assertion: storage-writable, operator: IsTrue}
+    - name: recommended
+      class: Recommended
+      requirements:
+        - {assertion: available-replicas, operator: Gte, operand: {integer: 2}}
+        - {assertion: storage-writable, operator: IsTrue}
+---
+apiVersion: ops.bori.dev/v1alpha1
+kind: OperationalTarget
+metadata: {namespace: conf-repl, name: store, uid: t-store, generation: 1}
+spec:
+  targetRef: {apiVersion: apps/v1, kind: Deployment, name: store}
+  contractRef: {name: replicated-v1}
+  envelopeSelection: recommended
+  assertionBindings:
+    - {slot: available-replicas, provider: {name: kube-status, configRevision: r1}}
+    - {slot: storage-writable, provider: {name: app-http, configRevision: r1}}
+    - {slot: config-in-sync, provider: {name: gitops-http, configRevision: r1}}

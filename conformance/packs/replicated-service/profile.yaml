@@ -1,0 +1,14 @@
+revision: p1
+responses:
+  - action: {name: remount-storage, revision: r1}
+    target: {namespace: conf-repl, name: store}
+    for: {domain: example.io, name: persist, revision: v1}
+    owner: storage-oncall
+    requiresApproval: true
+    execution:
+      provider: storage-actor
+      approvers: [ops-lead]
+      expectedImpact: [{domain: example.io, name: persist, revision: v1}]
+      ackTimeout: 10s
+      completionTimeout: 30s
+      recoveryWindow: 30s

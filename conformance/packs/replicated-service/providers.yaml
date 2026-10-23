@@ -1,0 +1,18 @@
+http: {allowInsecureHTTP: true, allowPrivateNetworks: true}
+providers:
+  - namespace: conf-repl
+    name: kube-status
+    configRevision: r1
+    kubernetesStatus: {fields: {available-replicas: availableReplicas}}
+  - namespace: conf-repl
+    name: app-http
+    configRevision: r1
+    http:
+      endpoints:
+        - {subjectUID: w-store, url: "${EVIDENCE_URL}/store", fields: {storage-writable: writable}}
+  - namespace: conf-repl
+    name: gitops-http
+    configRevision: r1
+    http:
+      endpoints:
+        - {subjectUID: w-store, url: "${EVIDENCE_URL}/store-gitops", fields: {config-in-sync: inSync}}

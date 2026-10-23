@@ -1,0 +1,16 @@
+# catalog-facts stands for an adapter that would publish Tori's SyncResult,
+# snapshot_meta and root-mount facts; Tori publishes none of them today
+# (conformance/GAPS.md G1, G4).
+http: {allowInsecureHTTP: true, allowPrivateNetworks: true}
+providers:
+  - namespace: conf-catalog
+    name: catalog-facts
+    configRevision: r1
+    http:
+      endpoints:
+        - subjectUID: w-tori
+          url: ${EVIDENCE_URL}/tori
+          fields: {sync-outcome: outcome, source-scope: scope, coverage: coverage, acceptance-state: acceptance, catalog-db-writable: dbWritable, datablock-readable: datablockReadable}
+        - subjectUID: w-fs
+          url: ${EVIDENCE_URL}/root
+          fields: {root-mounted: mounted, root-writable: writable}

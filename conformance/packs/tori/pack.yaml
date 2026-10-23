@@ -1,0 +1,97 @@
+name: tori
+description: >
+  Real-world reference pack (API v0.1 §15): Tori's snapshot catalog and its
+  shared filesystem root as two generic contracts. Snapshot acceptance needs
+  a writable root and a writable catalog database; serving the published
+  datablock needs only a readable root, so catalog faults do not contaminate
+  it. Tori calls no JUMI or artifact-handoff API at this commit, so no such
+  dependency is declared (conformance/GAPS.md G6). Every binding is an
+  assumed deployment shape resolved through declared non-shipped target
+  kinds; the shipped operator cannot bind Tori today (G3).
+extraTargetKinds: [batch/v1/CronJob, v1/PersistentVolumeClaim]
+endpoints:
+  - path: /tori
+    subject: w-tori
+    values: {outcome: unchanged, scope: CONFIRMED, coverage: COMPLETE, acceptance: clean, dbWritable: true, datablockReadable: true}
+  - path: /root
+    subject: w-fs
+    values: {mounted: true, writable: true}
+scenarios:
+  - name: shipped-operator-cannot-bind
+    gap: G3
+    purpose: >
+      with the shipped target kinds (Deployment, StatefulSet, DaemonSet) neither the
+      CronJob that would run `tori-admin sync` nor the root's claim resolves: Tori is
+      not assessed at all, and nothing is fabricated for it
+    shippedKindsOnly: true
+    steps:
+      - expect:
+          invalid: {tori: target-kind-unsupported, shared-root: target-kind-unsupported}
+          level: {tori: DECISION_REQUIRED, shared-root: DECISION_REQUIRED}
+  - name: healthy
+    purpose: an unchanged accepted snapshot over a mounted, writable root
+    steps:
+      - expect:
+          capabilities:
+            tori: {accept-snapshot: AVAILABLE, catalog-consistent: AVAILABLE, serve-datablock: AVAILABLE}
+            shared-root: {read-root: AVAILABLE, write-root: AVAILABLE}
+          level: {tori: NO_ACTION}
+      - advance: 10s
+        expect: {quiet: true}
+  - name: witness-missing-hold
+    purpose: a degraded hold (no source witness) refuses acceptance; the published datablock is still served
+    steps:
+      - values: {/tori: {outcome: degraded-hold, scope: UNKNOWN}}
+        advance: 10m
+        expect:
+          capabilities: {tori: {accept-snapshot: UNAVAILABLE, serve-datablock: AVAILABLE, catalog-consistent: AVAILABLE}}
+  - name: rule-drift-hold
+    purpose: a reclassify hold refuses acceptance only
+    steps:
+      - values: {/tori: {outcome: reclassify-hold}}
+        advance: 10m
+        expect:
+          capabilities: {tori: {accept-snapshot: UNAVAILABLE, serve-datablock: AVAILABLE}}
+  - name: incomplete-pending
+    purpose: an applied but unprojected observation degrades acceptance and catalog consistency, not serving
+    steps:
+      - values: {/tori: {outcome: incomplete-pending, acceptance: pending}}
+        advance: 10m
+        expect:
+          capabilities: {tori: {accept-snapshot: DEGRADED, catalog-consistent: DEGRADED, serve-datablock: AVAILABLE}}
+  - name: catalog-db-unwritable
+    purpose: the catalog database is needed for acceptance, not for serving the datablock
+    steps:
+      - values: {/tori: {dbWritable: false}}
+        advance: 10m
+        expect:
+          capabilities: {tori: {accept-snapshot: UNAVAILABLE, serve-datablock: AVAILABLE}}
+  - name: root-read-only
+    purpose: a read-only root blocks acceptance through the dependency; reads continue
+    steps:
+      - values: {/root: {writable: false}}
+        advance: 10m
+        expect:
+          capabilities:
+            shared-root: {read-root: AVAILABLE, write-root: UNAVAILABLE}
+            tori: {accept-snapshot: UNAVAILABLE, serve-datablock: AVAILABLE, catalog-consistent: AVAILABLE}
+  - name: root-unmounted
+    purpose: losing the mount takes both root-dependent capabilities down; catalog consistency is not contaminated
+    steps:
+      - values: {/root: {mounted: false}}
+        advance: 10m
+        expect:
+          capabilities:
+            shared-root: {read-root: UNAVAILABLE, write-root: UNAVAILABLE}
+            tori: {accept-snapshot: UNAVAILABLE, serve-datablock: UNAVAILABLE, catalog-consistent: AVAILABLE}
+  - name: sync-not-run
+    gap: G4
+    purpose: >
+      without a fresh sync result the catalog facts age out and become UNKNOWN; Tori has no
+      heartbeat, and an `unchanged` run refreshes no timestamp, so only a published
+      per-run result can keep them current
+    steps:
+      - freeze: [/tori]
+        advance: 11m
+        expect:
+          capabilities: {tori: {accept-snapshot: UNKNOWN, catalog-consistent: UNKNOWN, serve-datablock: UNKNOWN}}

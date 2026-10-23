@@ -1,0 +1,35 @@
+# stateful-single-writer: more replicas is not always better; exactly one
+# writer is the envelope (API v0.1 §15 reference pack 4).
+apiVersion: ops.bori.dev/v1alpha1
+kind: OperationalContract
+metadata: {namespace: conf-sw, name: single-writer-v1, uid: c-sw}
+spec:
+  assertions:
+    - {name: active-writers, type: Integer, maxAge: 30s}
+    - {name: role, type: String, enum: [primary, replica, fenced], maxAge: 30s}
+    - {name: ready-replicas, type: Integer, maxAge: 30s}
+  capabilities:
+    - type: {domain: example.io, name: accept-writes, revision: v1}
+      requirements:
+        - {predicate: {assertion: active-writers, operator: Eq, operand: {integer: 1}}, onUnmet: UNAVAILABLE}
+        - {predicate: {assertion: role, operator: Eq, operand: {string: primary}}, onUnmet: UNAVAILABLE}
+    - type: {domain: example.io, name: serve-reads, revision: v1}
+      requirements:
+        - {predicate: {assertion: ready-replicas, operator: Gte, operand: {integer: 1}}, onUnmet: UNAVAILABLE}
+  envelopes:
+    - name: minimum
+      class: Minimum
+      requirements:
+        - {assertion: active-writers, operator: Gte, operand: {integer: 1}}
+        - {assertion: active-writers, operator: Lte, operand: {integer: 1}}
+---
+apiVersion: ops.bori.dev/v1alpha1
+kind: OperationalTarget
+metadata: {namespace: conf-sw, name: db, uid: t-db, generation: 1}
+spec:
+  targetRef: {apiVersion: apps/v1, kind: StatefulSet, name: db}
+  contractRef: {name: single-writer-v1}
+  assertionBindings:
+    - {slot: active-writers, provider: {name: db-http, configRevision: r1}}
+    - {slot: role, provider: {name: db-http, configRevision: r1}}
+    - {slot: ready-replicas, provider: {name: kube-status, configRevision: r1}}

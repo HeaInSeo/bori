@@ -1,0 +1,6 @@
+# Fixture-only stand-in for the workload; not part of an installation.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {namespace: conf-sw, name: db, uid: w-db, generation: 1}
+spec: {serviceName: db, selector: {matchLabels: {app: db}}, template: {metadata: {labels: {app: db}}, spec: {containers: [{name: db, image: example/db}]}}}
+status: {observedGeneration: 1, replicas: 3, readyReplicas: 3, availableReplicas: 3}
