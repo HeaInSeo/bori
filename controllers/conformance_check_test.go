@@ -514,6 +514,8 @@ func (e *confEnv) judge(cl claims, facts map[string]slotFact) {
 		switch {
 		case r == nil:
 			f.add(&f.unauthorized, "exec/"+h.Key, "executed undeclared %s for %s on %s", h.Action, h.For, h.Target)
+		case r.OwnerConflict:
+			f.add(&f.unauthorized, "exec/"+h.Key, "executed owner-conflict %s on %s: declared with more than one owner, which the engine blocks", h.Action, name)
 		case r.Owner != h.Owner:
 			f.add(&f.unauthorized, "exec/"+h.Key, "executed %s for owner %s, declared %s", h.Action, h.Owner, r.Owner)
 		case !r.Execution:
@@ -629,12 +631,14 @@ func (tr *truth) response(target string, h action.Handoff) *profileResponse {
 	}
 	rs := tr.e.p.profile.Responses
 	var exact, executable, display *interaction.Response
+	owners := map[string]bool{}
 	for i := range rs {
 		r := &rs[i]
 		if !forInstance(*r, t) || r.Action.String() != h.Action.String() ||
 			r.For.Domain != h.For.Domain || r.For.Name != h.For.Name || r.For.Revision != h.For.Revision {
 			continue
 		}
+		owners[r.Owner] = true
 		switch {
 		case r.Execution == nil:
 			if display == nil {
@@ -667,7 +671,7 @@ func (tr *truth) response(target string, h action.Handoff) *profileResponse {
 			competing = true
 		}
 	}
-	pr := &profileResponse{Owner: r.Owner, Human: len(r.HumanDecisionReasons()) > 0 || competing, Execution: r.Execution != nil}
+	pr := &profileResponse{Owner: r.Owner, OwnerConflict: len(owners) > 1, Human: len(r.HumanDecisionReasons()) > 0 || competing, Execution: r.Execution != nil}
 	if r.Execution != nil {
 		pr.Expected = r.Execution.ExpectedImpact
 	}
@@ -726,6 +730,11 @@ func sameContract(a, b *interaction.Execution) bool {
 
 type profileResponse struct {
 	Owner string
+	// OwnerConflict: the action is declared for this capability of this
+	// target instance with more than one owner, executable or display-only,
+	// applicable or not, as the engine counts them. Its authority is
+	// ambiguous and the engine blocks it; no approval unblocks it.
+	OwnerConflict bool
 	// Human: a person must decide, because the declaration says so
 	// (approval, risks, interruption) or because another declaration
 	// competes for the same capability. Only then is a human approval, and

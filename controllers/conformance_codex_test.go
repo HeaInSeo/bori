@@ -950,11 +950,6 @@ func TestConformanceCheckerCodexFindingsHead5(t *testing.T) {
 		e.judge(e.claims(), e.truth.facts())
 		wantForbidden(t, e.ck, 0, 0, 0, 0)
 	})
-	t.Run("control: approved execution next to the same declaration under another owner listed first", func(t *testing.T) {
-		e := competing(t, func(r *interaction.Response) { r.Owner = "ops-other" })
-		e.judge(e.claims(), e.truth.facts())
-		wantForbidden(t, e.ck, 0, 0, 0, 0)
-	})
 	t.Run("approved execution carrying neither declaration's impacts", func(t *testing.T) {
 		e := competing(t, otherContract)
 		inject(t, e, 70, func(h *action.Handoff) { h.ExpectedImpact = nil })
@@ -973,4 +968,120 @@ func TestConformanceCheckerCodexFindingsHead5(t *testing.T) {
 			t.Fatalf("judged as %q, not against the executable declaration", e.ck.notes[0])
 		}
 	})
+	// Guardrail review of 6996c22 (N7): the same action declared with
+	// another owner is an owner conflict, which the engine blocks and no
+	// approval unblocks, so an execution of it is unauthorized whichever
+	// declaration is listed first.
+	otherOwner := func(r *interaction.Response) { r.Owner = "ops-other" }
+	otherOwnerDisplay := func(r *interaction.Response) {
+		r.Owner = "ops-other"
+		r.Execution = nil
+	}
+	appendTo := func(f func(r *interaction.Response)) func(*confPack) {
+		return func(p *confPack) {
+			r := p.profile.Responses[0]
+			f(&r)
+			p.profile.Responses = append(p.profile.Responses, r)
+		}
+	}
+	for _, c := range []struct {
+		name string
+		f    func(r *interaction.Response)
+		add  func(f func(r *interaction.Response)) func(*confPack)
+	}{
+		{"the same declaration under another owner listed first", otherOwner, prepend},
+		{"the same declaration under another owner listed second", otherOwner, appendTo},
+		{"a display-only declaration under another owner listed first", otherOwnerDisplay, prepend},
+		{"a display-only declaration under another owner listed second", otherOwnerDisplay, appendTo},
+	} {
+		t.Run("approved execution next to "+c.name, func(t *testing.T) {
+			e := untilExecuted(t, "jumi-artifact-handoff", "restart-with-registry-recovery")
+			e.ck = confForbidden{}
+			c.add(c.f)(e.p)
+			e.judge(e.claims(), e.truth.facts())
+			wantForbidden(t, e.ck, 0, 0, 1, 0)
+			if !strings.Contains(e.ck.notes[0], "owner-conflict") {
+				t.Fatalf("judged as %q, not as an owner conflict", e.ck.notes[0])
+			}
+		})
+	}
+	// A declaration pinned to another instance is not this target's, so its
+	// owner conflicts with nothing here.
+	t.Run("control: approved execution next to the same declaration under another owner pinned to another instance", func(t *testing.T) {
+		e := untilExecuted(t, "jumi-artifact-handoff", "restart-with-registry-recovery")
+		e.ck = confForbidden{}
+		prepend(func(r *interaction.Response) {
+			otherOwner(r)
+			r.Target.UID = "t-earlier-instance"
+		})(e.p)
+		e.judge(e.claims(), e.truth.facts())
+		wantForbidden(t, e.ck, 0, 0, 0, 0)
+	})
+	for _, c := range []struct {
+		name string
+		f    func(r *interaction.Response)
+	}{
+		{"another owner", otherOwner},
+		{"another owner, display-only", otherOwnerDisplay},
+	} {
+		t.Run("control: the engine blocks the action declared again under "+c.name+" and dispatches nothing", func(t *testing.T) {
+			engineBlocksOwnerConflict(t, prepend(c.f))
+		})
+	}
+}
+
+// engineBlocksOwnerConflict runs the human-approval scenario with the
+// profile tuned to declare its action with a second owner, and checks that
+// the genuine engine blocks every proposal of it for owner-conflict and
+// executes nothing, and that the checker counts nothing.
+func engineBlocksOwnerConflict(t *testing.T, tune func(*confPack)) {
+	t.Helper()
+	p, scs := packByName(t, "jumi-artifact-handoff")
+	s := scs["restart-with-registry-recovery"]
+	act := p.profile.Responses[0].Action.String()
+	tune(p)
+	e := newConfEnv(t, p, false)
+	setEffect(e, s.OnExecute)
+	e.settle()
+	approveStep := false
+	for _, st := range s.Steps {
+		if len(st.Approve) > 0 {
+			approveStep = true
+			break
+		}
+		e.apply(st)
+		if st.Advance != "" {
+			d, _ := time.ParseDuration(st.Advance)
+			e.clk.add(d)
+		}
+		for r := 0; r < 10; r++ {
+			if r > 0 {
+				e.clk.add(3 * time.Second)
+			}
+			e.reconcile()
+			e.check()
+		}
+	}
+	if !approveStep {
+		t.Fatal("setup: no approve step")
+	}
+	blocked := 0
+	for name, st := range e.claims() {
+		for _, a := range st.Interaction.Actions {
+			if a.Name != act {
+				continue
+			}
+			if a.Phase != "Blocked" || !hasCode(a.Reasons, "owner-conflict") {
+				t.Fatalf("%s %s: phase %s reasons %+v, want Blocked by owner-conflict", name, a.Name, a.Phase, a.Reasons)
+			}
+			blocked++
+		}
+	}
+	if blocked == 0 {
+		t.Fatalf("setup: no proposal of %s", act)
+	}
+	if n := e.actor.TotalExecutions(); n != 0 {
+		t.Fatalf("the engine executed %d times", n)
+	}
+	wantForbidden(t, e.ck, 0, 0, 0, 0)
 }

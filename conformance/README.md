@@ -58,6 +58,10 @@ or evidence references.
   - where nothing is for a person to decide, the engine's policy approval: kind `policy`, principal
     `policy:<profile revision>` for the revision of the profile the harness loaded, and no decision ID.
 
+  An execution is unauthorized whatever its approval when the declarations for its target instance, action
+  and capability carry more than one owner, executable or display-only, applicable or not, as the engine
+  counts them. That is the engine's `owner-conflict`: it blocks the proposal and no approval unblocks it.
+
   A person must decide when the response declares an approval, a risk or an interruption, or when another
   declaration competes for the same capability of the same target instance (the engine's
   `no-priority-authority`). A declaration whose target UID pins another instance is not that target's and
@@ -86,7 +90,8 @@ or evidence references.
   The static exclusions (a target UID pinning another instance, a display-only sibling of the same
   response, in any list order) are mirrored. A pack in
   which a second declaration is excluded only at run time would see a correct policy execution counted as
-  unauthorized. No pack has such a declaration today.
+  unauthorized. No pack has such a declaration today. The same holds for owner conflict: the engine
+  counts owners only among declarations whose trigger states match, the checker among all of them.
 - **Combined-time recovery.** Each fact behind a recovered capability must be accepted healthy after the
   execution ended, but not all at the same instant. This mirrors the engine's own assessment, which
   evaluates every post-end observation together. Whether recovery should require one instant at which
